@@ -1,0 +1,24 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# node
+node_modules/
+dist/
+
+# generated media / captures from API experiments
+out.*
+captures/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
