@@ -122,6 +122,13 @@ body {
   background: rgba(255, 255, 255, 0.06);
 }
 
+/* Display only: reveal jumps to the slide under the pointer when the bar (or the invisible 10 px band above it) is
+   clicked, behind the backend's back. Clicks fall through to the slide instead. */
+.reveal .progress,
+.reveal .progress::after {
+  pointer-events: none;
+}
+
 /* ---------------------------------------------------------------- status strip */
 
 .strip {
@@ -151,7 +158,21 @@ body {
   white-space: nowrap;
 }
 
+/* Who gives way on a crowded strip (two long tool names, "Realtime reconnecting…", every badge on):
+   1. the tool ticker: it only gets what the two groups leave (flex-basis 0), so chips drop out and the newest one
+      ellipsises, down to --ticker-min;
+   2. then the slide label (ellipsis), then the phase;
+   3. never the state badge or the right-hand group (latency, mic meter, Realtime, mic mode, badges): flex none. */
+.strip-left {
+  flex: 0 1 auto;
+}
+
+.strip-left .state-badge {
+  flex: none;
+}
+
 .strip-right {
+  flex: none;
   margin-left: auto;
 }
 
@@ -206,6 +227,10 @@ body {
 }
 
 .phase {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-dim);
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -213,6 +238,7 @@ body {
 }
 
 .where {
+  flex: 0 12 auto; /* shrinks long before the phase does */
   min-width: 0;
   max-width: 26vw;
   overflow: hidden;
@@ -221,10 +247,11 @@ body {
 }
 
 /* One line of chips, newest first. Chips that don't fit wrap onto a second line, which is clipped: on a crowded
-   strip the older calls drop out instead of all three shrinking into ellipses. */
+   strip the older calls drop out instead of all three shrinking into ellipses; the last one left ellipsises. */
 .ticker {
-  flex: 1 1 auto;
-  min-width: 0;
+  --ticker-min: 13em;
+  flex: 1 1 0;
+  min-width: var(--ticker-min);
   height: 1.8em;
   display: flex;
   flex-wrap: wrap;
@@ -237,6 +264,10 @@ body {
   padding: 0;
   list-style: none;
   overflow: hidden;
+}
+
+.ticker:empty {
+  min-width: 0; /* no tool call yet: nothing to keep room for */
 }
 
 .tool {
@@ -531,6 +562,14 @@ body {
   border-radius: 50%;
   background: var(--tag-c);
   animation: pulse 1.1s ease-in-out infinite;
+}
+
+/* how the open turn ends, after "Listening…": small and quiet, it is for the presenter */
+.cap-hint {
+  flex: none;
+  font-size: 0.82em;
+  letter-spacing: 0.02em;
+  color: var(--fg-dim);
 }
 
 /* a live mic level bar after "Listening…" */
@@ -962,7 +1001,7 @@ body {
 }
 
 .overlay.armed .panel-hint::before {
-  content: "Armed. Any presenter key also hides this. ";
+  content: "Armed. Esc or a click outside closes this checklist; other presenter keys close it and act. ";
   color: var(--c-ok);
   font-weight: 600;
 }

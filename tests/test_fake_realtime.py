@@ -280,7 +280,9 @@ async def test_cancel_mid_reply_ends_it_with_status_cancelled() -> None:
 
     await send(conn, {"type": "response.cancel", "event_id": "evt_c"})
     (error,) = await read_until(conn, "error")
-    assert error["error"]["code"] == "response_cancel_not_active" and error["error"]["event_id"] == "evt_c"
+    # Higgs's documented code for a cancel with nothing active (not OpenAI's response_cancel_not_active)
+    assert error["error"]["code"] == "response_not_active" and error["error"]["event_id"] == "evt_c"
+    assert error["error"]["type"] == "invalid_request_error"
 
 
 async def test_cancel_while_thinking_is_silent() -> None:
@@ -290,7 +292,34 @@ async def test_cancel_while_thinking_is_silent() -> None:
     await assert_quiet(conn)
     await send(conn, {"type": "response.cancel"})
     (error,) = await read_until(conn, "error")
-    assert error["error"]["code"] == "response_cancel_not_active"
+    assert error["error"]["code"] == "response_not_active"
+
+
+async def reply_ids(conn: FakeRealtimeConn) -> tuple[str, str, str]:
+    """(response id, message item id, call id) of one reply on `conn`."""
+    await send(conn, {"type": "response.create"})
+    response = (await read_until(conn, "response.done"))[-1]["response"]
+    message, call = response["output"]
+    return response["id"], message["id"], call["call_id"]
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+async def test_reuse_ids_numbers_ids_per_connection_like_a_per_session_server(reuse: bool) -> None:
+    connect = FakeConnector(sleep=instant, drop_after=0, reuse_ids=reuse)
+    sessions = []
+    for _ in range(2):  # a session, then the one a reconnect opens
+        conn = await connect(URL)
+        await send(conn, {"type": "session.update", "session": session("presenting")})
+        await read_until(conn, "session.created")
+        first, second = await reply_ids(conn), await reply_ids(conn)
+        assert len({*first, *second}) == 6  # unique within a session, always
+        sessions.append((first, second))
+        await conn.close()
+    if reuse:  # the new session hands out the very ids the old one did
+        assert sessions[1] == sessions[0]
+        assert sessions[0][0][0] == "resp_fake000001" and sessions[0][0][2] == "call_fake000001"
+    else:  # the default: no id ever repeats in this process
+        assert not {*sessions[0][0], *sessions[0][1]} & {*sessions[1][0], *sessions[1][1]}
 
 
 async def test_response_create_while_one_is_active_is_an_error() -> None:

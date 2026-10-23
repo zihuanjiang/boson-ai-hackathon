@@ -461,22 +461,40 @@ export function presenterKey(e, micMode) {
   }
 }
 
+/** The words of a live caption (whitespace-separated). @param {unknown} text */
+export function liveWords(text) {
+  return String(text ?? "").split(/\s+/).filter(Boolean);
+}
+
+/** Relay never speaks faster than this: the live caption's reveal is capped at it until all the audio is in. */
+export const MAX_WORDS_PER_S = 4;
+
 /**
- * The part of a live caption to show once `fraction` of its audio has played: whole words, the word being spoken
- * included (so at least one word as soon as any audio played), everything from fraction 1.
- * @param {string} text
- * @param {number} fraction
+ * How many of a live reply's `n` transcript words the listener has heard (started hearing). The transcript can
+ * arrive before its audio (whole sentences at once) or after it, so the share of the received audio that was
+ * heard is only an estimate: until the reply's last audio is in (`ended`) it is also capped at MAX_WORDS_PER_S of
+ * heard audio, which keeps the caption from running ahead of the voice at the start of a reply or after a stall.
+ * Once `ended`, `received` is the whole reply and the share is used as is. At least one word once any audio was
+ * heard (the word being spoken counts).
+ * @param {number} n  words in the transcript so far
+ * @param {number} heard  samples the listener has heard (played minus output latency)
+ * @param {number} received  samples of the reply handed to the player so far
+ * @param {boolean} ended  no more audio will come for this reply
+ * @param {number} [rate]
  */
-export function revealText(text, fraction) {
-  const words = String(text ?? "").split(/\s+/).filter(Boolean);
-  if (!(fraction > 0)) return "";
-  if (fraction >= 1) return words.join(" ");
-  return words.slice(0, Math.max(1, Math.ceil(words.length * fraction))).join(" ");
+export function liveRevealCount(n, heard, received, ended, rate = RATE) {
+  if (!(n > 0) || !(heard > 0) || !(received > 0)) return 0;
+  const share = Math.ceil((n * Math.min(heard, received)) / received);
+  if (ended) return Math.min(n, share);
+  const cap = Math.floor((heard * MAX_WORDS_PER_S) / rate) + 1;
+  return Math.min(n, share, cap);
 }
 
 /**
  * Samples a player has output by `now`, extrapolated from its last report and capped at what it was given (the
- * worklet reports about every 100 ms, a key press needs the count in between).
+ * worklet reports about every 100 ms, a key press needs the count in between). The caller restarts the
+ * extrapolation (new `played`/`reportTime`) when audio reaches a player that ran dry, or a generation stall would
+ * count as played audio (ReplyPlayer.push).
  * @param {number} played  samples at the last report
  * @param {number} reportTime  AudioContext time of that report (s)
  * @param {number} now  AudioContext time now (s)

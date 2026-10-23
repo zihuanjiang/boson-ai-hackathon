@@ -9,7 +9,9 @@
  *   {type: "end", reply}              no more audio for this reply: post `drained` once the queue is empty
  *   {type: "flush", reply|null}       drop everything (null = whatever is playing), after a 10 ms fade-out
  * Worklet → main thread:
- *   {type: "progress", reply, played, time}   played = samples output for this reply, about every 100 ms
+ *   {type: "progress", reply, played, time}   played = samples output for this reply, about every 100 ms, and at
+ *                                              once when output (re)starts after the queue ran dry (the reply's
+ *                                              first audio, or audio after a generation stall)
  *   {type: "drained", reply, played, time}    once, after `end` with an empty queue
  *   {type: "flushed", reply, played, time}    once the flush (and its fade) is done
  * `time` is the AudioContext time (currentTime) of the report.
@@ -36,6 +38,7 @@ class PcmPlayer extends AudioWorkletProcessor {
     this.played = 0;
     this.ended = false;
     this.sinceProgress = 0;
+    this.starved = true; // no audio to output: the next sample out (re)starts playback and is reported at once
     this.fadeLeft = 0; // > 0 while a flush fades out
   }
 
@@ -113,7 +116,11 @@ class PcmPlayer extends AudioWorkletProcessor {
       return true;
     }
     this.sinceProgress += filled;
-    if (this.sinceProgress >= PROGRESS_EVERY) {
+    const restarted = this.starved && filled > 0;
+    this.starved = filled < out.length;
+    if (restarted || this.sinceProgress >= PROGRESS_EVERY) {
+      // A restart is reported at once: the main thread extrapolates `played` between reports, and must not count
+      // the time the queue stood empty as output.
       this.sinceProgress = 0;
       this.port.postMessage({ type: "progress", reply: this.reply, played: this.played, time: currentTime });
     }

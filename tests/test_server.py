@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import shutil
 import time
 import wave
 from pathlib import Path
@@ -16,9 +18,12 @@ from starlette.websockets import WebSocketDisconnect
 from relay import __main__ as cli
 from relay import server
 from relay.config import Settings
-from relay.server import DeckHub, create_app, talk_json
+from relay.render import render_talk
+from relay.server import (REPLACED_CLOSE_CODE, REPLACED_REASON, STALLED_CLOSE_CODE, STALLED_REASON, DeckHub,
+                          create_app, talk_json)
 from relay.talk import TalkError, load_talk
-from relay.timeline import RenderMissing, chunk_paths
+from relay.timeline import RenderMissing, chunk_paths, render_version
+from relay.tts import wav_duration_ms
 from tests.conftest import TEST_TALK_DIR, synthetic_chunks
 
 ENV_VARS = ("BOSON_API_KEY", "BOSON_BASE_URL", "BOSON_REALTIME_URL", "MIC_MODE", "RELAY_TURN_DETECTION",
@@ -100,7 +105,8 @@ def write_wav(path: Path, ms: int = 100) -> bytes:
 
 
 def build(tmp_path: Path, web: Path, settings: Settings | None = None, *, chunks: Any = "synthetic",
-          **kwargs: Any) -> tuple[Any, StubController]:
+          talk_dir: Path = TEST_TALK_DIR, **kwargs: Any) -> tuple[Any, StubController]:
+    """The app with a stub controller. `chunks=None` loads the renders in `tmp_path/out` like `relay serve`."""
     holder: dict[str, StubController] = {}
 
     def factory(*args: Any, **kw: Any) -> StubController:
@@ -108,10 +114,31 @@ def build(tmp_path: Path, web: Path, settings: Settings | None = None, *, chunks
         return holder["controller"]
 
     if chunks == "synthetic":
-        chunks = synthetic_chunks(load_talk(TEST_TALK_DIR))
-    app = create_app(TEST_TALK_DIR, settings or Settings(), out_root=tmp_path / "out", controller_factory=factory,
+        chunks = synthetic_chunks(load_talk(talk_dir))
+    app = create_app(talk_dir, settings or Settings(), out_root=tmp_path / "out", controller_factory=factory,
                      chunks=chunks, web_dir=web, **kwargs)
     return app, holder["controller"]
+
+
+def copy_test_talk(tmp_path: Path) -> Path:
+    """A private copy of talks/test (some tests edit its script) under `tmp_path/talks/test`."""
+    target = tmp_path / "talks" / "test"
+    shutil.copytree(TEST_TALK_DIR, target)
+    return target
+
+
+def edit_script(talk_dir: Path, old: str, new: str) -> None:
+    script = talk_dir / "script.yaml"
+    text = script.read_text(encoding="utf-8")
+    assert old in text
+    script.write_text(text.replace(old, new), encoding="utf-8")
+
+
+def fake_render(talk_dir: Path, out: Path) -> Any:
+    """`python -m relay.render <talk> --fake` into `out` (offline, deterministic)."""
+    report = render_talk(load_talk(talk_dir), Settings(), fake=True, out_root=out)
+    assert report.ok, report
+    return report
 
 
 def wait_for(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
@@ -163,6 +190,9 @@ def test_api_talk_matches_the_design_shape(tmp_path: Path, web: Path) -> None:
     assert data == talk_json(controller.talk, controller.chunks, controller.settings)
     assert {key: data[key] for key in ("id", "presenter", "voice", "mic_mode", "fake_audio")} == {
         "id": "test", "presenter": "Ken", "voice": "chloe", "mic_mode": "tap", "fake_audio": True}
+    # what this server run presents: the deck compares it with the controller's hello after a reconnect
+    assert data["version"] == render_version(controller.talk, controller.chunks) == app.state.version
+    assert re.fullmatch(r"[0-9a-f]{12}", data["version"])
     title, how, qa = data["slides"]
     assert title == {"id": "title", "index": 0, "speaker": "human", "mode": None, "title": "Relay test talk",
                      "fragments": 0, "chunks": []}
@@ -193,16 +223,21 @@ def test_fake_audio_is_false_when_every_chunk_is_real(tmp_path: Path, web: Path)
 def test_media_serves_only_rendered_chunks_of_this_talk(tmp_path: Path, web: Path) -> None:
     chunks = synthetic_chunks(load_talk(TEST_TALK_DIR))
     wav = tmp_path / "renders" / "how-0.wav"
-    body = write_wav(wav)
+    body = write_wav(wav, chunks[("how", 0)].duration_ms)
     chunks[("how", 0)].wav_path = wav
-    chunks[("how", 1)].wav_path = tmp_path / "renders" / "missing.wav"  # listed but not on disk
     app, _ = build(tmp_path, web, chunks=chunks)
     with TestClient(app) as client:
         response = client.get("/media/how/0.wav")
         assert response.status_code == 200 and response.content == body
         assert response.headers["content-type"] == "audio/wav"
-        for url in ("/media/how/1.wav",  # file missing
-                    "/media/how/2.wav",  # no wav (synthetic)
+        assert response.headers["cache-control"] == "no-cache"  # the deck revalidates: cheap 304s
+        etag = response.headers["etag"]
+        for validator in (etag, f"W/{etag}", f'"other", {etag}', "*"):
+            unchanged = client.get("/media/how/0.wav", headers={"if-none-match": validator})
+            assert unchanged.status_code == 304 and unchanged.content == b"", validator
+            assert unchanged.headers["etag"] == etag
+        assert client.get("/media/how/0.wav", headers={"if-none-match": '"other"'}).content == body
+        for url in ("/media/how/1.wav", "/media/how/2.wav",  # no wav (synthetic)
                     "/media/how/9.wav", "/media/title/0.wav", "/media/nope/0.wav",  # not a rendered chunk
                     "/media/how/0.mp3", "/media/how/x.wav", "/media/how/-1.wav", "/media/how/0.wav.json"):
             assert client.get(url).status_code == 404, url
@@ -245,7 +280,7 @@ def test_create_app_loads_renders_from_out_root(tmp_path: Path, web: Path) -> No
     talk = load_talk(TEST_TALK_DIR)
     for (slide, index), chunk in synthetic_chunks(talk).items():
         wav, meta = chunk_paths(talk.id, slide, index, out)
-        write_wav(wav)
+        write_wav(wav, chunk.duration_ms)
         meta.write_text(json.dumps(chunk.to_json()), encoding="utf-8")
     holder: dict[str, StubController] = {}
 
@@ -258,6 +293,75 @@ def test_create_app_loads_renders_from_out_root(tmp_path: Path, web: Path) -> No
         assert client.get("/media/qa/0.wav").status_code == 200
         assert client.get("/api/talk").json()["fake_audio"] is True
     assert len(holder["c"].chunks) == 4
+
+
+HOW_0 = "Here is how this works. Everything"
+HOW_0_LONGER = "Here is how this works, in a few more words than last time. Everything"
+HOW_2 = ('      - say: "When someone cuts in, I stop on the word, answer live, and then pick up again from the '
+         'start of that sentence."\n        fragment: 3\n')
+
+
+def test_narration_is_a_snapshot_until_the_server_restarts(tmp_path: Path, web: Path) -> None:
+    """Design §3: a re-render under a running server (an edited line, a slide cut short) changes nothing it serves.
+    Audio, `/api/talk` and the controller's word timings stay one render until a restart presents the new one."""
+    talk_dir, out = copy_test_talk(tmp_path), tmp_path / "out"
+    fake_render(talk_dir, out)
+    app, controller = build(tmp_path, web, chunks=None, talk_dir=talk_dir)
+    with TestClient(app) as client:
+        before = client.get("/api/talk").json()
+        served = {n: client.get(f"/media/how/{n}.wav") for n in range(3)}
+
+        edit_script(talk_dir, HOW_0, HOW_0_LONGER)  # Ken edits a line and drops another, then re-renders
+        edit_script(talk_dir, HOW_2, "")
+        report = fake_render(talk_dir, out)
+        assert [entry.label for entry in report.rendered] == ["how/0"]
+        assert not chunk_paths("test", "how", 2, out)[0].exists()  # the render removed the dropped chunk
+
+        assert client.get("/api/talk").json() == before
+        how = before["slides"][1]["chunks"]
+        for n in range(3):
+            again = client.get(f"/media/how/{n}.wav")
+            assert again.status_code == 200 and again.content == served[n].content, f"how/{n}"
+            assert again.headers["etag"] == served[n].headers["etag"]
+            assert wav_duration_ms(again.content) == how[n]["duration_ms"] == controller.chunks[("how", n)].duration_ms
+        revalidated = client.get("/media/how/0.wav", headers={"if-none-match": served[0].headers["etag"]})
+        assert revalidated.status_code == 304
+
+    restarted, controller = build(tmp_path, web, chunks=None, talk_dir=talk_dir)
+    with TestClient(restarted) as client:
+        after = client.get("/api/talk").json()
+        assert after["version"] != before["version"]  # an open deck sees it in hello and reloads
+        how = after["slides"][1]["chunks"]
+        assert len(how) == 2 and how[0]["text"].startswith("Here is how this works, in a few more words")
+        fresh = client.get("/media/how/0.wav", headers={"if-none-match": served[0].headers["etag"]})
+        assert fresh.status_code == 200 and fresh.content != served[0].content
+        assert wav_duration_ms(fresh.content) == how[0]["duration_ms"] == controller.chunks[("how", 0)].duration_ms
+        assert client.get("/media/how/2.wav").status_code == 404
+
+
+def test_a_wav_that_disagrees_with_its_timings_refuses_to_start(tmp_path: Path, web: Path) -> None:
+    """A render that replaced a wav but not (yet) its timings must not reach the stage: the server refuses to start
+    and says what to do."""
+    talk_dir, out = copy_test_talk(tmp_path), tmp_path / "out"
+    fake_render(talk_dir, out)
+    wav, meta = chunk_paths("test", "how", 1, out)
+    made_for = json.loads(meta.read_text(encoding="utf-8"))["duration_ms"]
+    write_wav(wav, made_for + 1500)  # a new, longer take landed under the old timings
+    with pytest.raises(RenderMissing) as refused:
+        build(tmp_path, web, chunks=None, talk_dir=talk_dir)
+    message = str(refused.value)
+    assert f"how/1: the wav lasts {made_for + 1500} ms but its word timings were made for {made_for} ms" in message
+    assert "relay.render talks/test --force --only how" in message
+    assert "how/0" not in message and "qa/0" not in message
+
+    write_wav(wav, made_for + 5)  # within the tolerance: same take, rounding
+    app, _ = build(tmp_path, web, chunks=None, talk_dir=talk_dir)
+    app.state.log.close()
+
+    chunks = synthetic_chunks(load_talk(TEST_TALK_DIR))
+    chunks[("qa", 0)].wav_path = tmp_path / "renders" / "missing.wav"  # listed, but gone from disk
+    with pytest.raises(RenderMissing, match=r"qa/0: cannot read .*missing\.wav"):
+        build(tmp_path, web, chunks=chunks)
 
 
 # --- deck socket --------------------------------------------------------------------------------------------
@@ -352,32 +456,62 @@ def test_deck_hub_without_a_deck_drops_sends() -> None:
 
 
 class FakeSocket:
-    """Just enough of starlette's WebSocket for DeckHub; `stall = True` makes it stop reading (a hung tab)."""
+    """Just enough of starlette's WebSocket on uvicorn's websocket protocol (sansio) for DeckHub.
+
+    Like uvicorn, it writes nothing while the tab isn't reading, the close frame included: `stall = True` is a hung
+    tab, `stall = False` a tab that reads again. Like Starlette, a close counts as sent the moment it starts, so a
+    close that was cancelled half-way can never be sent again. Once the close is out, the app's `receive` ends.
+    """
 
     def __init__(self) -> None:
         self.sent: list[dict] = []
         self.inbox: asyncio.Queue = asyncio.Queue()
         self.closed: tuple[int, str] | None = None
-        self.stall = False
         self.client = None
+        self._writable = asyncio.Event()
+        self._writable.set()
+        self._closing = False
+        self._lost = False
+
+    @property
+    def stall(self) -> bool:
+        return not self._writable.is_set()
+
+    @stall.setter
+    def stall(self, value: bool) -> None:
+        if value:
+            self._writable.clear()
+        else:
+            self._writable.set()
 
     async def accept(self) -> None:
         pass
 
     async def send_text(self, text: str) -> None:
-        if self.stall:
-            await asyncio.Event().wait()
+        if self._closing:
+            raise RuntimeError('Cannot call "send" once a close message has been sent.')
+        await self._writable.wait()
+        if self._lost:
+            raise RuntimeError("the connection is gone")
         self.sent.append(json.loads(text))
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
-        if self.stall:
-            await asyncio.Event().wait()
+        if self._closing:
+            raise RuntimeError('Cannot call "send" once a close message has been sent.')
+        self._closing = True
+        await self._writable.wait()
+        if self._lost:
+            raise RuntimeError("the connection is gone")
         self.closed = (code, reason)
+        self.inbox.put_nowait({"type": "websocket.disconnect", "code": code})
 
     async def receive(self) -> dict:
         return await self.inbox.get()
 
     def gone(self) -> None:
+        """The tab is closed: the connection is lost, and writes waiting for it fail."""
+        self._lost = True
+        self._writable.set()
         self.inbox.put_nowait({"type": "websocket.disconnect", "code": 1001})
 
 
@@ -406,7 +540,9 @@ async def until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
         await asyncio.sleep(0.002)
 
 
-async def test_a_deck_that_stops_reading_is_dropped_instead_of_blocking_the_controller() -> None:
+async def test_a_deck_that_stops_reading_is_dropped_and_gets_4001_whenever_it_reads_again() -> None:
+    """D21: a hung tab never blocks the controller, which hears about it at once; the 4001 that makes the tab
+    reconnect goes out when the tab reads again, however late, instead of being abandoned while it is hung."""
     hub = DeckHub(send_timeout=0.05, close_timeout=0.05)
     controller, ws = HubController(hub), FakeSocket()
     serving = asyncio.create_task(hub.serve(ws, controller))
@@ -418,20 +554,84 @@ async def test_a_deck_that_stops_reading_is_dropped_instead_of_blocking_the_cont
     await hub.send({"type": "state"})  # bounded by send_timeout, never stuck
     assert asyncio.get_running_loop().time() - started < 1.0
     assert not hub.connected
-    await until(lambda: controller.calls[-1] == "disconnected")
+    await until(lambda: controller.calls[-1] == "disconnected", 1.0)  # while still hung: not after the close
     await hub.send({"type": "state"})  # no deck now: dropped at once
 
+    await asyncio.sleep(0.3)  # hung for far longer than any close timeout
     ws.inbox.put_nowait({"type": "websocket.receive", "text": json.dumps({"type": "key", "key": "next"})})
-    ws.gone()
+    await asyncio.sleep(0.02)
+    assert ws.closed is None  # nothing can be written to a hung tab
+    ws.stall = False  # it reads again: its backlog, then the close
+    await until(lambda: ws.closed == (STALLED_CLOSE_CODE, STALLED_REASON), 1.0)
     await serving
-    assert controller.calls == ["connected", "disconnected"]  # stale input ignored, one disconnect only
+    assert controller.calls == ["connected", "disconnected"]  # its stale key was ignored, one disconnect only
 
-    ws.stall = False
-    again = FakeSocket()  # the tab recovers and reconnects (4001 is not "replaced")
+    again = FakeSocket()  # so the tab reconnects (4001 is not "replaced") and drives the show again
     serving = asyncio.create_task(hub.serve(again, controller))
     await until(lambda: controller.calls[-1] == "connected")
     assert again.sent == [{"type": "hello"}] and hub.connected
+    again.inbox.put_nowait({"type": "websocket.receive", "text": json.dumps({"type": "arm"})})
+    await until(lambda: controller.calls[-1] == "msg arm")
     again.gone()
+    await serving
+
+
+async def test_a_dropped_deck_whose_close_failed_is_cut_off_when_it_talks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never a connected tab whose input is ignored: if the 4001 could not be sent, the handler ends the connection
+    (the tab sees it close and reconnects) as soon as the dropped tab sends anything."""
+    hub = DeckHub(send_timeout=0.05)
+    controller, ws = HubController(hub), FakeSocket()
+    serving = asyncio.create_task(hub.serve(ws, controller))
+    await until(lambda: controller.calls == ["connected"])
+
+    async def broken_close(code: int = 1000, reason: str = "") -> None:
+        raise RuntimeError("close failed")
+
+    monkeypatch.setattr(ws, "close", broken_close)
+    ws.stall = True
+    await hub.send({"type": "state"})
+    await until(lambda: controller.calls[-1] == "disconnected", 1.0)
+    ws.stall = False
+    await asyncio.sleep(0.02)
+    ws.inbox.put_nowait({"type": "websocket.receive", "text": json.dumps({"type": "key", "key": "space"})})
+    await asyncio.wait_for(serving, 1.0)  # the handler returned: uvicorn closes the connection
+    assert controller.calls == ["connected", "disconnected"]
+
+
+async def test_a_hung_deck_replaced_by_a_new_one_gets_4000_once_it_reads_again() -> None:
+    hub = DeckHub(send_timeout=0.3, close_timeout=0.5)
+    controller, old = HubController(hub), FakeSocket()
+    serving_old = asyncio.create_task(hub.serve(old, controller))
+    await until(lambda: controller.calls == ["connected"])
+    old.stall = True
+
+    new = FakeSocket()
+    started = asyncio.get_running_loop().time()
+    serving_new = asyncio.create_task(hub.serve(new, controller))
+    await until(lambda: controller.calls == ["connected", "disconnected", "connected"])
+    assert new.sent == [{"type": "hello"}]
+    assert asyncio.get_running_loop().time() - started < 0.4  # greeted at once, not after the old deck's close
+    await asyncio.sleep(0.6)  # the old tab stays hung past any close timeout
+    assert old.closed is None
+    old.stall = False
+    await until(lambda: old.closed == (REPLACED_CLOSE_CODE, REPLACED_REASON), 1.0)  # it won't reconnect
+    await serving_old
+    assert hub.connected and controller.calls == ["connected", "disconnected", "connected"]
+    new.gone()
+    await serving_new
+
+
+async def test_shutdown_gives_up_on_closes_still_waiting_for_a_hung_tab() -> None:
+    hub = DeckHub(send_timeout=0.05, close_timeout=0.05)
+    controller, ws = HubController(hub), FakeSocket()
+    serving = asyncio.create_task(hub.serve(ws, controller))
+    await until(lambda: controller.calls == ["connected"])
+    ws.stall = True
+    await hub.send({"type": "state"})
+    await until(lambda: controller.calls[-1] == "disconnected", 1.0)
+    await asyncio.wait_for(hub.close(), 1.0)  # bounded, even though the dropped tab never reads again
+    assert ws.closed is None
+    ws.gone()
     await serving
 
 
@@ -530,6 +730,9 @@ def test_cli_serves_with_flags(served: dict[str, Any], capsys: pytest.CaptureFix
     out = capsys.readouterr().out
     assert "http://localhost:8123" in out and "fake Realtime" in out and "fake narration audio" in out
     assert "live replies disabled" not in out
+    version = served["app"].state.version
+    assert f"narration loaded into memory (0 wav files, 0.0 MB, version {version})" in out
+    assert "a re-render takes effect at the next server restart" in out
 
 
 def test_cli_warns_that_live_replies_need_a_key(served: dict[str, Any], capsys: pytest.CaptureFixture[str]) -> None:

@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from .config import MIC_MODES, ROOT, TALKS, Settings, load_settings
 from .talk import Talk, TalkError
@@ -58,6 +58,13 @@ def deck_url(settings: Settings) -> str:
     return f"http://{host}:{settings.port}"
 
 
+def narration_note(narration: Mapping[tuple[str, int], Any], version: str) -> str:
+    """The startup line about the narration snapshot: what is loaded, and when a re-render takes effect."""
+    megabytes = sum(len(wav.body) for wav in narration.values()) / 1e6
+    return (f"narration loaded into memory ({len(narration)} wav files, {megabytes:.1f} MB, version {version}): a "
+            "re-render takes effect at the next server restart (an open deck then reloads itself; click Arm again)")
+
+
 def startup_notes(talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], settings: Settings) -> list[str]:
     """Warnings printed under the URL: what will not sound or behave like the real show."""
     notes = []
@@ -67,7 +74,8 @@ def startup_notes(talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], s
                      f"with `uv run python -m relay.render talks/{talk.id}`")
     estimated = sum(1 for chunk in chunks.values() if chunk.estimated)
     if estimated:
-        notes.append(f"{estimated} chunk(s) have estimated word timings (TTS returned no timestamps)")
+        notes.append(f"{estimated} chunk(s) have estimated word timings (TTS 3 gave no usable word timestamps): "
+                     "captions and cut points are approximate")
     if settings.fake_realtime:
         notes.append("fake Realtime (--fake-realtime): live replies are canned tones and captions, not Higgs")
     elif not settings.api_key:
@@ -104,6 +112,7 @@ def serve(args: argparse.Namespace) -> int:
     talk, chunks = app.state.talk, app.state.chunks
     print(f"Relay: talk '{talk.id}' ({len(talk.slides)} slides, {len(chunks)} narration chunks, voice {talk.voice}, "
           f"mic mode {settings.mic_mode})")
+    print(f"Relay: {narration_note(app.state.narration, app.state.version)}")
     print(f"Relay: open {deck_url(settings)} in Chrome, then click Arm")
     for note in startup_notes(talk, chunks, settings):
         print(f"  warning: {note}")

@@ -52,17 +52,34 @@
     eq("drained after 256", messages("drained").map((m) => m.played), [256]);
   }
 
-  // Progress about every 100 ms while samples flow; not while starved.
+  // Progress at once when output starts, then about every 100 ms while samples flow; not while starved.
   {
     const { send, quantum, messages } = make();
     send({ type: "start", reply: 3 });
     send({ type: "push", reply: 3, samples: new Float32Array(24000).fill(0.1) });
     for (let i = 0; i < 100; i++) quantum(); // 12800 samples
     const progress = messages("progress");
-    eq("progress count", progress.length, 5);
+    eq("progress: the start, then every 19 quanta", progress.map((m) => m.played), [128, 2560, 4992, 7424, 9856, 12288]);
     eq("progress monotonic", progress.every((m, i) => i === 0 || m.played > progress[i - 1].played), true);
     eq("progress reply", progress[0].reply, 3);
     eq("no drained without end", messages("drained").length, 0);
+  }
+
+  // A generation stall: nothing while the queue stands empty, and the restart is reported at once with its time,
+  // so the main thread never counts the stall as played audio.
+  {
+    const { send, quantum, messages } = make();
+    send({ type: "start", reply: 10 });
+    send({ type: "push", reply: 10, samples: new Float32Array(300).fill(0.1) });
+    for (let i = 0; i < 10; i++) quantum(); // 300 samples play in 3 quanta, then 7 starved quanta
+    eq("before the stall: the start report only", messages("progress").map((m) => m.played), [128]);
+    send({ type: "push", reply: 10, samples: new Float32Array(1000).fill(0.1) });
+    const t = currentTime;
+    quantum();
+    const after = messages("progress").slice(1);
+    eq("restart after the stall reported at once", after.map((m) => [m.played, m.time]), [[428, t]]);
+    for (let i = 0; i < 3; i++) quantum();
+    eq("then the regular cadence again", messages("progress").length, 2);
   }
 
   // Flush fades out over 10 ms, then reports `flushed` once and goes quiet; no drained.

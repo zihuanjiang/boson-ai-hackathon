@@ -114,3 +114,32 @@ Add our own findings here as we hit them (date them).
   think time, not Higgs: measure the real one with `python -m relay.verify latency` and in the event log.
 - The very first headless run took ~10 s between page load and `arm` (cold Chrome profile); the second took 0.23 s.
   Open and Arm the deck a few minutes before going on stage.
+- 2026-10-23 17:35, first live runs (smoke tests + `relay.verify`), key with hackathon credit:
+  - **A preset voice is validated against Boson's voices API on every new session, and that can be rate limited.**
+    After ~8 sessions in ~90 s (F1 + F2), a `session.update` with `voice: "chloe"` got `error`
+    `invalid_request_error` 400 "Session terminated due to Error while handling session update: Could not validate
+    voice 'chloe': voices API returned HTTP 429", and the session closed. Our link retries with backoff, so it heals
+    once the limit resets, but every retry costs another validation. Avoid bursts of new sessions (verify checks
+    back to back, reconnect loops); per-turn `session.update` must not resend the voice (D12 keeps it out).
+  - Live session ack (no turn_detection sent): `server_vad` with **threshold 0.85** (docs: 0.55), silence 500 ms,
+    prefix 300 ms, min_speech 0.125 s, `create_response`/`interrupt_response` true; transcription off
+    (`model: ""`); **temperature 0.3** (docs agree; the Aug 2026 note of 0.7 is outdated).
+  - TTS 3: mp3 1.9 s per short line; streaming first byte 0.35 s; `timestamps: true` returns a wav (24 kHz mono
+    PCM16) with words in **seconds in 80 ms steps**; words inside a sentence are back to back (end = next start)
+    and sentences have a real gap (~480–560 ms), which the resume offset uses. Tags never appear in the word list.
+    `<|prosody:pause|>` at a sentence break added only +80 ms over the natural pause.
+  - Realtime: connect → `session.created` ~250 ms; typed turn `response.create` → first audio delta median 461 ms
+    (413–492, n=5); reconnect ~260 ms (target ≤ 2 s); tool call ids look like `chatcmpl-tool-<32 hex>` (unique);
+    the model may call a tool before saying anything. A "repeat this line" prompt was followed word for word by
+    chloe, marcus and eleanor (F1); loudness TTS vs Realtime within 1 dB.
+  - Avatar: job for a 12 s clip = 16 s end to end (queued → completed in ~13 s); streaming first fMP4 fragment at
+    2.4 s, done in 11.7 s (faster than real time).
+  - Voice `default` is never validated (no 429 risk) and was faster: typed turn → first audio median 307 ms vs
+    461 ms for chloe; reconnect 245 ms (n=5). Its TTS reading ran 0.9 s longer than its Realtime reading of the same
+    line (chloe: 0.6 s, marcus 0.1 s, eleanor 0.0 s) and it is ~7 dB quieter than chloe.
+  - F7 idle: with no user audio, `session.idle_timeout` at 299.9 s, then close 1000 "Idle timeout: no user speech
+    for 300s" at 300.0 s; reconnect 327 ms and a typed turn answered (first audio 353 ms). During narration the mic
+    is closed, so the warm session is replaced every 5 min (one voice validation each time with a preset voice).
+  - First real render (`talks/test`, chloe): 22.1 s of narration vs 29.5 s for the fake estimate. TTS words come
+    without punctuation and some are zero-length (`a@1520-1520`); sentence ids still align. Sentence gaps 400 ms
+    (natural) and 720 ms (with `<|prosody:pause|>`), so resume offsets land mid-pause (1560 ms in both examples).

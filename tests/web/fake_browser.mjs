@@ -393,6 +393,12 @@ export const env = {
   noWorklet: false,
   /** @type {Function|null} */
   gumRelease: null,
+  /** location.reload() calls */
+  reloads: 0,
+  /** sessionStorage contents (a test may seed it before booting the page) */
+  session: new Map(),
+  /** when true, every sessionStorage call throws (storage blocked) */
+  noStorage: false,
   socket() {
     return this.sockets[this.sockets.length - 1];
   },
@@ -658,7 +664,23 @@ export function install(indexHtml) {
   g.fireDocument = (type, event) => {
     for (const fn of [...(docListeners[type] ?? [])]) fn(event);
   };
-  g.location = { protocol: "http:", host: "127.0.0.1:8000", hostname: "127.0.0.1" };
+  g.location = {
+    protocol: "http:",
+    host: "127.0.0.1:8000",
+    hostname: "127.0.0.1",
+    reload: () => {
+      env.reloads++;
+    },
+  };
+  const storage = () => {
+    if (env.noStorage) throw new Error("SecurityError: storage is blocked");
+    return env.session;
+  };
+  g.sessionStorage = {
+    getItem: (key) => (storage().has(key) ? storage().get(key) : null),
+    setItem: (key, value) => void storage().set(key, String(value)),
+    removeItem: (key) => void storage().delete(key),
+  };
   g.navigator = {
     mediaDevices: {
       getUserMedia: (constraints) => {

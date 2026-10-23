@@ -283,14 +283,31 @@ eq("key unrelated", [U.presenterKey(kd("a"), "tap"), U.presenterKey(kd("ArrowUp"
 ]);
 eq("key keypress ignored", U.presenterKey({ type: "keypress", key: " " }, "tap"), null);
 
-// revealText
-eq("reveal none", U.revealText("one two three four", 0), "");
-eq("reveal some", U.revealText("one two three four", 0.5), "one two");
-eq("reveal first word early", U.revealText("one two three four", 0.01), "one");
-eq("reveal all", U.revealText("one  two three four", 1), "one two three four");
-eq("reveal over", U.revealText("one two", 3), "one two");
-eq("reveal NaN", U.revealText("one two", NaN), "");
-eq("reveal empty", U.revealText("", 0.5), "");
+// liveWords / liveRevealCount (live caption: words heard so far, never ahead of the voice)
+eq("liveWords", U.liveWords("  one  two\nthree "), ["one", "two", "three"]);
+eq("liveWords empty", [U.liveWords(""), U.liveWords(null)], [[], []]);
+const S1 = 24000; // samples per second
+eq("reveal nothing heard", U.liveRevealCount(10, 0, 4800, false), 0);
+eq("reveal no audio yet (text first)", U.liveRevealCount(10, 0, 0, false), 0);
+eq("reveal no words", U.liveRevealCount(0, 4800, 4800, false), 0);
+eq("reveal first word as soon as audio is heard", U.liveRevealCount(10, 1, 48000, false), 1);
+eq("reveal NaN heard", U.liveRevealCount(10, NaN, 4800, false), 0);
+// text first: a whole sentence (32 words) arrived with the first audio; 0.175 s heard of 0.28 s received
+eq("text-first: capped at 4 words/s", U.liveRevealCount(32, 4200, 6720, false), 1);
+// the player nearly caught up with a trickle of audio (a stall): the share says 30 of 32, the voice said 3
+eq("stall: capped at 4 words/s", U.liveRevealCount(32, 0.6 * S1, 0.64 * S1, false), 3);
+// text in step with 6x audio: the share is the estimate (below the cap)
+eq("in step: the share of the audio", U.liveRevealCount(18, 1 * S1, 6 * S1, false), 3);
+eq("text behind the audio: never more than the share", U.liveRevealCount(8, 2 * S1, 6 * S1, false), 3);
+// all the audio is in: the share of the whole reply, no cap
+eq("ended: share of the whole reply", U.liveRevealCount(37, 120000, 236640, true), 19);
+eq("ended: everything at the end", U.liveRevealCount(37, 236640, 236640, true), 37);
+eq("heard past received is capped", U.liveRevealCount(5, 10 * S1, 1 * S1, true), 5);
+eq("never more than the words", U.liveRevealCount(3, 30 * S1, 30 * S1, false), 3);
+for (const [n, heard, received] of [[40, 0.5 * S1, 0.5 * S1], [40, 2 * S1, 2.1 * S1], [12, 3 * S1, 3 * S1]]) {
+  const shown = U.liveRevealCount(n, heard, received, false);
+  eq(`never faster than ${U.MAX_WORDS_PER_S} words/s (${n}, ${heard}, ${received}) → ${shown}`, shown <= Math.floor((heard / S1) * U.MAX_WORDS_PER_S) + 1, true);
+}
 
 // playedEstimate / samplesToMs
 eq("played no time passed", U.playedEstimate(2400, 10, 10, 9600), 2400);

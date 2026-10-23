@@ -2,11 +2,14 @@
 # Deck-client checks under macOS JavaScriptCore (no Node, no browser). Run from anywhere:
 #   bash tests/web/run.sh
 # 1. syntax + import linking of every module (jsc -m); worklets as scripts with a stubbed AudioWorkletGlobalScope
-# 2. unit tests: util.js, talk.js, the pcm-player and mic-capture worklets
+# 2. unit tests: util.js, talk.js, the pcm-player and mic-capture worklets; the reply player against the real
+#    pcm-player worklet (reply_played_ms across generation stalls)
 # 3. the real index.html + main.js booted in a fake browser (fake_browser.mjs), replaying the scripts/e2e_chrome.py
-#    flow plus degraded cases (missing audio, socket drops, worklet failures)
-# 4. static checks (offline assets, CSS variables and braces, selectors, script order)
-# Layout mocks for a visual check without the server: open tests/web/mock/*.html in Chrome.
+#    flow plus degraded cases (missing audio, socket drops, worklet failures), server restarts (reply ids, a new
+#    talk version → reload, the reload loop guard) and live captions against the real worklet
+# 4. static checks (offline assets, CSS variables and braces, selectors, script order, strip and click rules)
+# Layout mocks for a visual check without the server: open tests/web/mock/*.html in Chrome (strip.html checks
+# itself: it must say PASS at 1280×720 and at 1920×1080).
 set -u
 JSC=/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -38,8 +41,12 @@ run "util.js" "$JSC" -m tests/web/test_util.mjs
 run "talk.js" "$JSC" -m tests/web/test_talk.mjs
 run "pcm-player worklet" "$JSC" tests/web/worklet_stub.js web/worklets/pcm-player.js tests/web/test_pcm_player.js
 run "mic-capture worklet" "$JSC" tests/web/worklet_stub.js web/worklets/mic-capture.js tests/web/test_mic_capture.js
+run "reply player + worklet" "$JSC" -m tests/web/test_reply_player.mjs
 run "deck flow (fake DOM)" "$JSC" -m tests/web/test_flow.mjs
 run "degraded flow" "$JSC" -m tests/web/test_flow_degraded.mjs
+run "server restart" "$JSC" -m tests/web/test_restart.mjs
+run "reload loop guard" "$JSC" -m tests/web/test_reload_guard.mjs
+run "live captions" "$JSC" -m tests/web/test_live_reveal.mjs
 run "static" "$JSC" -m tests/web/test_static.mjs
 
 if [ "$fail" -ne 0 ]; then

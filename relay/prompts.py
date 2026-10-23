@@ -75,7 +75,9 @@ def state_block(talk: Talk, ctx: TurnContext) -> str:
         lines.append(f"{cut} in: {_quoted(ctx.cut_sentence)}" if ctx.cut_sentence else cut)
     if slide is not None and slide.plain:
         lines.append(f"Plain-language seed: {_quoted(slide.plain)}")
-    if ctx.phase == "qa" and talk.kb.strip():
+    # The fact sheet rides along whenever the Q&A slide is on screen, whatever the phase: after handoff_to_human
+    # (or H) the phase is `human`, and the run of show's backup question still needs the facts.
+    if talk.kb.strip() and (ctx.phase == "qa" or (slide is not None and slide.is_qa)):
         lines.append(f"Facts: {_facts(talk.kb)}")
     phase_line = PHASE_LINES.get(ctx.phase)
     if phase_line:

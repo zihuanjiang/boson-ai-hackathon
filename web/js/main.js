@@ -11,7 +11,16 @@ import { Deck } from "./deck.js";
 import { installKeys } from "./keys.js";
 import { DeckSocket, deckSocketUrl } from "./socket.js";
 import { Banner, Checklist, StatusStrip, Toasts } from "./status.js";
-import { chunkKey, chunkOf, fragmentFor, mediaUrl, narrationItems, normalizeTalk, slideOf as findSlide } from "./talk.js";
+import {
+  chunkKey,
+  chunkOf,
+  fragmentFor,
+  mediaUrl,
+  narrationItems,
+  normalizeTalk,
+  slideOf as findSlide,
+  staleTalk,
+} from "./talk.js";
 import { RATE, backoffMs, int16ToBase64, isNewerReply, meterLevel, toInt } from "./util.js";
 
 /** @typedef {import("./util.js").KeyAction} KeyAction */
@@ -19,15 +28,20 @@ import { RATE, backoffMs, int16ToBase64, isNewerReply, meterLevel, toInt } from 
 /** @typedef {import("./audio.js").Position} Position */
 /** @typedef {import("./talk.js").Talk} Talk */
 /** @typedef {import("./talk.js").TalkSlide} TalkSlide */
+/** @typedef {import("./captions.js").LiveAudio} LiveAudio */
 
 const HOLD_TAIL_MS = 120; // hold mode: send space_up this late, so the last 100 ms mic frame still goes out
 const RENDER_QUANTUM_MS = (128 / RATE) * 1000;
+const RELOAD_DELAY_MS = 1500; // a stale page shows why it reloads for this long first
+const RELOAD_KEY = "relay.staleReload"; // sessionStorage: the mismatch the last automatic reload was for
+const LISTEN_HINTS = { tap: "Space to send · Esc to cancel", hold: "Release Space to send · Esc to cancel" };
 
 const S = {
   /** @type {Talk|null} */
   talk: null,
   armed: false,
   arming: false,
+  reloading: false, // the server presents another talk or version: this page is about to reload
   micMode: "tap",
   micOpen: false, // the backend has the mic open: stream frames
   state: "IDLE",
@@ -285,21 +299,41 @@ function hideOverlay() {
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 }
 
-/** A click on the status strip brings the checklist back (mic meter, Realtime, preload) once armed. */
+/**
+ * A click on the status strip brings the checklist back (mic meter, Realtime, preload), but only while Relay is
+ * IDLE with no resume countdown running: a stray click must never cover a running narration, the mic or a reply.
+ * (Before Arm the checklist is up anyway.)
+ */
 function showOverlay() {
-  if (!S.armed) return;
+  if (S.armed && (S.state !== "IDLE" || banner.counting)) return;
   ui.overlay.hidden = false;
 }
 
 // ---------------------------------------------------------------- presenter keys and the typed box
 
+/** Where the live reply's audio is (drives the live caption). @returns {LiveAudio} */
+function liveAudio() {
+  return { heard: replies.heardNow(), received: replies.received, ended: replies.ended };
+}
+
+/**
+ * Flush the live reply (any, or only reply `reply`) and freeze its caption on the words heard: the same
+ * played_ms the backend truncates the model's copy of the reply to. Returns true when a reply was playing.
+ * @param {number|null} [reply]
+ */
+function cutReply(reply = null) {
+  const snap = replies.flush(reply);
+  if (snap) captions.replyCut({ heard: Math.round((snap.played_ms * RATE) / 1000), received: replies.received, ended: replies.ended });
+  return snap !== null;
+}
+
 /**
  * Stop everything Relay is saying, right now. Returns true when something was audible.
+ * @param {{keepSilentReply?: boolean}} [opts]  keepSilentReply: leave a reply that has no audio yet to the backend
  */
-function silence() {
+function silence(opts = {}) {
   const narrated = narration.stop() !== null;
-  const replied = replies.flush() !== null;
-  if (replied) captions.replyCut();
+  const replied = opts.keepSilentReply && replies.received === 0 ? false : cutReply();
   if (narrated || replied) {
     stopCaptionLoop();
     captions.freeze();
@@ -326,6 +360,14 @@ function logSilence(action, t0) {
  * @param {KeyboardEvent|null} event
  */
 function onKeyAction(action, event) {
+  if (S.reloading) {
+    toasts.show("Reloading this page: the server has a new version of the talk", "info");
+    return;
+  }
+  if (action === "esc" && !ui.overlay.hidden) {
+    hideOverlay(); // Esc over the checklist only closes it: it must not also cut a reply or cancel a countdown
+    return;
+  }
   hideOverlay();
   engine.ensureRunning();
   if (action === "space_up") {
@@ -343,6 +385,10 @@ function onKeyAction(action, event) {
   let silenced = false;
   switch (action) {
     case "space":
+      // A reply with no audio yet is inaudible, and the backend may ignore this Space (a second tap right after
+      // the turn ended is a double send): leave that reply to the backend, which flushes it if it cuts it.
+      silenced = silence({ keepSilentReply: true });
+      break;
     case "next":
     case "prev":
     case "human":
@@ -356,10 +402,7 @@ function onKeyAction(action, event) {
       }
       break;
     case "esc":
-      if (replies.flush() !== null) {
-        silenced = true;
-        captions.replyCut();
-      }
+      silenced = cutReply();
       if (S.micOpen) setMicOpen(false);
       break;
     default: // relay: the backend decides
@@ -401,8 +444,8 @@ function onTypedSubmit(e) {
   ui.typed.value = "";
   ui.typed.blur();
   if (!text) return;
-  if (!S.armed) {
-    toasts.show("Click Arm first", "info");
+  if (!S.armed || S.reloading) {
+    toasts.show(S.reloading ? "Reloading this page: ask again in a moment" : "Click Arm first", "info");
     return;
   }
   engine.ensureRunning();
@@ -499,7 +542,7 @@ function stopCaptionLoop() {
 function setMicOpen(open) {
   S.micOpen = open;
   status.micOpen(open);
-  if (open) captions.listening();
+  if (open) captions.listening(S.micMode === "hold" ? LISTEN_HINTS.hold : LISTEN_HINTS.tap);
   else captions.listeningDone();
 }
 
@@ -518,6 +561,8 @@ function onSocketClose(info) {
   S.serverUp = false;
   // The backend goes IDLE when the deck drops (design §5.1); mirror it so nothing keeps talking.
   silence();
+  // The next server may be a restarted one that numbers its replies from 1 again: forget the last reply's id.
+  replies.reset();
   clearTimeout(pendingSpaceUp);
   pendingSpaceUp = undefined;
   if (S.micOpen) setMicOpen(false);
@@ -554,6 +599,7 @@ const HANDLERS = new Map([
 
 /** @param {Msg} msg */
 function dispatch(msg) {
+  if (S.reloading) return; // nothing from a server whose talk this page doesn't have (stale narration, timings)
   const handler = HANDLERS.get(msg.type);
   if (!handler) return; // unknown types are fine
   try {
@@ -563,11 +609,64 @@ function dispatch(msg) {
   }
 }
 
+/** @param {() => void} fn */
+function tryStorage(fn) {
+  try {
+    fn();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The server presents another talk, or the same talk with other slides or narration (re-rendered or edited, then
+ * restarted): this page's slides, word timings and decoded audio are stale. Silence everything, say why, and reload
+ * (the Arm checklist then asks for Arm again). A mismatch that survives a reload is the server disagreeing with
+ * itself, not a stale page: warn and carry on rather than reload in a loop.
+ * @param {"talk"|"version"} why
+ * @param {string} serverKey  "<talk>@<version>" from the hello
+ */
+function onStaleTalk(why, serverKey) {
+  const talk = /** @type {Talk} */ (S.talk);
+  const mismatch = `${talk.id}@${talk.version} → ${serverKey}`;
+  let again = true;
+  const stored = tryStorage(() => {
+    again = sessionStorage.getItem(RELOAD_KEY) === mismatch;
+    if (!again) sessionStorage.setItem(RELOAD_KEY, mismatch);
+  });
+  if (!stored || again) {
+    const detail = `the server's ${why === "talk" ? "talk" : "talk version"} (${serverKey}) differs from this page's (${talk.id}@${talk.version}): restart the server, then reload this page (⌘R) and click Arm`;
+    checklist.set("talk", "warn", detail);
+    report("warning", `stale talk not reloaded (${stored ? "already reloaded once" : "no sessionStorage"}): ${mismatch}`);
+    toasts.show(`Talk mismatch: ${detail}`);
+    return;
+  }
+  S.reloading = true;
+  silence();
+  if (S.micOpen) setMicOpen(false);
+  banner.countdown(0);
+  report("info", `stale page (${why}): ${mismatch}: reloading`);
+  toasts.show(
+    why === "talk"
+      ? `The server now presents the talk "${serverKey.split("@")[0]}": reloading this page…`
+      : "The talk changed on the server (new render or edit): reloading this page…",
+    "info",
+  );
+  checklist.set("talk", "working", "the server has a new version of the talk: reloading…");
+  setTimeout(() => location.reload(), RELOAD_DELAY_MS);
+}
+
 /** @param {Msg} m */
 function onHello(m) {
   const talkId = typeof m.talk === "string" ? m.talk : m.talk && typeof m.talk === "object" ? m.talk.id : null;
-  if (talkId && S.talk && talkId !== S.talk.id) {
-    toasts.show(`The server now serves the talk "${talkId}": reload this page`);
+  const version = typeof m.version === "string" ? m.version : null;
+  const why = staleTalk(S.talk, talkId, version);
+  if (why) {
+    onStaleTalk(why, `${talkId ?? S.talk?.id ?? "?"}@${version ?? ""}`);
+    if (S.reloading) return;
+  } else if (S.talk && version !== null && version === S.talk.version) {
+    tryStorage(() => sessionStorage.removeItem(RELOAD_KEY)); // in sync again: a future mismatch may reload
   }
   if (typeof m.mic_mode === "string") setMicMode(m.mic_mode);
   const snap = m.snapshot;
@@ -587,6 +686,8 @@ function onState(m) {
   if ("thinking" in m) S.thinking = Boolean(m.thinking);
   if (typeof m.mic_mode === "string") setMicMode(m.mic_mode);
   if (m.slide !== undefined && m.slide !== null) S.slideRef = m.slide;
+  // The checklist never covers a running narration, the open mic or a live reply.
+  if (S.state === "NARRATING" || S.state === "LISTENING" || S.state === "REPLYING") hideOverlay();
   status.state(S.state, S.phase, S.thinking);
   banner.text(S.banner);
   if (S.state !== "IDLE") banner.countdown(0);
@@ -621,7 +722,8 @@ function onPlay(m) {
   const resumeWord = /** @type {number|null} */ (toInt(m.resume_word, null));
   const fragment = "fragment" in m ? /** @type {number|null} */ (toInt(m.fragment, null)) : fragmentFor(slide, k);
   banner.countdown(0);
-  if (replies.flush() !== null) captions.replyCut(); // nothing else may sound over narration
+  hideOverlay();
+  cutReply(); // nothing else may sound over narration
   deck.show(slideId, slide && slide.speaker === "human" ? null : fragment, slide ? slide.index : null);
   S.slideRef = slideId;
   S.lastPlay = { slide: slideId, chunk: k };
@@ -661,7 +763,7 @@ function setMicOpenFromServer(open) {
   if (open) {
     // The mic opens only once Relay is silent; make sure, or the speakers leak into the mic.
     narration.stop();
-    if (replies.flush() !== null) captions.replyCut();
+    cutReply();
     stopCaptionLoop();
     captions.freeze();
   }
@@ -681,8 +783,7 @@ function onReplyStart(m) {
 
 /** @param {Msg} m */
 function onReplyFlush(m) {
-  const reply = /** @type {number|null} */ (toInt(m.reply, null));
-  if (replies.flush(reply) !== null) captions.replyCut();
+  cutReply(/** @type {number|null} */ (toInt(m.reply, null)));
 }
 
 /** @param {Msg} m */
@@ -695,7 +796,7 @@ function onCaption(m) {
   if (m.role !== "assistant") return;
   const reply = /** @type {number|null} */ (toInt(m.reply, null));
   if (reply !== null && replies.reply !== null && reply !== replies.reply && !isNewerReply(reply, replies.reply)) return;
-  captions.assistant(text, reply);
+  captions.assistant(text, reply, reply === null || reply === replies.reply ? liveAudio() : undefined);
 }
 
 /** @param {Msg} m */
@@ -741,7 +842,7 @@ function boot() {
   narration = new NarrationPlayer(engine, { onEnded: onChunkEnded, onSilent: onSilentChunk });
   replies = new ReplyPlayer(engine, {
     onStart: (reply) => captions.replyStart(reply),
-    onProgress: () => captions.replyProgress(replies.fraction()),
+    onProgress: () => captions.replyProgress(liveAudio()),
     onDrained: onReplyDrained,
   });
   mic = new Microphone(engine, {
@@ -766,6 +867,9 @@ function boot() {
   });
   ui.arm.addEventListener("click", onArmClick);
   ui.done.addEventListener("click", hideOverlay);
+  ui.overlay.addEventListener("click", (e) => {
+    if (e.target === ui.overlay) hideOverlay(); // a click outside the panel (once armed)
+  });
   el(".strip").addEventListener("click", showOverlay);
   ui.typedForm.addEventListener("submit", onTypedSubmit);
   ui.typed.addEventListener("blur", () => {

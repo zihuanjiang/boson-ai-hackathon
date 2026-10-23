@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Relay layout mock: crowded status strips</title>
+    <link rel="stylesheet" href="../../../web/vendor/reveal/reset.css" />
+    <link rel="stylesheet" href="../../../web/vendor/reveal/reveal.css" />
+    <link rel="stylesheet" href="../../../web/vendor/reveal/theme/black.css" />
+    <link rel="stylesheet" href="../../../web/css/relay.css" />
+    <style>
+      /* Each case is one strip at its real size (the deck's grid: 90vw wide, --strip-h tall). Open this page in
+         Chrome at 1280×720 and at 1920×1080 (window size, or DevTools device toolbar): the verdict at the top must
+         say PASS. A failing strip gets a red outline and its overflowing parts are listed. */
+      body {
+        overflow: auto;
+      }
+      .cases {
+        display: grid;
+        gap: 2.2vh;
+        padding: 3vh var(--safe-x);
+      }
+      .case > p {
+        margin: 0 0 0.6vh;
+        font: 13px/1.3 var(--mono);
+        color: var(--fg-dim);
+      }
+      .case .strip {
+        height: var(--strip-h);
+      }
+      .case.fail .strip {
+        outline: 2px solid var(--c-fail);
+        outline-offset: 2px;
+      }
+      #verdict {
+        margin: 0;
+        padding: 1.2vh var(--safe-x);
+        font: 600 16px/1.3 var(--mono);
+      }
+      #verdict.pass {
+        color: var(--c-ok);
+      }
+      #verdict.fail {
+        color: var(--c-fail);
+      }
+    </style>
+  </head>
+  <body>
+    <p id="verdict">measuring…</p>
+    <div class="cases">
+      <section class="case" data-name="e2e final.png: two long applied tools, fake audio">
+        <p></p>
+        <header class="strip">
+          <div class="strip-group strip-left">
+            <span class="state-badge" data-state="IDLE"><i class="dot"></i><span class="state-text">Idle</span></span>
+            <span class="phase">Human</span>
+            <span class="where">Questions?</span>
+          </div>
+          <ol class="ticker">
+            <li class="tool" data-status="applied"><i class="tool-dot"></i><span class="tool-name">handoff_to_human()</span><span class="tool-status">applied</span></li>
+            <li class="tool" data-status="applied"><i class="tool-dot"></i><span class="tool-name">resume_script()</span><span class="tool-status">applied</span></li>
+            <li class="tool" data-status="applied"><i class="tool-dot"></i><span class="tool-name">start_presentation()</span><span class="tool-status">applied</span></li>
+          </ol>
+          <div class="strip-group strip-right">
+            <span class="latency"><span class="latency-label">reply</span> <span class="latency-value">352 ms</span></span>
+            <span class="meter" style="--level: 0.3"><span class="meter-fill"></span></span>
+            <span class="rt" data-status="ready"><i class="dot"></i><span class="rt-text">Realtime</span></span>
+            <span class="micmode">Tap</span>
+            <span class="badge fake-badge">Fake audio</span>
+            <span class="badge server-badge" hidden>Server offline</span>
+          </div>
+        </header>
+      </section>
+
+      <section class="case" data-name="long slide title (the label's max width) + two tools">
+        <p></p>
+        <header class="strip">
+          <div class="strip-group strip-left">
+            <span class="state-badge" data-state="NARRATING"><i class="dot"></i><span class="state-text">Narrating</span></span>
+            <span class="phase">Presenting</span>
+            <span class="where">How Relay knows exactly where it stopped and picks up again · 3/3</span>
+          </div>
+          <ol class="ticker">
+            <li class="tool" data-status="applied"><i class="tool-dot"></i><span class="tool-name">start_presentation()</span><span class="tool-status">applied</span></li>
+            <li class="tool" data-status="discarded"><i class="tool-dot"></i><span class="tool-name">goto_slide("details")</span><span class="tool-status">discarded</span></li>
+          </ol>
+          <div class="strip-group strip-right">
+            <span class="latency"><span class="latency-label">reply</span> <span class="latency-value">1.24 s</span></span>
+            <span class="meter" style="--level: 0.6"><span class="meter-fill"></span></span>
+            <span class="rt" data-status="ready"><i class="dot"></i><span class="rt-text">Realtime</span></span>
+            <span class="micmode">Tap</span>
+            <span class="badge fake-badge">Fake audio</span>
+          </div>
+        </header>
+      </section>
+
+      <section class="case" data-name="worst right-hand group: reconnecting, hold, fake audio, server offline">
+        <p></p>
+        <header class="strip offline">
+          <div class="strip-group strip-left">
+            <span class="state-badge thinking" data-state="REPLYING"><i class="dot"></i><span class="state-text">Thinking</span></span>
+            <span class="phase">Presenting</span>
+            <span class="where">How it works · 2/3</span>
+          </div>
+          <ol class="ticker">
+            <li class="tool" data-status="queued"><i class="tool-dot"></i><span class="tool-name">handoff_to_human()</span><span class="tool-status">queued</span></li>
+            <li class="tool" data-status="applied"><i class="tool-dot"></i><span class="tool-name">resume_script()</span><span class="tool-status">applied</span></li>
+          </ol>
+          <div class="strip-group strip-right">
+            <span class="latency"><span class="latency-label">reply</span> <span class="latency-value">1.24 s</span></span>
+            <span class="meter open" style="--level: 0.8"><span class="meter-fill"></span></span>
+            <span class="rt" data-status="reconnecting"><i class="dot"></i><span class="rt-text">Realtime reconnecting…</span></span>
+            <span class="micmode">Hold</span>
+            <span class="badge fake-badge">Fake audio</span>
+            <span class="badge server-badge">Server offline</span>
+          </div>
+        </header>
+      </section>
+
+      <section class="case" data-name="everything long at once">
+        <p></p>
+        <header class="strip offline">
+          <div class="strip-group strip-left">
+            <span class="state-badge" data-state="LISTENING"><i class="dot"></i><span class="state-text">Listening</span></span>
+            <span class="phase">Presenting</span>
+            <span class="where">How Relay knows exactly where it stopped and picks up again · 3/3</span>
+          </div>
+          <ol class="ticker">
+            <li class="tool" data-status="rejected"><i class="tool-dot"></i><span class="tool-name">goto_slide("a-very-long-slide-id…")</span><span class="tool-status">rejected</span></li>
+            <li class="tool" data-status="applied"><i class="tool-dot"></i><span class="tool-name">start_presentation()</span><span class="tool-status">applied</span></li>
+            <li class="tool" data-status="discarded"><i class="tool-dot"></i><span class="tool-name">handoff_to_human()</span><span class="tool-status">discarded</span></li>
+          </ol>
+          <div class="strip-group strip-right">
+            <span class="latency"><span class="latency-label">reply</span> <span class="latency-value">12.40 s</span></span>
+            <span class="meter open" style="--level: 1"><span class="meter-fill"></span></span>
+            <span class="rt" data-status="reconnecting"><i class="dot"></i><span class="rt-text">Realtime reconnecting…</span></span>
+            <span class="micmode">Hold</span>
+            <span class="badge fake-badge">Fake audio</span>
+            <span class="badge server-badge">Server offline</span>
+          </div>
+        </header>
+      </section>
+
+      <section class="case" data-name="before the first tool call">
+        <p></p>
+        <header class="strip">
+          <div class="strip-group strip-left">
+            <span class="state-badge" data-state="IDLE"><i class="dot"></i><span class="state-text">Idle</span></span>
+            <span class="phase">Opening</span>
+            <span class="where">Relay: a voice co-presenter</span>
+          </div>
+          <ol class="ticker"></ol>
+          <div class="strip-group strip-right">
+            <span class="latency"><span class="latency-label">reply</span> <span class="latency-value">—</span></span>
+            <span class="meter" style="--level: 0.2"><span class="meter-fill"></span></span>
+            <span class="rt" data-status="connecting"><i class="dot"></i><span class="rt-text">Realtime connecting…</span></span>
+            <span class="micmode">Tap</span>
+          </div>
+        </header>
+      </section>
+    </div>
+
+    <script>
+      // Every visible part of a strip must lie inside the strip; the newest tool chip must stay visible.
+      function check() {
+        const problems = [];
+        let failed = 0;
+        const cases = Array.from(document.querySelectorAll(".case"));
+        for (const section of cases) {
+          const strip = section.querySelector(".strip");
+          const box = strip.getBoundingClientRect();
+          const local = [];
+          for (const el of strip.querySelectorAll(".strip-group > *, .strip-group, .ticker")) {
+            if (el.hidden || el.offsetParent === null) continue;
+            const r = el.getBoundingClientRect();
+            if (r.left < box.left - 0.5 || r.right > box.right + 0.5) {
+              local.push(`${el.className || el.tagName} spans ${Math.round(r.left)}–${Math.round(r.right)}, strip ${Math.round(box.left)}–${Math.round(box.right)}`);
+            }
+          }
+          const ticker = strip.querySelector(".ticker");
+          const first = ticker.querySelector(".tool");
+          if (first) {
+            const t = ticker.getBoundingClientRect();
+            const r = first.getBoundingClientRect();
+            if (r.top >= t.bottom || r.width < 40) local.push(`newest tool chip not visible (${Math.round(r.width)} px wide)`);
+          }
+          const ticks = ticker.getBoundingClientRect();
+          const visible = Array.from(ticker.querySelectorAll(".tool")).filter((li) => li.getBoundingClientRect().top < ticks.bottom).length;
+          section.classList.toggle("fail", local.length > 0);
+          section.querySelector("p").textContent =
+            `${local.length ? "FAIL" : "ok"} · ${section.dataset.name} · ticker ${Math.round(ticks.width)} px, ${visible} chip(s) shown` +
+            (local.length ? ` · ${local.join(" · ")}` : "");
+          if (local.length) {
+            failed++;
+            problems.push(`${section.dataset.name}: ${local.join("; ")}`);
+          }
+        }
+        const verdict = document.getElementById("verdict");
+        const size = `${innerWidth}×${innerHeight}`;
+        verdict.className = failed ? "fail" : "pass";
+        verdict.textContent = failed
+          ? `FAIL at ${size}: ${failed}/${cases.length} strips overflow`
+          : `PASS at ${size}: all ${cases.length} strips fit`;
+        window.stripCheck = { size, failed, total: cases.length, problems };
+      }
+      document.fonts.ready.then(check);
+      addEventListener("resize", check);
+    </script>
+  </body>
+</html>

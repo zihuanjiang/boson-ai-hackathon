@@ -85,6 +85,20 @@ eq("chunk by index", T.chunkOf(talk.slides[1], 2)?.text, "E f.");
 eq("chunk missing", [T.chunkOf(talk.slides[1], 7), T.chunkOf(null, 0)], [null, null]);
 eq("chunk key", T.chunkKey("how", 2), "how/2");
 
+// render version (design §3: /api/talk `version`, the same value as hello.version)
+eq("version kept", T.normalizeTalk({ ...server, version: "3f1c0a9b2d4e" }).version, "3f1c0a9b2d4e");
+eq("no version → empty", [talk.version, T.normalizeTalk({ version: 7 }).version], ["", ""]);
+
+// a hello from a server that presents something else than the talk this page loaded
+const v1 = T.normalizeTalk({ ...server, version: "v1" });
+eq("same talk, same version", T.staleTalk(v1, "test", "v1"), null);
+eq("same talk, new render", T.staleTalk(v1, "test", "v2"), "version");
+eq("another talk", T.staleTalk(v1, "relay-intro", "v9"), "talk");
+eq("another talk, no version", T.staleTalk(v1, "relay-intro", undefined), "talk");
+eq("nothing to compare: hello without version", T.staleTalk(v1, "test", undefined), null);
+eq("nothing to compare: page without version", T.staleTalk(talk, "test", "v2"), null);
+eq("nothing to compare: no talk yet / odd fields", [T.staleTalk(null, "x", "y"), T.staleTalk(v1, null, null), T.staleTalk(v1, "", "")], [null, null, null]);
+
 // fragments while a chunk plays: cumulative max, human = all (null)
 eq("fragments per chunk", [0, 1, 2].map((k) => T.fragmentFor(talk.slides[1], k)), [1, 1, 3]);
 eq("no fragment fields → 0", T.fragmentFor(talk.slides[2], 0), 0);

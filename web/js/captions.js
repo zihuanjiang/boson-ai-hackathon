@@ -3,9 +3,10 @@
  * Captions band (doc/design.md §8). Narration: karaoke from the rendered word timings (said / being said / still to
  * come), one sentence-sized page at a time; on a cut the cut word is marked and the resume word flagged; when
  * narration resumes with `resume_word` the highlight sweeps back from the cut word to it ("the jump back").
- * Live: what the user said (mic prefix, its own colour) and Relay's live reply, revealed in step with its audio.
+ * Live: what the user said (mic prefix, its own colour) and Relay's live reply, revealed in step with what the
+ * room has heard of its audio (never ahead of the voice), frozen on the heard words when the reply is cut.
  */
-import { captionPages, clamp, displayWords, karaokeAt, pageOf, revealText } from "./util.js";
+import { captionPages, clamp, displayWords, karaokeAt, liveRevealCount, liveWords, pageOf } from "./util.js";
 
 /** @typedef {import("./util.js").Word} Word */
 /** @typedef {"idle"|"narration"|"live"} Mode */
@@ -18,6 +19,29 @@ import { captionPages, clamp, displayWords, karaokeAt, pageOf, revealText } from
  * @property {[number, number][]} pages
  * @property {string} text
  */
+/**
+ * Where the live reply's audio is, in samples (24 kHz).
+ * @typedef {object} LiveAudio
+ * @property {number} heard  the listener has heard this much (played minus output latency)
+ * @property {number} received  handed to the player so far
+ * @property {boolean} ended  reply_end came: no more audio for this reply
+ */
+/**
+ * @typedef {object} LiveReply
+ * @property {number|null} reply
+ * @property {string[]} words  the transcript so far
+ * @property {number} heard
+ * @property {number} received
+ * @property {boolean} ended
+ * @property {number} shown  words on screen (only ever grows while the reply plays)
+ * @property {boolean} done  played to its end: everything shows
+ * @property {string|null} cutText  frozen on a cut
+ */
+
+/** @param {number|null} reply @returns {LiveReply} */
+function freshLive(reply) {
+  return { reply, words: [], heard: 0, received: 0, ended: false, shown: 0, done: false, cutText: null };
+}
 
 const REWIND_STEP_MS = 45; // sweep speed, per word, from the cut word back to the resume word
 const REWIND_HOLD_MS = 1600; // the resume marker and the "back to the start" note stay this long
@@ -59,6 +83,7 @@ export class Captions {
     this.wordsEl = part(root, ".cap-words");
     this.liveEl = part(root, ".cap-live");
     this.liveTextEl = part(root, ".cap-live-text");
+    this.hintEl = part(root, ".cap-hint");
     /** @type {Mode} */
     this.mode = "idle";
     /** @type {Record<Flag, boolean>} */
@@ -82,8 +107,8 @@ export class Captions {
     this.floor = null;
 
     // live
-    /** @type {{reply: number|null, text: string, fraction: number, cutText: string|null}} */
-    this.live = { reply: null, text: "", fraction: 0, cutText: null };
+    /** @type {LiveReply} */
+    this.live = freshLive(null);
 
     /** @type {ReturnType<typeof setTimeout>|undefined} */
     this.fadeTimer = undefined;
@@ -393,16 +418,22 @@ export class Captions {
 
   // ---- live turn ----
 
-  /** The mic opened for a new turn: clear the last exchange, keep a frozen narration line (with its cut). */
-  listening() {
+  /**
+   * The mic opened for a new turn: clear the last exchange, keep a frozen narration line (with its cut).
+   * @param {string} [hint]  how the turn ends, e.g. "Space to send · Esc to cancel"
+   */
+  listening(hint = "") {
     this.wake();
     this.clearLive();
     this.setMode(this.chunk && this.cut ? "narration" : this.mode === "live" ? "idle" : this.mode);
     this.setFlag("listening", true);
+    this.hintEl.textContent = hint;
+    this.hintEl.hidden = !hint;
   }
 
   listeningDone() {
     this.setFlag("listening", false);
+    this.hintEl.hidden = true;
   }
 
   /**
@@ -424,55 +455,93 @@ export class Captions {
   /** A live reply begins (reply_start). @param {number} reply */
   replyStart(reply) {
     this.wake();
-    this.live = { reply, text: "", fraction: 0, cutText: null };
+    this.live = freshLive(reply);
     this.setMode("live");
     this.renderLive();
   }
 
   /**
-   * Relay's live transcript so far (the backend accumulates it).
+   * Relay's live transcript so far (the backend accumulates it). It may arrive before or after its audio: what
+   * shows is decided by what has been heard (reveal()), never by the text alone.
    * @param {string} text
    * @param {number|null} reply
+   * @param {LiveAudio} [audio]  the reply player's position now
    */
-  assistant(text, reply) {
+  assistant(text, reply, audio) {
     if (reply !== null && this.live.reply !== null && reply !== this.live.reply) return;
     if (this.live.reply === null) this.live.reply = reply;
     this.wake();
-    this.live.text = String(text ?? "");
+    this.live.words = liveWords(text);
+    if (audio) this.setAudio(audio);
     if (this.mode !== "live") this.setMode("live");
-    this.renderLive();
+    this.reveal();
   }
 
-  /** Share of the reply's audio played so far. @param {number} fraction */
-  replyProgress(fraction) {
-    if (!(fraction > this.live.fraction)) return;
-    this.live.fraction = Math.min(1, fraction);
+  /** The reply player reported progress. @param {LiveAudio} audio */
+  replyProgress(audio) {
+    this.setAudio(audio);
+    this.reveal();
+  }
+
+  /** @param {LiveAudio} audio */
+  setAudio(audio) {
+    const live = this.live;
+    if (Number.isFinite(audio.heard)) live.heard = Math.max(live.heard, audio.heard);
+    if (Number.isFinite(audio.received)) live.received = Math.max(live.received, audio.received);
+    live.ended = Boolean(audio.ended);
+  }
+
+  /** Words heard by `heard` samples (at least started) by the estimate of liveRevealCount. @param {number} heard */
+  heardWords(heard) {
+    const live = this.live;
+    return liveRevealCount(live.words.length, heard, live.received, live.ended);
+  }
+
+  /** Show the words heard so far; a word once shown stays (the estimate moves as text and audio arrive). */
+  reveal() {
+    const live = this.live;
+    if (live.cutText !== null) return;
+    live.shown = Math.max(live.shown, this.heardWords(live.heard));
     this.renderLive();
   }
 
   /** The reply played to its end. */
   replyDone() {
-    this.live.fraction = 1;
+    this.live.done = true;
     this.renderLive();
     if (this.mode === "live") this.fadeLater(LIVE_FADE_MS);
   }
 
-  /** The reply was cut off: keep exactly what had been heard, ending in a dash. */
-  replyCut() {
-    if (this.live.cutText === null) this.live.cutText = revealText(this.live.text, this.live.fraction);
+  /**
+   * The reply was cut off: keep the words heard, ending in a dash. `audio.heard` = what the listener had heard at
+   * the cut (the reply_played_ms the backend truncates the model's copy to); without `audio`, what is on screen.
+   * @param {LiveAudio} [audio]
+   */
+  replyCut(audio) {
+    const live = this.live;
+    if (live.cutText === null && !live.done) {
+      if (audio) this.setAudio(audio);
+      live.shown = Math.max(live.shown, this.heardWords(live.heard));
+      live.cutText = live.words.slice(0, live.shown).join(" ");
+    }
     this.renderLive();
   }
 
   renderLive() {
     const live = this.live;
-    const text = live.cutText !== null ? (live.cutText ? `${live.cutText} —` : "") : revealText(live.text, live.fraction);
+    const text =
+      live.cutText !== null
+        ? live.cutText
+          ? `${live.cutText} —`
+          : ""
+        : live.words.slice(0, live.done ? live.words.length : live.shown).join(" ");
     this.liveTextEl.textContent = text;
     this.liveEl.classList.toggle("empty", !text);
-    this.liveEl.classList.toggle("speaking", live.cutText === null && live.fraction > 0 && live.fraction < 1);
+    this.liveEl.classList.toggle("speaking", live.cutText === null && !live.done && live.shown > 0);
   }
 
   clearLive() {
-    this.live = { reply: null, text: "", fraction: 0, cutText: null };
+    this.live = freshLive(null);
     this.liveTextEl.textContent = "";
     this.liveEl.classList.add("empty");
     this.liveEl.classList.remove("speaking");

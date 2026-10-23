@@ -17,8 +17,8 @@ import requests
 from relay.config import RATE, TTS_MODEL, Settings
 from relay.textutil import strip_tags
 from relay.timeline import synthetic_timing
-from relay.tts import (CREDITS_URL, SPEECH_PATH, TTSError, TTSResult, fake_synthesize, pcm_to_wav, synthesize,
-                       wav_duration_ms)
+from relay.tts import (CREDITS_URL, SPEECH_PATH, TTSError, TTSResult, fake_synthesize, pcm_to_wav, read_wav_info,
+                       synthesize, wav_duration_ms)
 
 KEY = "bai-secret-test-key-0123456789"
 SETTINGS = Settings(api_key=KEY, base_url="https://tts.example.invalid")
@@ -317,10 +317,82 @@ def _with_data_size(wav: bytes, size: int) -> bytes:
     return wav[:data_at + 4] + struct.pack("<I", size) + wav[data_at + 8:]
 
 
-@pytest.mark.parametrize("data", [b"", b"RIFF", b"not a wav at all, just bytes",
-                                  _with_data_size(WAV, 0xFFFFFFFF), _with_data_size(WAV, 0), pcm_to_wav(b"")])
-def test_wav_duration_unusable_header(data):
+GUID_TAIL = bytes.fromhex("000000001000800000aa00389b71")  # KSDATAFORMAT_SUBTYPE_* after its two-byte format tag
+LIST_CHUNK = b"LIST" + struct.pack("<I", 26) + b"INFO" + b"ISFT" + struct.pack("<I", 14) + b"Lavf61.7.100\0\0"
+
+
+def riff_wav(seconds: float, *, rate: int = 24_000, bits: int = 16, tag: int = 1, channels: int = 1,
+             extensible: bool = False, data_size: int | None = None, riff_size: int | None = None,
+             before_data: bytes = b"", magic: bytes = b"RIFF") -> bytes:
+    """A wav built by hand: any format tag and sample size, WAVE_FORMAT_EXTENSIBLE, extra chunks, streamed sizes."""
+    frames = round(rate * seconds)
+    block = channels * bits // 8
+    fmt = struct.pack("<HHIIHH", 0xFFFE if extensible else tag, channels, rate, rate * block, block, bits)
+    if extensible:
+        fmt += struct.pack("<HHI", 22, bits, 4) + struct.pack("<H", tag) + GUID_TAIL
+    elif tag != 1:
+        fmt += struct.pack("<H", 0)  # cbSize
+    if tag == 3:  # float writers (scipy, soundfile, torchaudio) add a fact chunk
+        before_data = b"fact" + struct.pack("<II", 4, frames) + before_data
+    samples = bytes(frames * block)
+    body = (b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt + before_data
+            + b"data" + struct.pack("<I", len(samples) if data_size is None else data_size) + samples)
+    return magic + struct.pack("<I", len(body) if riff_size is None else riff_size) + body
+
+
+@pytest.mark.parametrize("data", [
+    riff_wav(3.0, tag=3, bits=32),                                     # IEEE float32 (format 3) + fact chunk
+    riff_wav(3.0, tag=3, bits=32, extensible=True),                    # float32 as WAVE_FORMAT_EXTENSIBLE
+    riff_wav(3.0, tag=3, bits=64),                                     # float64
+    riff_wav(3.0, data_size=0xFFFFFFFF, riff_size=0xFFFFFFFF),         # streamed header, PCM16 24 kHz
+    riff_wav(3.0, data_size=0, riff_size=0),                           # streamed header, sizes left at 0
+    riff_wav(3.0, rate=44_100, data_size=0xFFFFFFFF, riff_size=0xFFFFFFFF),  # streamed, 44.1 kHz
+    riff_wav(3.0, before_data=LIST_CHUNK),                             # ffmpeg-style LIST chunk before data
+    riff_wav(3.0, extensible=True),                                    # PCM16 as WAVE_FORMAT_EXTENSIBLE
+    riff_wav(3.0, rate=48_000, bits=24, channels=2),                   # PCM24 stereo 48 kHz
+    riff_wav(3.0, bits=32),                                            # PCM32
+    riff_wav(3.0, rate=16_000, bits=8),                                # PCM8 16 kHz
+    riff_wav(3.0, magic=b"RF64", data_size=0xFFFFFFFF, riff_size=0xFFFFFFFF),  # RF64
+    riff_wav(3.0, data_size=10 ** 9),                                  # data size past the end: what is there
+])
+def test_wav_duration_reads_the_real_format_from_the_header(data):
+    assert wav_duration_ms(data) == 3000
+
+
+def test_wav_info_describes_the_format():
+    info = read_wav_info(riff_wav(3.0, tag=3, bits=32, extensible=True))
+    assert (info.format_tag, info.channels, info.rate, info.bits) == (3, 1, 24_000, 32)
+    assert (info.frames, info.duration_ms) == (72_000, 3000)
+    assert info.describe() == "32-bit float, mono, 24000 Hz"
+    stereo = read_wav_info(riff_wav(1.0, rate=48_000, bits=24, channels=2))
+    assert stereo.describe() == "24-bit PCM, 2 channels, 48000 Hz"
+
+
+def test_streamed_header_sizes_mean_to_the_end_of_the_file():
+    assert wav_duration_ms(_with_data_size(WAV, 0xFFFFFFFF)) == 100
+    assert wav_duration_ms(_with_data_size(WAV, 0)) == 100
+
+
+def test_a_header_with_no_samples_lasts_zero_ms():
+    assert wav_duration_ms(pcm_to_wav(b"")) == 0
+
+
+@pytest.mark.parametrize("data,reason", [
+    (b"", "not a RIFF/WAVE file"),
+    (b"RIFF", "not a RIFF/WAVE file"),
+    (b"not a wav at all, just bytes", "not a RIFF/WAVE file"),
+    (b"ID3" + bytes(48_041), "not a RIFF/WAVE file"),                       # an mp3
+    (b"RIFF" + struct.pack("<I", 4) + b"WAVE", "no fmt chunk"),
+    (riff_wav(1.0)[:36], "no data chunk"),                                  # header cut before the data chunk
+    (riff_wav(1.0, tag=0x55, bits=16), "format tag 0x0055 is neither integer PCM nor float"),  # mp3 in a wav
+    (riff_wav(1.0, tag=3, bits=16), "odd header"),
+    (riff_wav(1.0, bits=12), "odd header"),
+    (riff_wav(1.0, channels=0), "odd header"),
+])
+def test_wav_duration_unusable_header(data, reason):
     assert wav_duration_ms(data) is None
+    with pytest.raises(ValueError, match=reason):
+        read_wav_info(data)
 
 
 def test_pcm_to_wav_round_trip():

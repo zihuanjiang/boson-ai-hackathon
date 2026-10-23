@@ -15,7 +15,8 @@ from typing import Literal
 import yaml
 
 from .config import PRESET_VOICES
-from .textutil import acronyms, ends_sentence, find_tags, has_digits, leading_tags, strip_tags, word_count
+from .textutil import (abbreviations, acronyms, ends_sentence, find_tags, has_digits, leading_tags,
+                       mid_sentence_breaks, strip_tags, word_count)
 
 MAX_SAY_CHARS = 300
 MAX_KB_WORDS = 500
@@ -198,6 +199,15 @@ def _check_say(say: str, where: str, issues: list[Issue]) -> None:
     found = acronyms(say)
     if found:
         issues.append(Issue("warning", where, f"acronyms {', '.join(found)}: check the pronunciation by ear"))
+    found = abbreviations(say)
+    if found:
+        issues.append(Issue("warning", where, f"abbreviations with periods ({', '.join(map(repr, found))}): spell "
+                                              "them out (a period followed by a space ends a sentence for the "
+                                              "cut/resume logic, and text normalisation is off with timestamps)"))
+    for last, first in mid_sentence_breaks(say):
+        issues.append(Issue("warning", where, f"{last!r} ends a sentence for the cut/resume logic, but the next word "
+                                              f"{first!r} is lowercase: a cut after it would resume mid-sentence (use "
+                                              "a comma or a dash there, or spell out the abbreviation)"))
 
 
 def _parse_chunks(slide_id: str, raw_chunks, fragments: int, issues: list[Issue]) -> list[Chunk]:
@@ -293,6 +303,15 @@ def _parse(root: Path) -> tuple[Talk | None, list[Issue]]:
     for name, ids in (("slides.md", md_ids), ("script.yaml", yaml_ids)):
         for slide_id in sorted({i for i in ids if ids.count(i) > 1 and i is not None}):
             issues.append(Issue("error", name, f"slide id {slide_id!r} appears more than once"))
+    # Ids become folder names, and macOS ignores case: `intro` and `Intro` would share out/talks/<id>/intro/ and
+    # overwrite or delete each other's chunks. (A script.yaml id not in slides.md is an error below anyway.)
+    first_spelling: dict[str, str] = {}
+    for slide_id in dict.fromkeys(md_ids):
+        first = first_spelling.setdefault(slide_id.casefold(), slide_id)
+        if first != slide_id:
+            issues.append(Issue("error", "slides.md", f"slide ids {first!r} and {slide_id!r} differ only in case: "
+                                                     "they would share one folder in out/ (macOS ignores case); "
+                                                     "rename one"))
     for slide_id in sorted(set(md_ids) - set(yaml_ids)):
         issues.append(Issue("error", "script.yaml", f"slide {slide_id!r} is in slides.md but not in script.yaml"))
     for slide_id in sorted({i for i in yaml_ids if i is not None} - set(md_ids)):

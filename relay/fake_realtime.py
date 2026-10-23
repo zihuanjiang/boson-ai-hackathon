@@ -15,9 +15,13 @@ Mic (turn detection on): ≥ 0.3 s of appended audio since the last `clear` → 
 `speech_stopped`, `committed`, transcript "(fake) I heard you.", then the reply (one turn per `clear`). With
 `turn_detection: null`, `commit` + `response.create` replies; so does `conversation.item.create` + `response.create`.
 
+`response.cancel` with nothing active gets Higgs's documented `error` (code `response_not_active`).
+
 Stricter than the real server on purpose (to catch our own bugs): a non-string `function_call_output.output`, an
 unknown client event type, or a client event before the first `session.update` gets an `error` event.
-Tests: `FakeConnector(sleep=..., speed=...)` fixes the timing knobs and keeps the connections it made.
+Tests: `FakeConnector(sleep=..., speed=...)` fixes the timing knobs and keeps the connections it made;
+`reuse_ids=True` numbers every id from 1 again on each connection (resp_fake000001, call_fake000001, …), like a server
+whose ids are unique only within a session, so a reconnect test can check that nothing keys on ids across sessions.
 """
 
 from __future__ import annotations
@@ -68,7 +72,7 @@ _ids = itertools.count(1)
 
 
 def _new_id(prefix: str) -> str:
-    """Unique for the whole process, so ids never repeat across reconnects."""
+    """Unique for the whole process, so ids never repeat across reconnects (the default; see `reuse_ids`)."""
     return f"{prefix}_fake{next(_ids):06d}"
 
 
@@ -81,6 +85,7 @@ class FakeOptions:
     speech_stop_s: float = 1.5  # appended audio before speech_stopped (end of turn)
     drop_after: float | None = None  # close each connection after this many seconds; None → RELAY_FAKE_DROP_AFTER
     sleep: SleepFn = asyncio.sleep  # every delay goes through this (tests inject their own)
+    reuse_ids: bool = False  # number ids per connection and prefix from 1 (a server numbering ids per session)
 
 
 def _env_drop_after() -> float | None:
@@ -94,10 +99,10 @@ def _env_drop_after() -> float | None:
 
 # --- session config -------------------------------------------------------------------------------------------
 
-def default_session(model: str | None) -> dict:
+def default_session(model: str | None, session_id: str | None = None) -> dict:
     """What the server resolves before any update (doc/higgs-realtime.md §2, defaults per doc/gotchas.md)."""
     return {
-        "type": "realtime", "object": "realtime.session", "id": _new_id("sess"), "model": model,
+        "type": "realtime", "object": "realtime.session", "id": session_id or _new_id("sess"), "model": model,
         "instructions": "You are a helpful AI assistant", "output_modalities": ["audio"],
         "audio": {
             "input": {"format": {"type": "audio/pcm", "rate": RATE}, "noise_reduction": None,
@@ -269,6 +274,7 @@ class FakeRealtimeConn:
         self.close_code: int | None = None
         self.close_reason = ""
         self._url_model = (parse_qs(urlsplit(url).query).get("model") or [None])[0]
+        self._id_counters: dict[str, itertools.count] | None = {} if self.options.reuse_ids else None
         self._queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._closed: Callable[[], ConnectionClosed] | None = None
         self._tasks: set[asyncio.Task] = set()
@@ -276,7 +282,7 @@ class FakeRealtimeConn:
         self._items: dict[str, dict] = {}
         self._item_audio_ms: dict[str, int] = {}
         self._last_item_id: str | None = None
-        self._conversation_id = _new_id("conv")
+        self._conversation_id = self._new_id("conv")
         self._user_text = ""  # what the "model" heard last: typed text or the fake transcript
         self._buffer_ms = 0.0  # audio appended since the last clear / commit
         self._audio_ms = 0.0  # all audio appended on this connection
@@ -375,9 +381,15 @@ class FakeRealtimeConn:
 
     # --- plumbing ---------------------------------------------------------------------------------------------
 
+    def _new_id(self, prefix: str) -> str:
+        """Unique for the whole process; with `reuse_ids`, unique only on this connection (1, 2, … per prefix)."""
+        if self._id_counters is None:
+            return _new_id(prefix)
+        return f"{prefix}_fake{next(self._id_counters.setdefault(prefix, itertools.count(1))):06d}"
+
     def _emit(self, kind: str, **fields: Any) -> None:
         if self._closed is None:
-            self._queue.put_nowait(json.dumps({"type": kind, "event_id": _new_id("event"), **fields}))
+            self._queue.put_nowait(json.dumps({"type": kind, "event_id": self._new_id("event"), **fields}))
 
     def _error(self, code: str, message: str, client_event: dict | None = None, *, param: str | None = None,
                kind: str = "invalid_request_error") -> None:
@@ -427,7 +439,7 @@ class FakeRealtimeConn:
         if problem:
             self._reject(event, *problem)
             return
-        self.session = merge_session(self.session or default_session(self._url_model), update)
+        self.session = merge_session(self.session or default_session(self._url_model, self._new_id("sess")), update)
         self._emit("session.created" if first else "session.updated", session=self.session)
 
     def _reject(self, event: dict, param: str, message: str) -> None:
@@ -461,12 +473,12 @@ class FakeRealtimeConn:
         options = self.options
         if self._vad == "idle" and self._buffer_ms >= options.speech_start_s * 1000:
             self._vad = "speaking"
-            self._speech_item = _new_id("item")
+            self._speech_item = self._new_id("item")
             self._emit("input_audio_buffer.speech_started", audio_start_ms=int(self._audio_ms - self._buffer_ms),
                        item_id=self._speech_item)
         if self._vad == "speaking" and self._buffer_ms >= options.speech_stop_s * 1000:
             self._vad = "stopped"
-            item_id = self._speech_item or _new_id("item")
+            item_id = self._speech_item or self._new_id("item")
             self._emit("input_audio_buffer.speech_stopped", audio_end_ms=int(self._audio_ms), item_id=item_id)
             self._commit(item_id)
             if self._response is not None:  # a new user turn interrupts whatever was still being generated
@@ -496,7 +508,7 @@ class FakeRealtimeConn:
                         f"of audio, got {self._buffer_ms:.0f}ms", event)
             return
         self._vad = "stopped"
-        self._commit(_new_id("item"))
+        self._commit(self._new_id("item"))
 
     def _on_clear(self, event: dict) -> None:
         self._buffer_ms = 0.0
@@ -510,7 +522,7 @@ class FakeRealtimeConn:
             self._error("invalid_value", "conversation.item.create needs an `item` object", event, param="item")
             return
         kind = item.get("type")
-        stored = {**copy.deepcopy(item), "id": item.get("id") or _new_id("item"), "object": "realtime.item",
+        stored = {**copy.deepcopy(item), "id": item.get("id") or self._new_id("item"), "object": "realtime.item",
                   "status": "completed"}
         if kind == "message":
             role = item.get("role")
@@ -574,8 +586,8 @@ class FakeRealtimeConn:
         self._start_response(overrides.get("instructions"))
 
     def _on_response_cancel(self, event: dict) -> None:
-        if self._response is None:
-            self._error("response_cancel_not_active", "there is no active response to cancel", event)
+        if self._response is None:  # Higgs's documented code (api-realtime-client-events.md, response.cancel)
+            self._error("response_not_active", "no active response", event)
             return
         self._cancel_response()
 
@@ -585,8 +597,9 @@ class FakeRealtimeConn:
         session = self.session or {}
         tool, args, text = choose_reply(instructions or session.get("instructions") or "", self._user_text,
                                         session.get("tools") or [])
-        reply = _Reply(id=_new_id("resp"), tool=tool, args=args, text=text, item_id=_new_id("item"),
-                       call_id=_new_id("call") if tool else None, call_item_id=_new_id("item") if tool else None,
+        reply = _Reply(id=self._new_id("resp"), tool=tool, args=args, text=text, item_id=self._new_id("item"),
+                       call_id=self._new_id("call") if tool else None,
+                       call_item_id=self._new_id("item") if tool else None,
                        text_mode=session.get("output_modalities") == ["text"])
         self._response = reply
         reply.task = self._spawn(self._play(reply))

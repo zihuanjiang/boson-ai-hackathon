@@ -30,12 +30,12 @@ from .config import OUT, ROOT, Settings, load_settings
 from .talk import Chunk, Slide, Talk, TalkError, check_talk, load_talk
 from .textutil import align_to_sentences, find_tags, norm_word, sentence_words, split_sentences, strip_tags
 from .timeline import RenderedChunk, Word, chunk_hash, chunk_paths, scale_timing, synthetic_timing, talk_out_dir
-from .tts import TTSError, TTSResult, fake_synthesize, synthesize, wav_duration_ms
+from .tts import TTSError, TTSResult, fake_synthesize, read_wav_info, synthesize
 
 Synth = Callable[[str, str], TTSResult]  # (say, voice) → wav + word timings
 Progress = Callable[[str], None]
 
-WAV_HEADER_BYTES = 44
+WAV_HEADER_BYTES = 44  # only for a wav header that can't be read: the duration is then guessed from the size
 BYTES_PER_MS = 48  # PCM16 mono at 24 kHz
 MS_FACTOR = 5  # timestamps whose largest value exceeds 5× the duration in seconds are already milliseconds
 _NUMERIC_RE = re.compile(r"[0-9]+")
@@ -96,6 +96,7 @@ def render_talk(talk: Talk, settings: Settings, *, fake: bool = False, force: bo
     report = RenderReport(talk_id=talk.id, out_dir=out_dir, fake=fake)
     todo: list[tuple[Slide, Chunk]] = []
     kept_real = 0
+    estimated: list[str] = []  # cached chunks on estimated timings: said again on every run, not just the first
     for slide in _selected_slides(talk, only):
         if not _safe_dir_name(slide.id):
             for chunk in slide.chunks:
@@ -109,11 +110,17 @@ def render_talk(talk: Talk, settings: Settings, *, fake: bool = False, force: bo
             if cached is None:
                 todo.append((slide, chunk))
             else:
-                report.cached.append(ChunkReport(slide.id, chunk.index, cached.duration_ms, cached.estimated))
+                entry = ChunkReport(slide.id, chunk.index, cached.duration_ms, cached.estimated)
+                report.cached.append(entry)
                 kept_real += fake and not cached.fake
+                if cached.estimated:
+                    estimated.append(entry.label)
     if kept_real:
         report.warnings.append(f"kept the real TTS 3 audio of {kept_real} chunk(s): a --fake run never replaces "
                                "real audio (add --force to replace it with placeholder tones)")
+    if estimated:
+        report.warnings.append(f"{len(estimated)} cached chunk(s) have estimated word timings ({', '.join(estimated)}):"
+                               " captions and cut points are approximate (--force --only <slide> asks TTS 3 again)")
     if only is None:
         report.warnings.extend(_foreign_dirs(out_dir, talk))
     if todo:
@@ -158,15 +165,24 @@ def chunk_json(data: dict) -> str:
 
 def build_rendered(slide_id: str, chunk: Chunk, voice: str, result: TTSResult, *,
                    fake: bool) -> tuple[RenderedChunk, list[str]]:
-    """The `<n>.json` content of one synthesized chunk (design §2), plus warnings. Raises TTSError on empty audio."""
+    """The `<n>.json` content of one synthesized chunk (design §2), plus warnings.
+
+    Raises TTSError when the audio is empty, or when TTS 3 found no speech in it (`timestamps: []` for a chunk with
+    words): such a chunk is not written, so a re-run asks TTS 3 again. `null` timestamps (alignment unavailable)
+    fall back to estimated timings.
+    """
     label = f"{slide_id}/{chunk.index}"
     warnings: list[str] = []
-    duration_ms = wav_duration_ms(result.wav)
-    if duration_ms is None:
+    try:
+        duration_ms = read_wav_info(result.wav).duration_ms
+    except ValueError as exc:  # not a wav we can measure: guess from the size, and say so
         duration_ms = max(0, (len(result.wav) - WAV_HEADER_BYTES) // BYTES_PER_MS)
-        warnings.append(f"{label}: unusable wav header; duration taken from the file size ({duration_ms} ms)")
+        warnings.append(f"{label}: unreadable wav header ({exc}); duration guessed from the file size as 16-bit PCM "
+                        f"mono 24 kHz ({duration_ms} ms): check the captions against the audio")
     if duration_ms <= 0:
         raise TTSError("the audio is empty", type="bad_response")
+    if result.words is not None and not result.words and sentence_words(chunk.text):
+        raise TTSError("no speech in the audio (`timestamps: []`)", type="no_speech")
     names = tag_word_names(chunk.say)
     timed = api_words_ms(result.words, duration_ms, drop=names)
     problem = _timing_problem(result.words, timed)
@@ -188,7 +204,7 @@ def _timing_problem(raw: list | None, timed: list[tuple[str, int, int]]) -> str 
     """Why the TTS timings can't be used (→ estimated timings), or None when they can."""
     if raw is None:
         return "TTS 3 returned no word timestamps (null)"
-    if not raw:
+    if not raw:  # only for a chunk without words: with words, build_rendered already failed it as no speech
         return "TTS 3 returned an empty word list"
     if not timed:
         return "TTS 3 returned no usable word timestamps"

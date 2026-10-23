@@ -10,9 +10,9 @@ import random
 
 import pytest
 
-from relay.textutil import (POSITIONAL_PROSODY, TAG_VALUES, Tag, acronyms, align_to_sentences, ends_sentence,
-                            find_tags, has_digits, leading_tags, norm_word, sentence_words, split_sentences,
-                            strip_tags, word_count)
+from relay.textutil import (POSITIONAL_PROSODY, TAG_VALUES, Tag, abbreviations, acronyms, align_to_sentences,
+                            ends_sentence, find_tags, has_digits, leading_tags, mid_sentence_breaks, norm_word,
+                            sentence_words, split_sentences, strip_tags, word_count)
 
 # --- tag vocabulary -------------------------------------------------------------------------------------------------
 
@@ -303,3 +303,37 @@ def test_acronyms(text, expected):
 ])
 def test_word_count(text, count):
     assert word_count(text) == count
+
+
+# --- false sentence ends (the cut/resume logic splits at every . ! ? … before a space) -------------------------------
+
+@pytest.mark.parametrize("text,expected", [
+    ("Ask Dr. Relay.", ["Dr."]),
+    ("e.g. this, i.e., that, in the U.S. at two a.m. or p.m.", ["e.g.", "i.e.", "U.S.", "a.m.", "p.m."]),
+    ("Mr. and Mrs. Jones vs. Ms. Smith, etc.", ["Mr.", "Mrs.", "vs.", "Ms.", "etc."]),
+    ("(e.g. this) “Dr.” said so.", ["e.g.", "Dr."]),
+    ("VS. ETC. Prof. St. Jr. approx. A.I.", ["VS.", "ETC.", "Prof.", "St.", "Jr.", "approx.", "A.I."]),
+    ("e.g e.g. and e.g. again", ["e.g", "e.g."]),  # once each, in order
+    ("Plan A. Then plan B. No. I. OK. Dr", []),  # single letters, real words, no period
+    ("Use the .env file on boson.ai or x.com.", []),
+    ("<|emotion:awe|>Wow. <|prosody:pause|> Big.", []),
+    ("", []),
+])
+def test_abbreviations(text, expected):
+    assert abbreviations(text) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("So clear… then it came out.", [("clear…", "then")]),
+    ("Wait... what? Yes. no!", [("Wait...", "what?"), ("Yes.", "no!")]),
+    ('He said "stop." then left.', [('"stop."', "then")]),
+    ("(Like this.) “and this.”", [("this.)", "“and")]),
+    ("<|emotion:awe|>Wow. <|prosody:pause|> big.", [("Wow.", "big.")]),
+    ("Ask Dr. Relay. Two a.m. comes.", []),  # breaks after an abbreviation are `abbreviations`' to report
+    ("One. Two! Three? Four…", []),
+    ("Meet the team. iOS support is next. — Bye.", []),
+    ("No sentence end", []),
+    ("", []),
+])
+def test_mid_sentence_breaks(text, expected):
+    assert mid_sentence_breaks(text) == expected

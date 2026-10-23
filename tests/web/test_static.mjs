@@ -79,6 +79,35 @@ check("captions ≥ 28px", /--cap:\s*max\(28px,/.test(css));
 check("5% safe area", /--safe-x:\s*5vw/.test(css) && /--safe-y:\s*5vh/.test(css));
 check("hidden attribute wins over display rules", /\[hidden\]\s*{\s*display:\s*none !important;/.test(css));
 
+/** Declarations of the rule whose selector list is exactly `selector` ("" when there is none). */
+function rule(selector) {
+  for (const m of bare.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (m[1].trim().replace(/\s+/g, " ") === selector) return m[2];
+  }
+  return "";
+}
+// Stray clicks: reveal jumps to the slide under the pointer when its progress bar (or the 10 px above it) is
+// clicked, behind the backend's back. The bar stays visible, for display only.
+check("reveal progress bar is display-only", /pointer-events:\s*none/.test(rule(".reveal .progress, .reveal .progress::after")));
+check("reveal progress bar still shown", /progress:\s*true/.test(read(`${ROOT}/web/js/deck.js`)));
+// A crowded status strip (two long tool names, every badge) must never push the right-hand group out of the strip:
+// the ticker gives way first (it gets only what is left, down to one chip), then the slide label, then the phase.
+// The real layout at 1280×720 and 1920×1080: open tests/web/mock/strip.html in Chrome (it checks itself).
+check("index.html: strip groups", html.includes('class="strip-group strip-left"') && html.includes('class="strip-group strip-right"'));
+check("strip: right-hand group never shrinks", /flex:\s*none/.test(rule(".strip-right")));
+check("strip: state badge never shrinks", /flex:\s*none/.test(rule(".strip-left .state-badge")));
+check("strip: ticker gets what is left (basis 0)", /flex:\s*1 1 0;/.test(rule(".ticker")));
+check("strip: ticker keeps room for one chip", /min-width:\s*var\(--ticker-min\)/.test(rule(".ticker")) && /--ticker-min:\s*\d/.test(rule(".ticker")));
+check("strip: newest chip ellipsises", /min-width:\s*0/.test(rule(".tool:first-child")) && /text-overflow:\s*ellipsis/.test(rule(".tool .tool-name")));
+for (const sel of [".where", ".phase"]) {
+  const r = rule(sel);
+  check(`strip: ${sel} truncates`, /min-width:\s*0/.test(r) && /overflow:\s*hidden/.test(r) && /text-overflow:\s*ellipsis/.test(r));
+}
+check("strip: the slide label shrinks before the phase", (() => {
+  const shrink = (sel) => Number((/flex:\s*0 (\d+) auto/.exec(rule(sel)) ?? [])[1]);
+  return shrink(".where") > shrink(".phase");
+})());
+
 // ---- every class the JS looks up exists in index.html (or is created by the JS itself)
 const lookedUp = new Set();
 const created = new Set();

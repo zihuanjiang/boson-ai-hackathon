@@ -224,6 +224,10 @@ ERRORS = [
      "error: slides.md: slide id 'how' appears more than once"),
     ("duplicate id in script.yaml", dict(script=setting(("slides", 2, "id"), "how")),
      "error: script.yaml: slide id 'how' appears more than once"),
+    # macOS ignores case: `how` and `How` would share out/talks/test/how/ and delete each other's chunks
+    ("ids differ only in case", dict(script=setting(("slides", 2, "id"), "How"),
+                                     slides=lambda md: md.replace('id="qa"', 'id="How"')),
+     "error: slides.md: slide ids 'how' and 'How' differ only in case"),
     ("order differs", dict(script=_swap_relay_slides),
      "error: script.yaml: slides must be in the same order as in slides.md"),
     ("talk is not the folder", dict(script=setting(("talk",), "other")),
@@ -332,6 +336,18 @@ def test_not_a_directory(tmp_path):
         load_talk(file)
 
 
+def test_a_case_collision_is_reported_once_per_pair(tmp_path):
+    def script(data: dict) -> None:
+        data["slides"][2]["id"] = "How"
+        data["slides"].append({"id": "How", "speaker": "human"})
+
+    root = package(tmp_path, script=script, slides=lambda md: md.replace('id="qa"', 'id="How"')
+                   + EXTRA_SLIDE.replace('id="extra"', 'id="How"'))
+    issues = issues_of(root)
+    assert sum("differ only in case" in issue for issue in issues) == 1, issues
+    assert "error: slides.md: slide id 'How' appears more than once" in issues
+
+
 def test_every_error_is_reported_at_once(tmp_path):
     def many(data: dict) -> None:
         data["voice"] = "alice"
@@ -371,9 +387,49 @@ def test_exactly_500_kb_words_is_fine(tmp_path):
     "Quotes can close a sentence: “like this.”",
     "Two sentences. In one chunk!",
     "<|style:whispering|>Psst?",
+    "How does it work? My script was pre-rendered.",
+    "No. That is not how it works.",
+    "Settings live in .env and on boson.ai.",
+    "Meet the team. iOS support is next.",
+    "That is plan A. Then comes plan B.",
 ])
 def test_valid_say_variants(tmp_path, text):
     assert issues_of(package(tmp_path, script=say(1, 1, text))) == []
+
+
+@pytest.mark.parametrize("text,found", [
+    ("Ask Dr. Relay anything about the deck and it answers from the facts.", "'Dr.'"),
+    ("Voice activity detection, e.g. the model listening for a finished thought, ends your turn.", "'e.g.'"),
+    ("It runs on a laptop vs. a server rack, and it still answers live.", "'vs.'"),
+    ("The idea that felt so clear at two a.m. comes out as a nervous tour of the code.", "'a.m.'"),
+    ("It was built in the U.S. and shipped everywhere.", "'U.S.'"),
+    ("Some tags, i.e., the delivery ones, go first.", "'i.e.'"),
+    ("We test, we fix, and so on, etc.", "'etc.'"),  # at the very end too: text normalisation is off
+    ("Meet Mr. and Mrs. Smith at the venue.", "'Mr.', 'Mrs.'"),
+])
+def test_abbreviations_with_periods_are_a_warning(tmp_path, text, found):
+    # their period ends a sentence for the cut/resume logic: a cut after "Dr." resumes at "Relay anything…"
+    root = package(tmp_path, script=say(1, 1, text))
+    issues = issues_of(root)
+    assert [issue for issue in issues if "abbreviation" in issue] == [
+        f"warning: script.yaml: how.chunks[1]: abbreviations with periods ({found}): spell them out (a period "
+        "followed by a space ends a sentence for the cut/resume logic, and text normalisation is off with "
+        "timestamps)"], issues
+    assert not any(issue.startswith("error: ") for issue in issues) and "lowercase" not in "".join(issues)
+    assert load_talk(root).chunk("how", 1).say == text  # a warning never blocks
+
+
+@pytest.mark.parametrize("text,last,first", [
+    ("The idea felt so clear… then it came out as a nervous tour of the code.", "clear…", "then"),
+    ("Wait... what happened to the demo?", "Wait...", "what"),
+    ("It takes about one min. to render a chunk.", "min.", "to"),  # an abbreviation the list doesn't know
+    ('He said "stop." then he left the stage.', '"stop."', "then"),
+])
+def test_a_sentence_break_before_a_lowercase_word_is_a_warning(tmp_path, text, last, first):
+    issues = issues_of(package(tmp_path, script=say(1, 1, text)))
+    assert issues == [f"warning: script.yaml: how.chunks[1]: {last!r} ends a sentence for the cut/resume logic, but "
+                      f"the next word {first!r} is lowercase: a cut after it would resume mid-sentence (use a comma "
+                      "or a dash there, or spell out the abbreviation)"]
 
 
 def test_fragment_edges_are_fine(tmp_path):

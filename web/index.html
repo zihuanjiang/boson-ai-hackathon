@@ -14,7 +14,7 @@
   <body>
     <div class="app">
       <header class="strip" aria-label="Relay status">
-        <div class="strip-group">
+        <div class="strip-group strip-left">
           <span class="state-badge" data-state="IDLE" title="Relay's state">
             <i class="dot" aria-hidden="true"></i><span class="state-text">Idle</span>
           </span>
@@ -52,6 +52,7 @@
       <section class="captions" data-mode="idle" aria-label="Captions">
         <div class="cap-meta">
           <span class="cap-tag" hidden></span>
+          <span class="cap-hint" hidden></span>
           <span class="cap-user" hidden>
             <svg class="ico-mic" viewBox="0 0 24 24" aria-hidden="true">
               <path
@@ -122,7 +123,7 @@
           <p class="panel-hint">Arm unlocks audio, asks for the mic, loads the narration and checks Realtime.</p>
         </div>
         <dl class="keys" aria-label="Presenter keys">
-          <div><dt><kbd>Space</kbd></dt><dd>talk / cut in</dd></div>
+          <div><dt><kbd>Space</kbd></dt><dd>talk / cut in, again to send</dd></div>
           <div><dt><kbd>Esc</kbd></dt><dd>cancel the turn</dd></div>
           <div><dt><kbd>→</kbd> <kbd>←</kbd></dt><dd>next / previous slide</dd></div>
           <div><dt><kbd>P</kbd></dt><dd>pause</dd></div>

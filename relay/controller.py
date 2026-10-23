@@ -23,7 +23,7 @@ from .config import RATE, REALTIME_MODEL, STT_MODEL, Settings
 from .ports import AsyncioClock, BrowserPort, Clock, LogFn, RealtimePort, Timer, null_log
 from .prompts import TurnContext, build_instructions
 from .talk import Slide, Talk
-from .timeline import CutPoint, RenderedChunk, Word, cut_point
+from .timeline import CutPoint, RenderedChunk, Word, cut_point, render_version
 
 IDLE = "IDLE"
 NARRATING = "NARRATING"
@@ -37,15 +37,23 @@ ORIGIN_PAUSED = "paused"
 ORIGIN_IDLE = "idle"
 
 LISTEN_SILENCE_S = 8.0  # tap mode: no speech_started this long after the floor opens → as Esc
-LISTEN_MAX_S = 30.0  # a turn that never ends → as Esc
+LISTEN_MAX_S = 30.0  # a turn that never ends: tap mode sends what was heard (speech started), else as Esc
 REPLY_WAIT_S = 8.0  # end of the user's turn → response.created, else back to origin
+REPLY_STALL_S = 8.0  # a bound reply with no event of its own this long (and no response.done) → treat it as done
+ERROR_GRACE_S = 1.5  # after a non-benign `error` mid-reply: this long without an event of the reply → as a stall
+DOUBLE_SEND_S = 1.0  # tap mode: Space this soon after a spoken turn ended (still thinking) was a "send": ignored
 COUNTDOWN_S = 3  # "Resuming…" after a reply that called no tool
 DRAIN_GRACE_S = 2.0  # drain fallback = remaining reply audio + this
 BYTES_PER_MS = RATE * 2 // 1000  # PCM16 mono at 24 kHz: 48 bytes per ms
+MAX_VAD_TAIL_MS = 5000  # speech_stopped.audio_end_ms this far behind the newest mic audio is not trusted
+USER_ITEMS_KEPT = 16  # user audio item ids remembered to match late transcripts to their turn
 SUMMARY_MAX_CHARS = 600
 SUMMARY_PREFIX = "Context only, do not reply. Earlier live exchanges in this talk: "
-TURN_TIMERS = ("listen_silence", "listen_max", "reply_wait", "drain")
+TURN_TIMERS = ("listen_silence", "listen_max", "reply_wait", "reply_stall", "drain")
 DROPPED = ("reconnecting", "error", "offline")
+CUT_CALL_OUTPUT = tools.error_output("not run: the reply was cut off")  # calls of a cut/stalled/rejected reply
+NOTHING_TO_CANCEL = frozenset({"response_not_active", "response_cancel_not_active"})  # Higgs docs; OpenAI
+SEND_RACE_ERRORS = frozenset({"voice_output_task_ongoing", "input_audio_buffer_commit_empty"})
 
 BANNER_HUMAN = "{presenter} has the floor"
 BANNER_OPENING = "{presenter} has the floor — tap Space to hand over"
@@ -86,16 +94,24 @@ class Turn:
     audio_item_id: str | None = None  # for conversation.item.truncate
     expects_response: bool = False
     response_done: bool = False
-    pending_create: bool = False  # response.create waits for another response's response.done
+    pending: list[dict] = field(default_factory=list)  # user item + response.create, held while a response is active
     queued: tools.ToolCall | None = None  # control tool applied on drained
     calls: dict[str, tuple[Any, Any]] = field(default_factory=dict)  # call_id → (name, arguments)
     user_text: str = ""
     assistant_text: str = ""
     mic_frames: int = 0
+    speech_started: bool = False  # turn detection heard speech in this turn
+    user_items: set[str] = field(default_factory=set)  # the user audio item ids of this turn (transcripts)
     audio_bytes: int = 0
-    speech_end_at: float | None = None  # end of the user's speech (latency metric)
+    ended_by: str | None = None  # how the user's turn ended: vad · hand (Space) · listen_max · hold · typed
+    stream_start_ms: float = 0.0  # session input-stream position when this turn's floor opened
+    marks: list[tuple[float, float]] = field(default_factory=list)  # (stream position after a mic frame, arrival)
+    turn_end_at: float | None = None  # when the user's turn ended (event, key or send)
+    speech_end_at: float | None = None  # end of the user's speech (latency metric): estimated, else turn_end_at
+    speech_end_estimated: bool = False
     first_audio_at: float | None = None
     remembered: bool = False  # stored in the history for the reconnect summary
+    history_index: int | None = None  # its entry in the history (a late transcript fills it in)
 
 
 def summary_text(exchanges: list[tuple[str, str]], limit: int = SUMMARY_MAX_CHARS) -> str | None:
@@ -166,8 +182,12 @@ def _error_fields(event: dict) -> tuple[str, str, str]:
     return str(error.get("type") or ""), str(error.get("code") or ""), str(error.get("message") or "")
 
 
-def _benign_error(code: str, message: str) -> bool:
-    """`response.cancel` with nothing to cancel: expected after a cut during "thinking"; log it, don't show it."""
+def _benign_error(err_type: str, code: str, message: str) -> bool:
+    """`response.cancel` with nothing to cancel: expected after a cut during "thinking"; log it, don't show it.
+    Higgs answers it with code `response_not_active` (some identifiers ride in `type`); the wording check is a
+    fallback for servers that phrase it differently."""
+    if NOTHING_TO_CANCEL & {err_type.strip().lower(), code.strip().lower()}:
+        return True
     text = f"{code} {message}".lower()
     return "cancel" in text and any(hint in text for hint in ("not_active", "not active", "no active", "nothing"))
 
@@ -189,8 +209,9 @@ class Controller:
         self.slide_index = 0  # deck position of the slide on screen
         self.cursor: Cursor | None = None  # NARRATING: the current play; otherwise where narration continues
         self.play_id = 0
-        self.started = False  # narration has started once
+        self.started = False  # narration has started once (re-armed on a human slide before the first relay slide)
         self.floor_human = False
+        self.floor_offline = False  # the presenter took the floor because Realtime was down: arrows move silently
         self.turn: Turn | None = None
         self.fragment: int | None = 0 if self.current_slide.is_relay else None  # visible on the current slide
         self.banner: str | None = None
@@ -199,9 +220,15 @@ class Controller:
         self._mic_open = False
         self._timers: dict[str, tuple[object, Timer]] = {}
         self._reply_seq = 0
+        # Per Realtime session (a new session numbers its ids afresh): forgotten on every `ready`.
         self._active: set[str] = set()  # responses created and not done yet (server side)
-        self._ignored: set[str] = set()  # responses whose later events are ignored (cut or unexpected)
-        self._answered: set[str] = set()  # call ids whose function_call_output went out
+        self._ignored: set[str] = set()  # responses whose later events are ignored (cut, stalled or unexpected)
+        self._answered: set[str] = set()  # call ids whose function_call_output went out (or waits in _owed)
+        self._done: set[str] = set()  # responses whose response.done arrived
+        self._owed: dict[str, list[dict]] = {}  # response id → function_call_outputs sent at its response.done
+        self._call_items: dict[str, str] = {}  # call id → its function_call item id (outputs go right after it)
+        self._user_items: dict[str, Turn] = {}  # user audio item id → its turn (late transcripts)
+        self._stream_ms = 0.0  # mic audio appended to this session's input stream (latency estimate)
         self._history: list[tuple[str, str]] = []  # (user, assistant) per finished turn
         self._ready_count = 0
         self._connection: tuple[str, str | None] = (str(getattr(realtime, "status", "offline")), None)
@@ -216,6 +243,7 @@ class Controller:
         self._event_handlers: dict[str, Callable[[dict], Awaitable[None]]] = {
             "input_audio_buffer.speech_started": self._ev_speech_started,
             "input_audio_buffer.speech_stopped": self._ev_speech_stopped,
+            "input_audio_buffer.committed": self._ev_committed,
             "conversation.item.input_audio_transcription.completed": self._ev_transcription,
             "response.created": self._ev_response_created,
             "response.output_audio.delta": self._ev_audio_delta,
@@ -459,8 +487,8 @@ class Controller:
         if self.state in (NARRATING, LISTENING, REPLYING):
             await self._halt(None, cut=False)
             self._set_state(IDLE, BANNER_PAUSED_R)
-        await self._send({"type": "hello", "talk": self.talk.id, "mic_mode": self.settings.mic_mode,
-                          "snapshot": self.snapshot()})
+        await self._send({"type": "hello", "talk": self.talk.id, "version": self._version(),
+                          "mic_mode": self.settings.mic_mode, "snapshot": self.snapshot()})
         if self.state != NARRATING:
             await self._send({"type": "stop"})
         if not self._mic_open:
@@ -469,6 +497,15 @@ class Controller:
         await self._sync_state(force=True)
         status, detail = self._connection
         await self._send({"type": "connection", "status": status, "detail": detail})
+
+    def _version(self) -> str | None:
+        """Identity of what this server run presents (`/api/talk` carries the same value): a deck that sees another
+        one after a reconnect is talking to a restarted server with other narration, and reloads."""
+        try:
+            return render_version(self.talk, dict(self.chunks))
+        except Exception as exc:  # noqa: BLE001 - the hello must go out whatever happens
+            self._note("controller_error", {"where": "render_version", "error": repr(exc)})
+            return None
 
     async def _browser_gone(self) -> None:
         await self._halt(None, cut=False)
@@ -481,7 +518,9 @@ class Controller:
         if self.state != LISTENING or not self._mic_open or turn is None or not isinstance(pcm, str) or not pcm:
             return
         turn.mic_frames += 1
-        await self._rt({"type": "input_audio_buffer.append", "audio": pcm})
+        if await self._rt({"type": "input_audio_buffer.append", "audio": pcm}):
+            self._stream_ms += _b64_bytes(pcm) / BYTES_PER_MS
+            turn.marks.append((self._stream_ms, self.clock.now()))  # where the stream was, when (latency)
 
     async def _on_key(self, msg: dict) -> None:
         key = msg.get("key")
@@ -490,12 +529,29 @@ class Controller:
         handler = self._key_handlers.get(key) if isinstance(key, str) else None
         if handler is None:
             return
+        if key == "space" and self._double_send(self.turn):
+            self._note("double_send_ignored", {"reply": self.turn.reply if self.turn else None,
+                                               "ended_by": self.turn.ended_by if self.turn else None})
+            return
         if key != "space_up":  # presenter keys always win: any key press discards a queued model action
             await self._discard_queued(f"key {key}")
         await handler(msg)
 
+    def _double_send(self, turn: Turn | None) -> bool:
+        """Tap mode: a Space within DOUBLE_SEND_S of the end of a spoken turn, before any reply audio, was meant as
+        "send" (turn detection, or a first Space, had just sent it): cutting the reply now would lose the question."""
+        return (self.settings.mic_mode != "hold" and self.state == REPLYING and turn is not None
+                and turn.ended_by in ("vad", "hand", "listen_max") and turn.first_audio_at is None
+                and not turn.response_done and turn.turn_end_at is not None
+                and self.clock.now() - turn.turn_end_at < DOUBLE_SEND_S)
+
     async def _key_space(self, msg: dict) -> None:
         if self.state == LISTENING:
+            # Tap mode: Space again = "send now" (room noise can keep turn detection from ever ending the turn).
+            # Before any audio reached us it is a bounce: ignored. Hold mode: Space is already down.
+            turn = self.turn
+            if self.settings.mic_mode != "hold" and turn is not None and turn.mic_frames > 0:
+                await self._send_turn(turn, "hand")
             return
         if not self.realtime.ready:
             await self._offline_floor(msg)
@@ -507,15 +563,7 @@ class Controller:
         turn = self.turn
         if self.settings.mic_mode != "hold" or self.state != LISTENING or turn is None:
             return
-        await self._close_mic(clear=False)
-        if turn.mic_frames == 0:  # released before any audio reached us: nothing to commit
-            await self._rt({"type": "input_audio_buffer.clear"})
-            await self._send_error(ERR_SILENCE)
-            await self._back_to_origin()
-            return
-        await self._rt({"type": "input_audio_buffer.commit"})
-        await self._request_response(turn)
-        self._enter_replying(turn)
+        await self._send_turn(turn, "hold")
 
     async def _key_esc(self, msg: dict) -> None:
         if self._countdown_running():
@@ -540,7 +588,10 @@ class Controller:
             await self._undo_local_stop(msg)
             return
         await self._halt(msg, cut=False)
-        await self._goto(target)
+        if self.floor_offline and self.state == IDLE:  # Realtime down, the presenter has the floor: no narration
+            await self._show(target)
+        else:
+            await self._goto(target)
 
     async def _undo_local_stop(self, msg: dict) -> None:
         """The deck stops narration and flushes the reply on → ← before telling us; at the deck edge the key is
@@ -619,9 +670,8 @@ class Controller:
         self.turn = turn
         turn.user_text = text
         await self._rt(self._turn_update())
-        await self._rt(_user_message(text))
-        await self._request_response(turn)
-        self._enter_replying(turn)
+        await self._request_response(turn, _user_message(text))
+        self._enter_replying(turn, "typed")
         await self._send({"type": "caption", "role": "user", "text": text, "final": True, "reply": turn.reply})
 
     # --- live turn mechanics ----------------------------------------------------------------------------------
@@ -640,15 +690,19 @@ class Controller:
         else:
             origin = ORIGIN_IDLE
         await self._halt(msg, cut=True)
+        self.floor_offline = False
         return Turn(origin=origin)
 
     async def _offline_floor(self, msg: dict) -> None:
-        """Realtime is down: the tap gives the presenter the floor (narration stops at the cut; R resumes)."""
+        """Realtime is down: the tap gives the presenter the floor (narration stops at the cut; R resumes). Until
+        narration starts again, → / ← only move the deck (the presenter is talking over it)."""
         await self._take_floor(msg)
+        self.floor_offline = True
         self._set_state(IDLE, BANNER_OFFLINE.format(presenter=self.talk.presenter))
 
     async def _open_floor(self, turn: Turn) -> None:
         self.turn = turn
+        turn.stream_start_ms = self._stream_ms
         await self._rt(self._turn_update())
         await self._rt({"type": "input_audio_buffer.clear"})
         self._mic_open = True
@@ -658,34 +712,55 @@ class Controller:
             self._start_timer("listen_silence", LISTEN_SILENCE_S, self._on_listen_silence)
         self._start_timer("listen_max", LISTEN_MAX_S, self._on_listen_max)
 
-    def _enter_replying(self, turn: Turn) -> None:
-        """The user's turn is over (speech_stopped, commit or typed): wait for the reply."""
+    def _enter_replying(self, turn: Turn, ended_by: str) -> None:
+        """The user's turn is over (speech_stopped, a commit or a typed question): wait for the reply."""
         self._reply_seq += 1
         turn.reply = self._reply_seq
         turn.expects_response = True
-        turn.speech_end_at = self.clock.now()
+        turn.ended_by = ended_by
+        turn.turn_end_at = turn.speech_end_at = self.clock.now()
         self._cancel_timer("listen_silence")
         self._cancel_timer("listen_max")
         self._start_timer("reply_wait", REPLY_WAIT_S, self._on_reply_wait)
         self._set_state(REPLYING, None)
 
-    async def _request_response(self, turn: Turn) -> None:
-        """response.create, or — while another response is still active — cancel that one first and create only
-        after its response.done (Higgs rejects a create while a response is active)."""
-        if not self._active:
-            await self._rt({"type": "response.create"})
+    async def _send_turn(self, turn: Turn, how: str) -> None:
+        """End the user's turn ourselves (hold-mode release, Space "send now", listen-max): commit what was heard
+        and ask for the reply. Nothing reached us → clear, "Didn't catch that", back to origin (an empty commit is
+        rejected)."""
+        await self._close_mic(clear=False)
+        if turn.mic_frames == 0:
+            await self._rt({"type": "input_audio_buffer.clear"})
+            await self._send_error(ERR_SILENCE)
+            await self._back_to_origin()
             return
-        turn.pending_create = True
+        await self._request_response(turn, {"type": "input_audio_buffer.commit"})
+        self._enter_replying(turn, how)
+        self._note("turn_sent", {"how": how, "frames": turn.mic_frames, "reply": turn.reply})
+
+    async def _request_response(self, turn: Turn, first: dict) -> None:
+        """`first` (the user's message, or the commit of their audio) and response.create — or, while another
+        response is still active, cancel that one and send both only after its response.done: Higgs rejects a
+        commit (and, without turn detection, a create) while a response is active, and the cut response's tool
+        calls get their outputs before the new user item."""
+        events = [first, {"type": "response.create"}]
+        if not self._active:
+            for event in events:
+                await self._rt(event)
+            return
+        turn.pending = events
         if self._active - self._ignored:
             self._ignored |= self._active
             await self._rt({"type": "response.cancel"})
 
-    async def _create_if_pending(self) -> None:
+    async def _send_pending(self) -> None:
+        """The held-back user item + response.create, once no response is active any more."""
         turn = self.turn
-        if (turn is not None and turn.pending_create and not self._active and self.state == REPLYING
+        if (turn is not None and turn.pending and not self._active and self.state == REPLYING
                 and turn.response_id is None):
-            turn.pending_create = False
-            await self._rt({"type": "response.create"})
+            events, turn.pending = turn.pending, []
+            for event in events:
+                await self._rt(event)
 
     async def _close_mic(self, *, clear: bool) -> None:
         if self._mic_open:
@@ -696,14 +771,18 @@ class Controller:
 
     async def _cut_reply(self, msg: dict | None) -> None:
         """Cut the live reply off: cancel it if still generating, truncate the model's memory of it to what was
-        actually played, flush the deck's reply player; its later events are ignored."""
+        actually played, flush the deck's reply player; its later events are ignored, and the tool calls it already
+        announced never run (each gets an error output at its response.done)."""
         turn = self.turn
         if turn is None:
             return
-        if not turn.response_done and (turn.response_id is not None or not turn.pending_create):
+        if not turn.response_done and (turn.response_id is not None or not turn.pending):
             await self._rt({"type": "response.cancel"})
         if turn.response_id is not None:
             self._ignored.add(turn.response_id)
+            if not turn.response_done:
+                for call_id in turn.calls:
+                    await self._owe_output(turn.response_id, call_id, CUT_CALL_OUTPUT)
         played = None
         if turn.audio_item_id and turn.audio_bytes > 0:
             played = self._played_ms(msg, turn)
@@ -747,11 +826,13 @@ class Controller:
             self._cancel_timer(name)
 
     def _remember(self, turn: Turn) -> None:
+        """Store the finished turn for the reconnect summary (empty exchanges included: a late transcript may still
+        fill one in; summary_text skips them)."""
         if turn.remembered:
             return
         turn.remembered = True
-        if turn.user_text.strip() or turn.assistant_text.strip():
-            self._history.append((turn.user_text.strip(), turn.assistant_text.strip()))
+        turn.history_index = len(self._history)
+        self._history.append((turn.user_text.strip(), turn.assistant_text.strip()))
 
     async def _discard_queued(self, reason: str) -> None:
         turn = self.turn
@@ -820,13 +901,15 @@ class Controller:
         self.cursor = cursor
         self.started = True
         self.floor_human = False
+        self.floor_offline = False
         self._cut_info = None
         await self._send({"type": "play", "play_id": self.play_id, "slide": slide.id, "chunk": cursor.chunk,
                           "offset_ms": cursor.offset_ms, "fragment": fragment, "resume_word": cursor.resume_word})
         self._set_state(NARRATING, None)
 
     async def _goto(self, index: int) -> None:
-        """Show slide `index`: a relay slide narrates from chunk 0, a human slide leaves the presenter the floor."""
+        """Show slide `index`: a relay slide narrates from chunk 0, a human slide leaves the presenter the floor
+        (one before the first relay slide re-arms the opening)."""
         slide = self.talk.slides[index]
         if slide.is_relay and slide.chunks:
             await self._play(Cursor(slide.id, 0), show_slide=True)
@@ -835,8 +918,31 @@ class Controller:
         self.cursor = None
         self._cut_info = None
         self.fragment = self._fragments(slide, 0)
+        self._rearm_opening(index)
         await self._send({"type": "slide", "slide": slide.id, "fragment": self.fragment})
-        self._set_state(IDLE, self._banner_human() if not slide.is_relay else self._phase_banner())
+        self._set_state(IDLE, self._phase_banner())
+
+    async def _show(self, index: int) -> None:
+        """The offline floor's → / ←: show slide `index` without narrating; a relay slide waits at chunk 0 for R."""
+        slide = self.talk.slides[index]
+        self.slide_index = index
+        self.cursor = Cursor(slide.id, 0) if slide.is_relay and slide.chunks else None
+        self._cut_info = None
+        self.fragment = self._fragments(slide, 0)
+        self._rearm_opening(index)
+        await self._send({"type": "slide", "slide": slide.id, "fragment": self.fragment})
+        self._set_state(IDLE, BANNER_OFFLINE.format(presenter=self.talk.presenter))
+
+    def _rearm_opening(self, index: int) -> None:
+        """Back on a human slide before the first relay slide (a sound check with R, a projector check with →, a
+        stray clicker press): the talk hasn't been handed over yet, so the next tap is the opening again."""
+        first = self.talk.next_relay_index(0)
+        if first is None or index >= first or self.talk.slides[index].is_relay:
+            return
+        if self.started or self.floor_human:
+            self._note("opening_rearmed", {"slide": self.talk.slides[index].id})
+        self.started = False
+        self.floor_human = False
 
     async def _start_presentation(self) -> None:
         first = self.talk.next_relay_index(0)
@@ -964,6 +1070,30 @@ class Controller:
                                  "response_id": turn.response_id})
         return True
 
+    def _remember_call_item(self, call_id: Any, item_id: Any) -> None:
+        if isinstance(call_id, str) and call_id and isinstance(item_id, str) and item_id:
+            self._call_items[call_id] = item_id
+
+    async def _owe_output(self, response_id: str, call_id: Any, output: str) -> None:
+        """One function_call_output for a call of a response that won't run normally (cut, stalled or rejected).
+        It goes out at that response's response.done — at once if that already came — so it never lands while the
+        response is still generating, inserted right after its own call item so it can't end up after a newer user
+        item. Never followed by response.create."""
+        if not isinstance(call_id, str) or not call_id or call_id in self._answered:
+            return
+        self._answered.add(call_id)
+        event: dict[str, Any] = {"type": "conversation.item.create",
+                                 "item": {"type": "function_call_output", "call_id": call_id, "output": output}}
+        if call_id in self._call_items:
+            event["previous_item_id"] = self._call_items[call_id]
+        sent_now = response_id in self._done
+        if sent_now:
+            await self._rt(event)
+        else:
+            self._owed.setdefault(response_id, []).append(event)
+        self._note("tool_output", {"call_id": call_id, "response_id": response_id, "output": output,
+                                   "sent": "now" if sent_now else "at response.done"})
+
     def _plan(self, call: tools.ToolCall) -> tuple[bool, str]:
         """(runnable, function_call_output) for a parsed call, judged now; it runs later, on drained."""
         name = call.name
@@ -996,9 +1126,10 @@ class Controller:
                 return True, tools.ok_output(slide=self.talk.slides[first].id)
         return True, tools.ok_output(note=tools.NOTHING_TO_RESUME)
 
-    async def _settle_calls(self, turn: Turn) -> None:
+    async def _settle_calls(self, turn: Turn, *, owe: bool = False) -> None:
         """Validate the response's calls, send one function_call_output per call (never response.create), and
-        queue the last runnable one; earlier runnable ones are discarded."""
+        queue the last runnable one; earlier runnable ones are discarded. With `owe` (a stalled response, still
+        open on the server) the outputs wait for its response.done."""
         plans: list[tuple[str, str, dict, tools.ToolCall | None, str]] = []
         for call_id, (name, arguments) in turn.calls.items():
             if call_id in self._answered:
@@ -1021,9 +1152,12 @@ class Controller:
             else:
                 status = "discarded"
                 output = tools.error_output(f"not run: {winner.name if winner else 'another call'} came after it")
-            self._answered.add(call_id)
-            await self._rt({"type": "conversation.item.create",
-                            "item": {"type": "function_call_output", "call_id": call_id, "output": output}})
+            if owe and turn.response_id is not None:
+                await self._owe_output(turn.response_id, call_id, output)
+            else:
+                self._answered.add(call_id)
+                await self._rt({"type": "conversation.item.create",
+                                "item": {"type": "function_call_output", "call_id": call_id, "output": output}})
             await self._tool_message(call_id, name, args, status)
             self._note("tool", {"call_id": call_id, "name": name, "args": args, "status": status, "output": output})
         if winner is not None:
@@ -1055,9 +1189,28 @@ class Controller:
     async def _realtime_event(self, event: Any) -> None:
         if not isinstance(event, dict):
             return
+        turn = self._open_reply()
+        if turn is not None and self._of_reply(event, turn):
+            self._start_timer("reply_stall", REPLY_STALL_S, self._on_reply_stall)  # still streaming: not stalled
         handler = self._event_handlers.get(event.get("type"))  # anything else: ignore
         if handler is not None:
             await handler(event)
+
+    def _open_reply(self) -> Turn | None:
+        """The current turn while its bound response is still streaming (bound, no response.done yet)."""
+        turn = self.turn
+        if self.state == REPLYING and turn is not None and turn.response_id is not None and not turn.response_done:
+            return turn
+        return None
+
+    @staticmethod
+    def _of_reply(event: dict, turn: Turn) -> bool:
+        """A streaming event of the turn's bound response (one without an id counts, as in _event_turn)."""
+        response_id, kind = event.get("response_id"), event.get("type")
+        if response_id is not None:
+            return response_id == turn.response_id
+        return isinstance(kind, str) and kind.startswith("response.") and kind not in ("response.created",
+                                                                                     "response.done")
 
     def _event_turn(self, response_id: Any) -> Turn | None:
         """The current turn if `response_id` is its bound response (events without an id count as current)."""
@@ -1070,29 +1223,65 @@ class Controller:
             return None
         return turn
 
+    def _remember_user_item(self, turn: Turn, item_id: Any) -> None:
+        if not isinstance(item_id, str) or not item_id:
+            return
+        turn.user_items.add(item_id)
+        self._user_items[item_id] = turn
+        while len(self._user_items) > USER_ITEMS_KEPT:
+            del self._user_items[next(iter(self._user_items))]
+
     async def _ev_speech_started(self, event: dict) -> None:
-        if self.state == LISTENING:
+        turn = self.turn
+        if self.state == LISTENING and turn is not None:
+            turn.speech_started = True
+            self._remember_user_item(turn, event.get("item_id"))
             self._cancel_timer("listen_silence")
 
     async def _ev_speech_stopped(self, event: dict) -> None:
         turn = self.turn
         if self.state != LISTENING or turn is None:
+            if self.state == REPLYING and turn is not None and turn.ended_by in ("hand", "listen_max"):
+                # turn detection ended a turn we had already sent (live check: does it also answer it?)
+                self._note("vad_after_send", {"reply": turn.reply, "audio_end_ms": event.get("audio_end_ms")})
             return
+        self._remember_user_item(turn, event.get("item_id"))
         await self._close_mic(clear=False)  # trailing audio could re-trigger VAD and cancel the reply (D5)
-        self._enter_replying(turn)
+        self._enter_replying(turn, "vad")
+        self._estimate_speech_end(turn, event.get("audio_end_ms"))
+
+    async def _ev_committed(self, event: dict) -> None:
+        """The user's audio became an item (our commit, or turn detection's): remember its id for the transcript."""
+        turn = self.turn
+        if turn is not None and self.state in (LISTENING, REPLYING) and turn.mic_frames > 0:
+            self._remember_user_item(turn, event.get("item_id"))
 
     async def _ev_transcription(self, event: dict) -> None:
+        """The user's words, matched to their turn by item_id. The current turn gets them as its caption; a
+        finished turn's late transcript only fills in its history entry (never a caption over narration or over a
+        newer turn, never the newer turn's text)."""
         text = " ".join(str(event.get("transcript") or "").split())
         if not text:
             return
-        turn = self.turn
-        reply = None
-        if turn is not None:
-            turn.user_text = text
-            reply = turn.reply
+        item_id = event.get("item_id")
+        item_id = item_id if isinstance(item_id, str) and item_id else None
+        current = self.turn
+        owner = self._user_items.get(item_id) if item_id else None
+        if (owner is None and current is not None and self.state == REPLYING and current.ended_by != "typed"
+                and (item_id is None or not current.user_items)):
+            owner = current  # a spoken turn that just ended, and nothing says otherwise: its own transcript
+            self._remember_user_item(current, item_id)
+        if owner is not None and owner is current:
+            owner.user_text = text
+            await self._send({"type": "caption", "role": "user", "text": text, "final": True, "reply": owner.reply})
+            return
+        if owner is not None:
+            owner.user_text = text
+            if owner.history_index is not None and owner.history_index < len(self._history):
+                self._history[owner.history_index] = (text, self._history[owner.history_index][1])
         elif self._history and not self._history[-1][0]:
-            self._history[-1] = (text, self._history[-1][1])
-        await self._send({"type": "caption", "role": "user", "text": text, "final": True, "reply": reply})
+            self._history[-1] = (text, self._history[-1][1])  # unknown item: the last finished exchange is our guess
+        self._note("transcript_late", {"item_id": item_id, "matched": owner is not None, "text": text})
 
     async def _ev_response_created(self, event: dict) -> None:
         response = event.get("response") if isinstance(event.get("response"), dict) else {}
@@ -1103,10 +1292,11 @@ class Controller:
             response_id = None
         turn = self.turn
         if (self.state == REPLYING and turn is not None and turn.expects_response and turn.response_id is None
-                and response_id is not None and response_id not in self._ignored):
+                and not turn.pending and response_id is not None and response_id not in self._ignored):
+            # (a response created while our own question is still held back can't be the answer to it)
             turn.response_id = response_id
-            turn.pending_create = False
             self._cancel_timer("reply_wait")
+            self._start_timer("reply_stall", REPLY_STALL_S, self._on_reply_stall)
             await self._send({"type": "reply_start", "reply": turn.reply})
             self._note("reply_start", {"reply": turn.reply, "response_id": response_id})
             return
@@ -1122,10 +1312,7 @@ class Controller:
             return
         if turn.first_audio_at is None:
             turn.first_audio_at = self.clock.now()
-            if turn.speech_end_at is not None:
-                latency = round((turn.first_audio_at - turn.speech_end_at) * 1000)
-                await self._send({"type": "metric", "name": "reply_latency_ms", "value": latency})
-                self._note("metric", {"name": "reply_latency_ms", "value": latency, "reply": turn.reply})
+            await self._report_latency(turn)
         if turn.audio_item_id is None and isinstance(event.get("item_id"), str):
             turn.audio_item_id = event["item_id"]
         turn.audio_bytes += _b64_bytes(delta)
@@ -1151,33 +1338,70 @@ class Controller:
                           "reply": turn.reply})
 
     async def _ev_call_done(self, event: dict) -> None:
-        turn = self._event_turn(event.get("response_id"))
+        response_id, call_id = event.get("response_id"), event.get("call_id")
+        self._remember_call_item(call_id, event.get("item_id"))
+        if isinstance(response_id, str) and response_id in self._ignored:  # cut, stalled or rejected: never run
+            await self._owe_output(response_id, call_id, CUT_CALL_OUTPUT)
+            return
+        turn = self._event_turn(response_id)
         if turn is None:
             return
-        if self._register_call(turn, event.get("call_id"), event.get("name"), event.get("arguments")) \
+        if self._register_call(turn, call_id, event.get("name"), event.get("arguments")) \
                 and turn.response_done:  # a straggler after response.done: answer it now
             await self._settle_calls(turn)
 
     async def _ev_response_done(self, event: dict) -> None:
         response = event.get("response") if isinstance(event.get("response"), dict) else {}
         response_id = response.get("id")
+        output = response.get("output") if isinstance(response.get("output"), list) else []
+        calls = [item for item in output if isinstance(item, dict) and item.get("type") == "function_call"]
+        for item in calls:
+            self._remember_call_item(item.get("call_id"), item.get("id"))
         self._active.discard(response_id)
-        await self._create_if_pending()
+        if isinstance(response_id, str) and response_id:
+            self._done.add(response_id)
+            if response_id in self._ignored:  # cut, stalled or rejected: its calls get their outputs now, none runs
+                for owed in self._owed.pop(response_id, []):
+                    await self._rt(owed)
+                for item in calls:
+                    await self._owe_output(response_id, item.get("call_id"), CUT_CALL_OUTPUT)
+        await self._send_pending()  # after those outputs: the user's held-back item comes last, then the create
         turn = self._event_turn(response_id)
         if turn is None or turn.response_done or self.state != REPLYING:
             return
-        for item in response.get("output") or []:
-            if isinstance(item, dict) and item.get("type") == "function_call":
-                self._register_call(turn, item.get("call_id"), item.get("name"), item.get("arguments"))
+        if (response.get("status") == "cancelled" and turn.first_audio_at is None and turn.queued is None
+                and turn.ended_by in ("hand", "listen_max")):
+            await self._displaced(turn, calls)
+            return
+        for item in calls:
+            self._register_call(turn, item.get("call_id"), item.get("name"), item.get("arguments"))
         self._note("response_done", {"response_id": response_id, "status": response.get("status"),
                                      "calls": list(turn.calls)})
         await self._finish_response(turn)
 
-    async def _finish_response(self, turn: Turn) -> None:
+    async def _displaced(self, turn: Turn, calls: list[dict]) -> None:
+        """A turn we ended by hand (commit + response.create with turn detection on) got a response that the server
+        cancelled before it said anything: turn detection's own response and ours displaced each other
+        (`response.create` interrupts one in flight). The other one answers the same question: wait for it."""
+        response_id = turn.response_id
+        self._note("response_displaced", {"reply": turn.reply, "response_id": response_id})
+        if response_id is not None:
+            self._ignored.add(response_id)
+            for call_id in [*turn.calls, *(item.get("call_id") for item in calls)]:
+                await self._owe_output(response_id, call_id, CUT_CALL_OUTPUT)  # it is done: they go out now
+        turn.response_id = None
+        turn.calls.clear()
+        turn.audio_item_id = None
+        turn.assistant_text = ""
+        self._cancel_timer("reply_stall")
+        self._start_timer("reply_wait", REPLY_WAIT_S, self._on_reply_wait)
+
+    async def _finish_response(self, turn: Turn, *, owe: bool = False) -> None:
         """No more reply audio: answer the calls, queue the action, reply_end, and arm the drain fallback."""
         turn.response_done = True
         self._cancel_timer("reply_wait")
-        await self._settle_calls(turn)
+        self._cancel_timer("reply_stall")
+        await self._settle_calls(turn, owe=owe)
         if turn.reply is not None:
             await self._send({"type": "reply_end", "reply": turn.reply})
         self._start_timer("drain", self._remaining_audio_s(turn) + DRAIN_GRACE_S, self._on_drain_timeout)
@@ -1189,15 +1413,76 @@ class Controller:
         elapsed_ms = (self.clock.now() - turn.first_audio_at) * 1000
         return max(0.0, audio_ms - elapsed_ms) / 1000
 
+    def _estimate_speech_end(self, turn: Turn, audio_end_ms: Any) -> None:
+        """When the user actually stopped speaking: turn detection reports the end of a turn only after its silence
+        window, so the speech_stopped event itself comes late. Its `audio_end_ms` is a position in the input stream;
+        read it as session-wide or as since this turn's clear, whichever leaves the smaller (plausible) tail of
+        audio after it, and map that position to wall-clock time through the arrival times of the mic frames.
+        Without a usable position the turn's end event stays the start point."""
+        end = _int(audio_end_ms)
+        if end is None or not turn.marks:
+            return
+        turn_ms = self._stream_ms - turn.stream_start_ms  # this turn's audio so far
+        tails = [tail for tail in (self._stream_ms - end, turn_ms - end)
+                 if 0 <= tail <= min(turn_ms, MAX_VAD_TAIL_MS)]
+        if not tails:
+            self._note("speech_end_unknown", {"audio_end_ms": end, "turn_audio_ms": round(turn_ms),
+                                              "stream_ms": round(self._stream_ms)})
+            return
+        tail = min(tails)
+        position = self._stream_ms - tail
+        for mark_position, arrived in turn.marks:  # the first frame that reached `position`
+            if mark_position >= position:
+                estimate = arrived - (mark_position - position) / 1000
+                break
+        else:  # unreachable: the last mark is the end of the stream
+            return
+        if turn.turn_end_at is not None:
+            estimate = min(estimate, turn.turn_end_at)
+        turn.speech_end_at = estimate
+        turn.speech_end_estimated = True
+        self._note("speech_end", {"reply": turn.reply, "audio_end_ms": end, "tail_ms": round(tail),
+                                  "before_turn_end_ms": round(((turn.turn_end_at or estimate) - estimate) * 1000)})
+
+    async def _report_latency(self, turn: Turn) -> None:
+        """First reply audio: `reply_latency_ms` = end of the user's speech (estimated for a turn that turn
+        detection ended, else the turn's end: send, release or Space) → first audio delta at the backend; the log
+        also keeps `turn_end_latency_ms` = the turn's end event → first audio delta."""
+        if turn.first_audio_at is None or turn.speech_end_at is None:
+            return
+        latency = round((turn.first_audio_at - turn.speech_end_at) * 1000)
+        await self._send({"type": "metric", "name": "reply_latency_ms", "value": latency})
+        start = "end of speech (from audio_end_ms)" if turn.speech_end_estimated else f"end of turn ({turn.ended_by})"
+        self._note("metric", {"name": "reply_latency_ms", "value": latency, "reply": turn.reply,
+                              "from": start, "to": "first reply audio"})
+        if turn.turn_end_at is not None:
+            self._note("metric", {"name": "turn_end_latency_ms",
+                                  "value": round((turn.first_audio_at - turn.turn_end_at) * 1000),
+                                  "reply": turn.reply, "from": f"end of turn ({turn.ended_by})",
+                                  "to": "first reply audio"})
+
     async def _ev_error(self, event: dict) -> None:
         err_type, code, message = _error_fields(event)
         self._note("realtime_error", {"type": err_type, "code": code, "message": message})
-        if _benign_error(code, message):
+        if _benign_error(err_type, code, message) or self._quiet_error(err_type, code):
             return
         await self._send_error(f"Realtime: {message or code or err_type or 'error'}")
         if "insufficient_quota" in (err_type, code):
             self._connection = ("error", "billing refused: claim the credits")
             await self._send({"type": "connection", "status": "error", "detail": self._connection[1]})
+        if self._open_reply() is not None:  # mid-reply: if the reply now goes quiet, end it soon (no done may come)
+            self._start_timer("reply_stall", ERROR_GRACE_S, self._on_reply_stall)
+
+    def _quiet_error(self, err_type: str, code: str) -> bool:
+        """Errors about our own housekeeping that the presenter can't act on (logged, not shown): an output inserted
+        after a call item the server no longer has, or a hand-sent turn that turn detection had just ended itself
+        (the server's own commit won the race; its reply still comes)."""
+        kinds = {err_type, code}
+        if "invalid_previous_item_id" in kinds:
+            return True
+        turn = self.turn
+        return (bool(kinds & SEND_RACE_ERRORS) and self.state == REPLYING and turn is not None
+                and turn.ended_by in ("hand", "listen_max"))
 
     async def _ev_session(self, event: dict) -> None:
         session = event.get("session") if isinstance(event.get("session"), dict) else {}
@@ -1215,11 +1500,28 @@ class Controller:
         self._connection = (status, detail)
         await self._send({"type": "connection", "status": status, "detail": detail})
         if status == "ready":
+            self._new_session()
             self._ready_count += 1
             if self._ready_count > 1:
                 await self._send_summary()
         elif status in DROPPED:
             await self._link_lost()
+
+    def _new_session(self) -> None:
+        """A new Realtime session: an empty conversation that numbers its ids afresh. Forget the old session's
+        response and call ids (a reused id must be neither ignored nor deduped), its owed outputs, user items and
+        input-stream position. The link reads one socket at a time, so no old event can follow `ready`. A turn
+        still draining from the old session keeps its state, but its audio item is gone: nothing to truncate."""
+        self._active.clear()
+        self._ignored.clear()
+        self._answered.clear()
+        self._done.clear()
+        self._owed.clear()
+        self._call_items.clear()
+        self._user_items.clear()
+        self._stream_ms = 0.0
+        if self.turn is not None:
+            self.turn.audio_item_id = None
 
     async def _link_lost(self) -> None:
         """Mid-turn drop: LISTENING goes back to its origin; a reply without response.done counts as done."""
@@ -1257,7 +1559,11 @@ class Controller:
         await self._back_to_origin()
 
     async def _on_listen_max(self) -> None:
-        if self.state != LISTENING:
+        turn = self.turn
+        if self.state != LISTENING or turn is None:
+            return
+        if self.settings.mic_mode != "hold" and turn.speech_started and turn.mic_frames > 0:
+            await self._send_turn(turn, "listen_max")  # turn detection never ended it (room noise): answer it
             return
         await self._send_error(ERR_TOO_LONG_HOLD if self.settings.mic_mode == "hold" else ERR_TOO_LONG)
         await self._close_mic(clear=True)
@@ -1267,11 +1573,30 @@ class Controller:
         turn = self.turn
         if self.state != REPLYING or turn is None or turn.response_id is not None:
             return
-        if turn.pending_create:  # the response we waited on never reported done: don't let it block later turns
+        if turn.pending:  # the response we waited on never reported done: don't let it block later turns
             self._note("stale_responses", {"ids": sorted(self._active)})
             self._active.clear()
+            turn.pending = []
         await self._send_error(ERR_NO_REPLY)
         await self._back_to_origin()
+
+    async def _on_reply_stall(self) -> None:
+        """The bound reply went quiet: no event of its own for REPLY_STALL_S (or ERROR_GRACE_S after an error) and
+        no response.done. End it the way a link drop does: cancel it, ignore its later events, treat it as done
+        (reply_end, drain fallback, then the queued tool, the countdown or the origin). Its tool outputs wait for
+        its response.done; "No reply" if nothing was heard."""
+        turn = self._open_reply()
+        if turn is None:
+            return
+        response_id = turn.response_id
+        self._note("reply_stalled", {"reply": turn.reply, "response_id": response_id,
+                                     "audio_ms": turn.audio_bytes // BYTES_PER_MS})
+        await self._rt({"type": "response.cancel"})
+        self._ignored.add(response_id)
+        self._active.discard(response_id)  # a dead response must not hold back a later response.create
+        if turn.first_audio_at is None:
+            await self._send_error(ERR_NO_REPLY)
+        await self._finish_response(turn, owe=True)
 
     async def _on_drain_timeout(self) -> None:
         if self.state == REPLYING and self.turn is not None and self.turn.response_done:

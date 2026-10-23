@@ -30,6 +30,15 @@ _ENDS_SENTENCE_RE = re.compile(r"[.!?…][\"'”’)\]]*$")
 _NON_WORD_RE = re.compile(r"[^a-z0-9]")
 _DIGIT_RE = re.compile(r"\d")
 _ACRONYM_RE = re.compile(r"\b[A-Z]{2,}s?\b")
+_INITIALISM_RE = re.compile(r"[A-Za-z](?:\.[A-Za-z])+\.?")  # e.g. i.e. a.m. U.S. A.I.: single letters and periods
+# Word abbreviations written with a period (lowercase, without it). Only ones that are never a plain word ending a
+# sentence: "No.", "Fig." or "Sun." can be real sentence ends.
+ABBREVIATIONS = frozenset({
+    "mr", "mrs", "ms", "mx", "dr", "prof", "sr", "jr", "st", "mt", "vs", "etc", "cf", "viz", "approx", "incl", "esp",
+    "misc", "dept", "inc", "ltd", "corp", "co", "govt", "avg",
+})
+_OPENING_PUNCT = "\"'“‘(["
+_TRAILING_PUNCT = ",;:!?\"'”’)]"
 
 
 @dataclass(frozen=True)
@@ -153,6 +162,39 @@ def has_digits(text: str) -> bool:
 def acronyms(text: str) -> list[str]:
     """All-caps tokens (AI, TTS, APIs) whose pronunciation should be checked by ear."""
     return sorted(set(_ACRONYM_RE.findall(strip_tags(text))))
+
+
+def _abbreviation(token: str) -> str | None:
+    """The abbreviation in a whitespace token ("(e.g.," → "e.g."), or None if it isn't one."""
+    core = token.lstrip(_OPENING_PUNCT).rstrip(_TRAILING_PUNCT)
+    if _INITIALISM_RE.fullmatch(core) or (core.endswith(".") and core[:-1].lower() in ABBREVIATIONS):
+        return core
+    return None
+
+
+def abbreviations(text: str) -> list[str]:
+    """Abbreviations written with periods (e.g., Dr., vs., a.m., U.S.) in the tag-free text: in order, once each.
+
+    `split_sentences` ends a sentence at such a period when a space follows, so a cut after "Dr." would resume at
+    the next word; and TTS 3 reads them without text normalisation (off with timestamps).
+    """
+    found = (_abbreviation(token) for token in strip_tags(text).split())
+    return list(dict.fromkeys(abbreviation for abbreviation in found if abbreviation))
+
+
+def mid_sentence_breaks(text: str) -> list[tuple[str, str]]:
+    """(last word, next word) at each `split_sentences` break whose next sentence starts in lowercase.
+
+    Such a break is mid-sentence ("so clear… then it came out", "about one min. to render"), so a cut after it would
+    resume mid-sentence. Breaks right after an abbreviation are left to `abbreviations`.
+    """
+    sentences = split_sentences(text)
+    breaks = []
+    for before, after in zip(sentences, sentences[1:]):
+        last, first = before.split()[-1], after.split()[0]
+        if _abbreviation(last) is None and first.lstrip(_OPENING_PUNCT).islower():
+            breaks.append((last, first))
+    return breaks
 
 
 def word_count(text: str) -> int:

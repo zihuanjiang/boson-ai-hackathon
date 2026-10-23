@@ -1,9 +1,10 @@
 """Higgs TTS 3 client (wav + word timestamps) and the offline fake synthesizer (design §2).
 
 `synthesize` sends one narration chunk to `POST /v1/audio/speech` with `timestamps: true`. The response is then JSON:
-the wav base64-encoded in `audio` and the word timings in **seconds** in `timestamps` (`null` or `[]` when alignment
-is unavailable). `fake_synthesize` makes a quiet tone-burst wav on exact synthetic timings, so rendering, serving and
-the tests work without a key or the network. Never log `Settings.api_key`.
+the wav base64-encoded in `audio` and the word timings in **seconds** in `timestamps`: `null` when alignment is
+unavailable, `[]` when the audio has no speech to align (the render fails such a chunk). `fake_synthesize` makes a
+quiet tone-burst wav on exact synthetic timings, so rendering, serving and the tests work without a key or the
+network. Never log `Settings.api_key`.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import base64
 import binascii
 import io
 import math
+import struct
 import sys
 import time
 import wave
@@ -84,6 +86,8 @@ class TTSError(Exception):
             return "check the chunk text (≤ 300 characters, known tags) and the voice name"
         if self.type == "bad_response":
             return "unexpected TTS 3 response: re-run; if it repeats, note it in doc/gotchas.md"
+        if self.type == "no_speech":
+            return "re-run to retry it (finished chunks are cached); if it repeats, rephrase the line"
         return ""
 
     def __str__(self) -> str:
@@ -184,17 +188,77 @@ def _decode_audio(audio: Any, status: int) -> bytes:
     return wav
 
 
+WAVE_PCM, WAVE_FLOAT, WAVE_EXTENSIBLE = 1, 3, 0xFFFE
+_SAMPLE_BITS = {WAVE_PCM: (8, 16, 24, 32), WAVE_FLOAT: (32, 64)}
+_STREAMED_SIZES = (0, 0xFFFFFFFF)  # a data size written before the length was known: the samples run to the end
+
+
+@dataclass(frozen=True)
+class WavInfo:
+    """What a wav header says about its samples (`read_wav_info`)."""
+
+    format_tag: int  # WAVE_PCM (integer) or WAVE_FLOAT; WAVE_FORMAT_EXTENSIBLE is unwrapped
+    channels: int
+    rate: int
+    bits: int  # per sample
+    data_bytes: int  # sample bytes present in the file
+
+    @property
+    def frames(self) -> int:
+        return self.data_bytes // (self.channels * self.bits // 8)
+
+    @property
+    def duration_ms(self) -> int:
+        return round(self.frames * 1000 / self.rate)
+
+    def describe(self) -> str:
+        layout = "mono" if self.channels == 1 else f"{self.channels} channels"
+        return f"{self.bits}-bit {'float' if self.format_tag == WAVE_FLOAT else 'PCM'}, {layout}, {self.rate} Hz"
+
+
+def read_wav_info(blob: bytes) -> WavInfo:
+    """The sample format and data size of a RIFF/WAVE file, read leniently. Raises ValueError saying why not.
+
+    Integer PCM (8/16/24/32-bit) and IEEE float (32/64-bit), plain or WAVE_FORMAT_EXTENSIBLE, any rate and channel
+    count. Other chunks (LIST, fact …) are skipped. A data size of 0 or 0xFFFFFFFF (a streaming writer's header)
+    means "to the end of the file"; a size past the end counts only the bytes that are there.
+    """
+    if len(blob) < 12 or blob[:4] not in (b"RIFF", b"RF64") or blob[8:12] != b"WAVE":
+        raise ValueError("not a RIFF/WAVE file")
+    fmt: bytes | None = None
+    data_bytes: int | None = None
+    pos = 12
+    while pos + 8 <= len(blob) and (fmt is None or data_bytes is None):
+        chunk_id, size = blob[pos:pos + 4], int.from_bytes(blob[pos + 4:pos + 8], "little")
+        start = pos + 8
+        if chunk_id == b"fmt ":
+            fmt = blob[start:start + size]
+        elif chunk_id == b"data":
+            if size in _STREAMED_SIZES:
+                data_bytes = len(blob) - start
+                break  # everything after this header is samples
+            data_bytes = min(size, len(blob) - start)
+        pos = start + size + (size & 1)  # chunks are padded to an even size
+    if fmt is None or len(fmt) < 16:
+        raise ValueError("no fmt chunk")
+    if data_bytes is None:
+        raise ValueError("no data chunk")
+    tag, channels, rate, _, _, bits = struct.unpack("<HHIIHH", fmt[:16])
+    if tag == WAVE_EXTENSIBLE and len(fmt) >= 26:  # the real format tag opens the sub-format GUID
+        tag = int.from_bytes(fmt[24:26], "little")
+    if tag not in _SAMPLE_BITS:
+        raise ValueError(f"format tag {tag:#06x} is neither integer PCM nor float")
+    if channels < 1 or rate < 1 or bits not in _SAMPLE_BITS[tag]:
+        raise ValueError(f"odd header: {channels} channel(s), {rate} Hz, {bits}-bit")
+    return WavInfo(tag, channels, rate, bits, data_bytes)
+
+
 def wav_duration_ms(data: bytes) -> int | None:
-    """Duration from the wav header, or None when the header is unusable (not a wav, no frames, bogus sizes)."""
+    """Duration from the wav header (`read_wav_info`; 0 = no samples), or None when the header can't be read."""
     try:
-        with wave.open(io.BytesIO(data), "rb") as reader:
-            frames, rate = reader.getnframes(), reader.getframerate()
-            frame_bytes = reader.getsampwidth() * reader.getnchannels()
-    except Exception:  # wave.Error, EOFError, struct.error …: any parse failure means "unusable"
+        return read_wav_info(data).duration_ms
+    except ValueError:
         return None
-    if frames <= 0 or rate <= 0 or frame_bytes <= 0 or frames * frame_bytes > len(data):
-        return None
-    return round(frames * 1000 / rate)
 
 
 def pcm_to_wav(pcm: bytes, rate: int = RATE) -> bytes:

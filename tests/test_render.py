@@ -425,6 +425,52 @@ def test_empty_audio_fails_the_chunk(test_talk, tmp_path):
     assert not any(path.exists() for path in chunk_paths("test", "qa", 0, tmp_path))
 
 
+def test_empty_word_list_means_no_speech_and_fails_the_chunk():
+    # The API sends `timestamps: []` when its own audio has no speech to align (null = alignment unavailable)
+    with pytest.raises(TTSError) as info:
+        build_rendered("how", chunk(), "chloe", result_with([], 2.5), fake=False)
+    error = info.value
+    assert error.type == "no_speech" and not error.fatal
+    assert str(error).startswith("TTS 3: no speech in the audio") and "re-run" in str(error)
+
+
+def test_empty_word_list_is_fine_when_the_chunk_has_no_words():
+    rendered, warnings = build_rendered("how", chunk("…"), "chloe", result_with([], 1.0), fake=False)
+    assert rendered.words == [] and rendered.estimated and rendered.duration_ms == 1000
+
+
+def test_no_speech_chunk_is_not_written_and_a_rerun_retries_it(capsys, test_talk, tmp_path):
+    tries: list[str] = []
+
+    def no_speech_once(say: str, voice: str) -> TTSResult:
+        if "Every single word" in say:
+            tries.append(say)
+            if len(tries) == 1:
+                return TTSResult(wav_seconds(6.0), [])
+        return api_like(say, voice)
+
+    synth = Synth(no_speech_once)
+    code, out = run_main(capsys, str(TEST_TALK), "--out", str(tmp_path), synth=synth)
+    assert code == 2
+    assert "FAILED   how/1" in out and "no speech in the audio" in out
+    assert "1 chunk(s) not rendered: re-run to retry them" in out
+    assert not any(path.exists() for path in chunk_paths("test", "how", 1, tmp_path))
+    report = render(test_talk, tmp_path, synth=synth)  # a plain re-run asks TTS 3 again for that chunk only
+    assert report.ok and labels(report.rendered) == ["how/1"]
+    assert labels(report.cached) == ["how/0", "how/2", "qa/0"]
+    assert len(tries) == 2 and meta(tmp_path, "how", 1)["estimated"] is False
+
+
+def test_no_speech_on_a_forced_rerender_keeps_the_good_render(test_talk, tmp_path):
+    render(test_talk, tmp_path)
+    before = stamps(tmp_path)
+    silent = Synth(lambda say, voice: TTSResult(wav_seconds(2.0), []))
+    report = render(test_talk, tmp_path, only="qa", force=True, synth=silent)
+    assert labels(report.failed) == ["qa/0"] and not report.ok
+    assert stamps(tmp_path) == before  # nothing written, nothing deleted
+    assert sorted(load_rendered(test_talk, tmp_path)) == CHUNKS  # the talk still serves
+
+
 def test_no_key_and_not_fake_is_fatal_before_any_request(test_talk, tmp_path):
     report = render_talk(test_talk, Settings(), out_root=tmp_path)
     assert report.fatal is not None and report.fatal.fatal and report.fatal.type == "missing_api_key"
@@ -534,7 +580,6 @@ def test_sentence_index_comes_from_alignment_even_when_tts_splits_words():
 
 @pytest.mark.parametrize("words,reason", [
     (None, "no word timestamps (null)"),
-    ([], "an empty word list"),
     ([{"word": "<|emotion:enthusiasm|>", "start": 0.1, "end": 0.2}, {"word": "...", "start": 0.3}],
      "no usable word timestamps"),
     ([{"word": w, "start": 0, "end": 0} for w in ["Here", "is", "how", "this", "works."]], "every TTS 3 word starts"),
@@ -557,6 +602,11 @@ def test_estimated_fallback_end_to_end(test_talk, tmp_path):
     assert all(meta(tmp_path, s, n)["estimated"] is True for s, n in CHUNKS)
     report = render(test_talk, tmp_path)
     assert all(entry.estimated for entry in report.cached)  # the flag survives the cache
+    # ... and a later run says so again, instead of listing them as plain cached chunks
+    assert len(report.warnings) == 1
+    assert report.warnings[0].startswith("4 cached chunk(s) have estimated word timings (how/0, how/1, how/2, qa/0): "
+                                         "captions and cut points are approximate")
+    assert "--force --only" in report.warnings[0]
 
 
 def test_word_count_mismatch_and_late_words_warn():
@@ -573,11 +623,51 @@ def _with_data_size(wav: bytes, size: int) -> bytes:
     return wav[:at + 4] + struct.pack("<I", size) + wav[at + 8:]
 
 
-@pytest.mark.parametrize("wav", [_with_data_size(wav_seconds(1.0), 0xFFFFFFFF), b"ID3" + bytes(48_041)])
-def test_unusable_wav_header_takes_the_duration_from_the_size(wav):
+def float_wav(seconds: float, rate: int = 24_000) -> bytes:
+    """IEEE float32 mono wav (format 3 + a fact chunk): the layout scipy, soundfile and torchaudio write."""
+    frames = round(rate * seconds)
+    fmt = struct.pack("<HHIIHHH", 3, 1, rate, rate * 4, 4, 32, 0)
+    body = (b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt + b"fact" + struct.pack("<II", 4, frames)
+            + b"data" + struct.pack("<I", 4 * frames) + bytes(4 * frames))
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
+THREE_SENTENCES = ("Ken holds the floor control. One tap stops playback within a tenth of a second. "
+                   "Then the microphone opens.")
+
+
+def test_float_wav_gets_its_real_duration_and_estimates_stay_inside_it():
+    # was 6000 ms (the size guess assumed PCM16): estimated words ran past the audio, so cuts resumed mid-sentence
+    rendered, warnings = build_rendered("how", chunk(THREE_SENTENCES), "chloe", TTSResult(float_wav(3.0), None),
+                                        fake=False)
+    assert rendered.duration_ms == 3000 and rendered.estimated
+    assert not any("wav header" in warning for warning in warnings)
+    synthetic, synthetic_ms = synthetic_timing(rendered.text)
+    assert rendered.words == scale_timing(synthetic, synthetic_ms, 3000)
+    assert rendered.words[-1].end <= 3000
+
+
+def test_words_past_the_end_of_a_float_wav_are_clamped():
+    words = [{"word": "One", "start": 0.1, "end": 0.5}, {"word": "two.", "start": 3.5, "end": 3.9}]
+    rendered, warnings = build_rendered("how", chunk("One two."), "chloe", TTSResult(float_wav(3.0), words),
+                                        fake=False)
+    assert [(w.start, w.end) for w in rendered.words] == [(100, 500), (3000, 3000)]
+    assert "how/0: 1 word(s) start after the audio ends (3000 ms): clamped" in warnings
+
+
+@pytest.mark.parametrize("size", [0xFFFFFFFF, 0])
+def test_streamed_wav_header_gives_the_real_duration_without_a_warning(size):
+    wav = _with_data_size(wav_seconds(1.0), size)
     rendered, warnings = build_rendered("how", chunk(), "chloe", TTSResult(wav, None), fake=False)
     assert rendered.duration_ms == 1000
-    assert warnings[0] == "how/0: unusable wav header; duration taken from the file size (1000 ms)"
+    assert not any("wav header" in warning for warning in warnings)
+
+
+def test_unreadable_wav_header_guesses_the_duration_from_the_size_and_warns():
+    rendered, warnings = build_rendered("how", chunk(), "chloe", TTSResult(b"ID3" + bytes(48_041), None), fake=False)
+    assert rendered.duration_ms == 1000
+    assert warnings[0] == ("how/0: unreadable wav header (not a RIFF/WAVE file); duration guessed from the file size "
+                           "as 16-bit PCM mono 24 kHz (1000 ms): check the captions against the audio")
 
 
 @pytest.mark.parametrize("wav", [b"", b"RIFF", pcm_to_wav(b"")])
@@ -666,6 +756,21 @@ def test_cli_invalid_package_exits_1_and_prints_every_issue(capsys, tmp_path):
     assert not (tmp_path / "out").exists()
     code, _ = run_main(capsys, str(root), "--check", synth=synth)
     assert code == 1
+
+
+def test_cli_refuses_slide_ids_that_differ_only_in_case(capsys, tmp_path):
+    # On macOS `how` and `How` share out/talks/test/how/: the render deleted the other slide's chunks, reported
+    # success, and `relay serve` then refused to start. Now the validator stops it before anything is written.
+    root = copy_talk(tmp_path)
+    script = (root / "script.yaml").read_text(encoding="utf-8")
+    (root / "script.yaml").write_text(script.replace("  - id: qa\n", "  - id: How\n"), encoding="utf-8")
+    slides = (root / "slides.md").read_text(encoding="utf-8")
+    (root / "slides.md").write_text(slides.replace('id="qa"', 'id="How"'), encoding="utf-8")
+    synth = Synth()
+    code, out = run_main(capsys, str(root), "--out", str(tmp_path / "out"), synth=synth)
+    assert code == 1 and synth.calls == []
+    assert "error: slides.md: slide ids 'how' and 'How' differ only in case" in out
+    assert not (tmp_path / "out").exists()
 
 
 def test_cli_prints_warnings_and_still_renders(capsys, tmp_path):

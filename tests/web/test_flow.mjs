@@ -224,7 +224,15 @@ async function run() {
   eq("key space sent", lastSent("key"), { type: "key", key: "space", at: null, reply: null, reply_played_ms: null });
   check("overlay hidden by a presenter key", $(".overlay").hidden);
   $(".strip").fire("click");
-  check("a click on the strip brings the checklist back", !$(".overlay").hidden);
+  check("a click on the strip brings the checklist back (IDLE)", !$(".overlay").hidden);
+  const flushesAtOverlay = replyPort().posted.filter((m) => m.type === "flush").length;
+  press("Escape");
+  check("Esc over the checklist closes it", $(".overlay").hidden);
+  eq("…and sends nothing, flushes nothing", [sent("key").length, replyPort().posted.filter((m) => m.type === "flush").length], [1, flushesAtOverlay]);
+  $(".strip").fire("click");
+  $(".overlay").fire("click"); // the backdrop, outside the panel
+  check("a click outside the panel closes it", $(".overlay").hidden);
+  $(".strip").fire("click");
   $(".done-button").fire("click");
   check("hide checklist", $(".overlay").hidden);
   const repeat = press(" ", "Space", { repeat: true });
@@ -236,13 +244,24 @@ async function run() {
   server({ type: "mic", open: true });
   server({ type: "state", state: "LISTENING", phase: "opening", slide: 0, banner: null, thinking: false, can_resume: false, mic_mode: "tap" });
   eq("listening tag", $(".cap-tag").textContent, "Listening…");
+  eq("listening hint: how the turn ends", [$(".cap-hint").hidden, $(".cap-hint").textContent], [false, "Space to send · Esc to cancel"]);
+  $(".strip").fire("click");
+  check("no checklist over the open mic", $(".overlay").hidden);
   micNode().emit({ type: "frame", pcm: new Int16Array(2400).fill(1000), rms: 0.03 });
   micNode().emit({ type: "frame", pcm: new Int16Array(2400).fill(1000), rms: 0.03 });
   eq("mic frames streamed", sent("mic").length, 2);
   eq("mic frame is base64 PCM16 (2400 samples)", lastSent("mic").pcm.length, 6400);
   eq("mic frame content (PCM16 LE 1000 = e8 03)", lastSent("mic").pcm.slice(0, 8), b64(3));
+  // Space while listening = "send now": it goes to the backend (which ends the turn); the mic stays open until the
+  // backend closes it, so the last frames still go out
+  space();
+  eq("Space while listening is sent (send now)", lastSent("key"), { type: "key", key: "space", at: null, reply: null, reply_played_ms: null });
+  check("…and the mic stays open until the backend closes it", $(".strip .meter").classList.contains("open") && $(".cap-tag").textContent === "Listening…");
   server({ type: "mic", open: false });
+  check("listening hint gone with the mic", $(".cap-hint").hidden);
   server({ type: "state", state: "REPLYING", phase: "opening", slide: 0, banner: null, thinking: true, can_resume: false, mic_mode: "tap" });
+  $(".strip").fire("click");
+  check("no checklist over a reply", $(".overlay").hidden);
   micNode().emit({ type: "frame", pcm: new Int16Array(2400), rms: 0 });
   eq("no frames after mic close", sent("mic").length, 2);
   eq("thinking badge", $(".state-text").textContent, "Thinking");
@@ -251,6 +270,11 @@ async function run() {
 
   server({ type: "reply_start", reply: 1 });
   eq("live mode", capMode(), "live");
+  // a second Space right after the turn ended, before any reply audio: nothing is audible, and the backend ignores
+  // a double send, so the deck must not drop the reply on its own (else the reply would play silently)
+  space();
+  eq("a double Space is still sent", [lastSent("key").key, lastSent("key").reply, lastSent("key").reply_played_ms], ["space", 1, 0]);
+  eq("…but the reply without audio yet is left to the backend", replyPort().posted.map((m) => m.type), ["start"]);
   for (let i = 0; i < 3; i++) server({ type: "reply_audio", reply: 1, pcm: b64(480) });
   server({ type: "caption", role: "assistant", text: "Hi everyone, I'm Relay.", final: false, reply: 1 });
   server({ type: "reply_end", reply: 1 });
@@ -259,8 +283,12 @@ async function run() {
   check("pushes are Float32 480", posted[1].samples instanceof Float32Array && posted[1].samples.length === 480);
   check("push transfers its buffer", posted[1].transferred === 1);
   eq("assistant text hidden before audio plays", $(".cap-live-text").textContent, "");
+  // reply_end came, so all 1440 samples are in: the caption shows the share of them the room has heard (played
+  // minus the 25 ms = 600 samples of output latency)
   env.worklets["pcm-player"].emit({ type: "progress", reply: 1, played: 720, time: clock.now / 1000 });
-  eq("assistant text revealed with the audio", $(".cap-live-text").textContent, "Hi everyone,");
+  eq("assistant text revealed with the audio heard (120 of 1440 samples)", $(".cap-live-text").textContent, "Hi");
+  env.worklets["pcm-player"].emit({ type: "progress", reply: 1, played: 1320, time: clock.now / 1000 });
+  eq("…and more as more is heard (720 of 1440)", $(".cap-live-text").textContent, "Hi everyone,");
   env.worklets["pcm-player"].emit({ type: "drained", reply: 1, played: 1440, time: clock.now / 1000 });
   eq("reply_drained", lastSent("reply_drained"), { type: "reply_drained", reply: 1, played_ms: 60 });
   eq("full assistant text after drain", $(".cap-live-text").textContent, "Hi everyone, I'm Relay.");
@@ -390,10 +418,15 @@ async function run() {
   server({ type: "countdown", seconds: 3 });
   eq("countdown 3", $(".banner-count").textContent, "3");
   check("countdown shows over a settled banner", $(".banner").classList.contains("counting") && !$(".banner").hidden);
+  $(".strip").fire("click");
+  check("no checklist during the resume countdown (narration is about to start)", $(".overlay").hidden);
   advance(1000);
   eq("countdown ticks", $(".banner-count").textContent, "2");
   server({ type: "countdown", seconds: 0 });
   check("countdown cancelled", $(".banner-count").hidden);
+  $(".strip").fire("click");
+  check("IDLE without a countdown: the strip opens the checklist", !$(".overlay").hidden);
+  $(".done-button").fire("click");
   server({ type: "state", state: "IDLE", phase: "human", slide: 2, banner: "Paused — R to resume", thinking: false, can_resume: true, mic_mode: "tap" });
   check("a new banner shows again", !$(".banner").classList.contains("settled") && $(".banner-text").textContent === "Paused — R to resume");
 
@@ -431,6 +464,9 @@ async function run() {
   // ---- hold mode
   server({ type: "state", state: "IDLE", phase: "presenting", slide: 1, banner: null, thinking: false, can_resume: true, mic_mode: "hold" });
   eq("mic mode label", $(".micmode").textContent, "Hold");
+  server({ type: "mic", open: true });
+  eq("hold: listening hint", $(".cap-hint").textContent, "Release Space to send · Esc to cancel");
+  server({ type: "mic", open: false });
   space();
   eq("hold: space on keydown", lastSent("key").key, "space");
   release(" ", "Space");
@@ -490,6 +526,17 @@ async function run() {
   eq("unknown chunk: silent, ends at once", lastSent("chunk_ended"), { type: "chunk_ended", play_id: 6 });
   check("silent narration warned", env.warnings.some((w) => w.includes("plays without audio")), env.warnings.join(" | "));
 
+  // ---- the checklist never covers narration: a strip click while narrating does nothing; opened in IDLE, it
+  //      closes when a narration starts
+  $(".strip").fire("click");
+  check("no checklist while narrating", $(".overlay").hidden);
+  server({ type: "state", state: "IDLE", phase: "presenting", slide: 1, banner: null, thinking: false, can_resume: true, mic_mode: "tap" });
+  $(".strip").fire("click");
+  check("checklist opens in IDLE", !$(".overlay").hidden);
+  server({ type: "play", play_id: 8, slide: "how", chunk: 0, offset_ms: 0, fragment: 1, resume_word: null });
+  check("a narration starting closes it", $(".overlay").hidden);
+  server({ type: "stop" });
+
   // ---- reconnect
   const before = env.sockets.length;
   sock().drop(1006);
@@ -500,9 +547,16 @@ async function run() {
   eq("hello + arm again after reconnect", sock().sent.map((m) => m.type), ["hello", "arm"]);
   space();
   check("keys work after reconnect", lastSent("key")?.key === "space");
+  // The server drops a deck that stopped reading with close 4001 (design §3): the tab reconnects like after any
+  // other close but 4000. No message came in between, so this second attempt in a row backs off 500 ms.
+  sock().drop(4001);
+  advance(600);
+  eq("dropped for not reading (4001): reconnects", env.sockets.length, before + 2);
+  sock().open();
+  eq("hello + arm again after a 4001", sock().sent.map((m) => m.type), ["hello", "arm"]);
   sock().drop(4000);
   advance(5000);
-  eq("replaced (4000): no reconnect", env.sockets.length, before + 1);
+  eq("replaced (4000): no reconnect", env.sockets.length, before + 2);
 
   // ---- mic unplugged
   for (const fn of track.ended) fn();

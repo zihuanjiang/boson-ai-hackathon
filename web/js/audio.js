@@ -414,7 +414,13 @@ export class ReplyPlayer {
     if (typeof b64 !== "string" || !b64 || !this.accept(reply)) return;
     const samples = int16ToFloat(base64ToInt16(b64));
     if (!samples.length) return;
-    if (this.received === 0) this.reportTime = this.engine.now(); // playback starts with the first audio
+    if (this.received === 0 || this.playedNow() >= this.received) {
+      // Playback (re)starts with this audio: the reply's first audio, or audio after the player ran dry (a
+      // generation or network stall). Extrapolate from now, not from the last report before the gap, or the gap
+      // would count as heard audio in reply_played_ms (conversation.item.truncate) and in the live caption.
+      this.played = this.received;
+      this.reportTime = this.engine.now();
+    }
     this.received += samples.length;
     this.node?.port.postMessage({ type: "push", reply, samples }, [samples.buffer]);
   }
@@ -448,9 +454,28 @@ export class ReplyPlayer {
     return snap;
   }
 
+  /**
+   * Forget the current reply and its number (the deck socket closed: a restarted server numbers its replies from 1
+   * again, and a reply_start whose id equals a finished reply's would otherwise be ignored as a repeat).
+   */
+  reset() {
+    if (this.status === "playing") this.node?.port.postMessage({ type: "flush", reply: null });
+    this.reply = null;
+    this.status = "idle";
+    this.ended = false;
+    this.received = 0;
+    this.played = 0;
+    this.reportTime = this.engine.now();
+  }
+
   /** Samples output so far, extrapolated between the worklet's ~100 ms reports. */
   playedNow() {
     return playedEstimate(this.played, this.reportTime, this.engine.now(), this.received);
+  }
+
+  /** Samples the listener has heard so far: output minus the output latency. */
+  heardNow() {
+    return Math.max(0, this.playedNow() - Math.round(this.engine.latency() * RATE));
   }
 
   /**
@@ -459,15 +484,7 @@ export class ReplyPlayer {
    */
   snapshot() {
     if (this.status !== "playing" || this.reply === null) return null;
-    const heard = Math.max(0, this.playedNow() - Math.round(this.engine.latency() * RATE));
-    return { reply: this.reply, played_ms: samplesToMs(heard) };
-  }
-
-  /** Share of the received audio played so far (drives the live caption reveal). */
-  fraction() {
-    if (this.status === "drained") return 1;
-    if (this.received <= 0) return 0;
-    return Math.min(1, this.playedNow() / this.received);
+    return { reply: this.reply, played_ms: samplesToMs(this.heardNow()) };
   }
 }
 

@@ -86,9 +86,21 @@ def test_qa_phase_has_facts_and_qa_line(test_talk: Talk):
     assert "Plain-language seed" not in state  # the test talk's qa slide has no plain
 
 
-def test_facts_only_in_qa(test_talk: Talk):
+def test_facts_ride_along_whenever_the_qa_slide_is_on_screen(test_talk: Talk):
+    """After handoff_to_human (or H) on the Q&A slide the phase is `human`, and the run of show's backup question
+    still needs the fact sheet; off the Q&A slide no phase but `qa` carries it."""
+    for phase in PHASES:
+        assert "\nFacts: " in state_block(test_talk, TurnContext(phase, "qa")), phase
     for phase in ("opening", "presenting", "human"):
-        assert "Facts:" not in state_block(test_talk, TurnContext(phase, "qa"))
+        assert "Facts:" not in state_block(test_talk, TurnContext(phase, "how")), phase
+        assert "Facts:" not in state_block(test_talk, TurnContext(phase, "title")), phase
+
+
+def test_human_phase_on_the_qa_slide_keeps_its_phase_line_after_the_facts(test_talk: Talk):
+    lines = state_block(test_talk, TurnContext("human", "qa")).splitlines()
+    assert lines[0] == "Phase: human"
+    assert any(line.startswith("Facts: ") for line in lines)
+    assert lines[-1] == "Ken has the floor: answer briefly."
 
 
 def test_human_phase_line(test_talk: Talk):

@@ -27,7 +27,7 @@ from websockets.frames import Close
 from websockets.http11 import Response
 
 import relay.config
-from relay import verify
+from relay import render, verify
 from relay.config import RATE, Settings
 from relay.talk import load_talk
 from relay.textutil import strip_tags
@@ -829,6 +829,42 @@ def words_of(raw: list[dict]) -> list[TimedWord]:
     return verify.parse_timestamps(raw)
 
 
+GLUED_LEAD = "<|emotion:enthusiasm|><|prosody:expressive_high|>Here"
+STRIPS = "(the render strips it: whole <|…|> tags and split pieces)"
+# Ways TTS 3 might put TAGGED_TEXT's three tags into its word list (no live run has shown which yet): the tokens that
+# stand for the first word "Here", and the tokens between "works." and "Every".
+TAG_SHAPES = {
+    "glued to the first word": ([GLUED_LEAD], []),
+    "split at both colons": (["<|emotion:", "enthusiasm|><|prosody:", "expressive_high|>Here"], []),
+    "split at the first colon": (["<|emotion:", "enthusiasm|><|prosody:expressive_high|>Here"], []),
+    "every tag split into words": (["<|emotion:", "enthusiasm|>", "<|prosody:", "expressive_high|>", "Here"], []),
+    "pause tag split": ([GLUED_LEAD], ["<|prosody:", "pause|>"]),
+    "pause tag unclosed": ([GLUED_LEAD], ["<|prosody:pause"]),
+    "whole tags as words": (["<|emotion:enthusiasm|>", "<|prosody:expressive_high|>", "Here"], ["<|prosody:pause|>"]),
+    "bare tag names": (["emotion:enthusiasm", "expressive_high", "Here"], ["pause"]),
+    "split around the bars": (["<", "|emotion:enthusiasm|><|prosody:expressive_high|", ">Here"], []),
+}
+STRIPPED_SHAPES = [name for name in TAG_SHAPES if name not in ("bare tag names", "split around the bars")]
+
+
+def shaped_words(shape: str, *, pause_ms: int = 600) -> list[dict]:
+    """TAGGED_TEXT's TTS `timestamps` (`pause_ms` of silence before "Every") with its tags in a TAG_SHAPES shape.
+
+    The last lead token carries the timing of "Here"; every other tag token is zero-width where it sits.
+    """
+    lead, mid = TAG_SHAPES[shape]
+    words = timed_words(verify.TAGGED_TEXT, pause_after=4, pause_ms=pause_ms)
+    here, works = words[0], words[4]
+    pieces = [{"word": token, "start": here["start"], "end": here["start"]} for token in lead[:-1]]
+    gap = [{"word": token, "start": works["end"], "end": works["end"]} for token in mid]
+    return [*pieces, {**here, "word": lead[-1]}, *words[1:5], *gap, *words[5:]]
+
+
+def plain_words(pause_ms: int = 90) -> list[TimedWord]:
+    """The untagged reading of TAGGED_TEXT: `pause_ms` between "works." and "Every"."""
+    return words_of(timed_words(verify.TAGGED_TEXT, pause_after=4, pause_ms=pause_ms))
+
+
 def test_parse_timestamps_converts_seconds_and_keeps_null():
     assert verify.parse_timestamps(None) is None
     assert verify.parse_timestamps([]) == []
@@ -844,7 +880,43 @@ def test_tag_findings_pass_when_the_pause_widens_the_gap():
     assert findings.status == "PASS"
     assert findings.leak == "no tag text in the word list"
     assert findings.pause == "pause gap [works. | Every] 600 ms with the tag, 90 ms without (+510 ms)"
-    assert "words: 19 from TTS (tags removed), 19 in the text" in findings.lines
+    assert "words: 19 kept by the render (of 19 from TTS), 19 in the text" in findings.lines
+
+
+@pytest.mark.parametrize("shape", STRIPPED_SHAPES)
+def test_tag_findings_pass_on_tag_text_the_render_strips(shape):
+    """Review render#7: F3 judged tag pieces with strip_tags alone, so it FAILed ("the render can't strip it") on
+    split pieces relay.render cleans, and measured a split pause tag by word count (a 600 ms pause read as 0 ms)."""
+    tagged = shaped_words(shape)
+    findings = verify.tag_findings(verify.TAGGED_TEXT, words_of(tagged), plain_words(), 6000)
+    assert findings.status == "PASS", findings.lines
+    raw = [word["word"] for word in tagged if any(ch in word["word"] for ch in "<|>")]
+    assert findings.leak == f"raw tag text in {len(raw)} word(s): {', '.join(raw)} {STRIPS}"
+    assert findings.pause == "pause gap [works. | Every] 600 ms with the tag, 90 ms without (+510 ms)"
+    assert f"words: 19 kept by the render (of {len(tagged)} from TTS), 19 in the text" in findings.lines
+
+
+def test_tag_findings_fail_only_on_tag_text_the_render_cannot_strip():
+    tagged = shaped_words("split around the bars")
+    findings = verify.tag_findings(verify.TAGGED_TEXT, words_of(tagged), plain_words(), 6000)
+    assert findings.status == "FAIL"
+    assert findings.leak == ("tag text the render can't strip in 1 word(s): >Here (the captions would show it); "
+                             f"raw tag text in 2 word(s): <, |emotion:enthusiasm|><|prosody:expressive_high| {STRIPS}")
+    kept = render.api_words_ms(tagged, 6000, drop=render.tag_word_names(verify.TAGGED_TEXT))
+    assert kept[0][0] == ">Here"  # the FAIL is real: the render would put ">Here" in the captions
+    named = verify.tag_findings(verify.TAGGED_TEXT, words_of(shaped_words("bare tag names")), plain_words(), 6000)
+    assert named.status == "PASS"
+    assert named.leak.startswith("bare tag names show up as words: emotion:enthusiasm, expressive_high, pause (the "
+                                 "render drops these with a warning")
+
+
+@pytest.mark.parametrize("shape", list(TAG_SHAPES))
+def test_spoken_words_are_the_words_the_render_keeps(shape):
+    """F3 measures the pause on the very word list relay.render writes to <n>.json: same words, same times."""
+    tagged = shaped_words(shape)
+    kept = verify.spoken_words(verify.TAGGED_TEXT, words_of(tagged))
+    assert [(w.word, w.start, w.end) for w in kept] == render.api_words_ms(
+        tagged, 6000, drop=render.tag_word_names(verify.TAGGED_TEXT))
 
 
 def test_tag_findings_flag_tag_names_partial_tags_and_a_missing_pause():
@@ -855,8 +927,19 @@ def test_tag_findings_flag_tag_names_partial_tags_and_a_missing_pause():
     # bare tag names are reported but don't fail F3: relay.render drops them from the word list
     assert findings.status == "PASS" and "bare tag names show up as words: enthusiasm" in findings.leak
     assert "the render drops these" in findings.leak
-    partial = words_of([{"word": "<|prosody:pause", "start": 1.0, "end": 1.1}, *timed_words(text)])
-    assert verify.tag_findings(text, partial, None, 6000).status == "FAIL"
+    # an unclosed piece is stripped by the render (no FAIL); without an untagged reading the pause can't be judged
+    unclosed = words_of([{"word": "<|prosody:pause", "start": 1.0, "end": 1.1}, *timed_words(text)])
+    findings = verify.tag_findings(text, unclosed, None, 6000)
+    assert findings.status == "LISTEN" and findings.leak == f"raw tag text in 1 word(s): <|prosody:pause {STRIPS}"
+    both = words_of([{"word": "<|emotion:", "start": 0.0, "end": 0.0}, {"word": "enthusiasm|>", "start": 0.0,
+                                                                         "end": 0.0},
+                     {"word": "prosody:expressive_high", "start": 0.0, "end": 0.0},
+                     *timed_words(text, pause_after=4, pause_ms=600)])
+    findings = verify.tag_findings(text, both, plain_words(), 6000)
+    assert findings.status == "PASS"
+    assert findings.leak == (f"raw tag text in 2 word(s): <|emotion:, enthusiasm|> {STRIPS}; bare tag names show up "
+                             "as words: prosody:expressive_high (the render drops these with a warning; check that "
+                             "the real words' timings still line up)")
     glued = timed_words(text, pause_after=4, pause_ms=600)
     glued[0]["word"] = "<|emotion:enthusiasm|><|prosody:expressive_high|>Here"
     findings = verify.tag_findings(text, words_of(glued), words_of(timed_words(text, pause_after=4)), 6000)
@@ -947,19 +1030,72 @@ async def test_check_tags_fails_without_timestamps(live_settings):
     tts = FakeTTS(lambda body: FakeResponse(200, tts_body(body["input"], words=None)))
     result = await verify.check_tags(Ctx(live_settings, post=tts, echo=quiet))
     assert result.status == "FAIL" and "timestamps null" in result.summary
+    assert "the render would fall back to estimated timings" in result.summary
+    # [] = TTS 3 heard no speech: the render no longer pretends to time such a chunk (review render#3), so F3 must
+    # not say it would estimate timings
+    tts = FakeTTS(lambda body: FakeResponse(200, tts_body(body["input"], words=[])))
+    result = await verify.check_tags(Ctx(live_settings, post=tts, echo=quiet))
+    assert result.status == "FAIL" and "timestamps [] (TTS 3 heard no speech in the audio)" in result.summary
+    assert "estimate" not in result.summary
+    # a shape the parser can't read is not "no speech": say so and point at the raw JSON
+    tts = FakeTTS(lambda body: FakeResponse(200, tts_body(body["input"], words={"words": ["Here"]})))
+    result = await verify.check_tags(Ctx(live_settings, post=tts, echo=quiet))
+    assert result.status == "FAIL" and "no speech" not in result.summary
+    assert "timestamps this check can't read (a dict" in result.summary and "tagged.json" in result.summary
 
 
-async def test_check_latency_reports_medians_and_where_the_rest_is_measured(live_settings):
+async def test_check_tags_passes_when_tts_splits_a_tag_the_render_strips(live_settings):
+    """Review render#7's scenario end to end: TTS 3 splits the leading tags at the first colon. F3 used to FAIL with
+    "the render can't strip it" (and the run of show says to delete the tags then); the render keeps clean words."""
+    def respond(body: dict) -> FakeResponse:
+        tagged = body["input"] == verify.TAGGED_TEXT
+        words = shaped_words("split at the first colon") if tagged else timed_words(body["input"], pause_after=4,
+                                                                                     pause_ms=90)
+        return FakeResponse(200, tts_body(body["input"], audio_ms=6000, words=words))
+
+    result = await verify.check_tags(Ctx(live_settings, post=FakeTTS(respond), echo=quiet))
+    assert result.status == "PASS", result.lines
+    assert (f"raw tag text in 2 word(s): <|emotion:, enthusiasm|><|prosody:expressive_high|>Here {STRIPS}"
+            in result.summary)
+    assert "can't strip" not in result.summary and "+510 ms" in result.summary
+    assert "words: 19 kept by the render (of 20 from TTS), 19 in the text" in result.lines
+
+
+async def test_check_latency_reports_medians_and_says_exactly_what_it_measured(live_settings):
     server = FakeServer()
     result = await verify.check_latency(Ctx(live_settings, connect=server.connect, echo=quiet), runs=3)
     assert result.status == "PASS", result.lines
     assert len(server.connections) == 4 and all(conn.client_closed for conn in server.connections)
     assert [conn.types().count("response.create") for conn in server.connections] == [3, 0, 0, 0]
     text = "\n".join(result.lines)
-    assert "typed turn → first audio: median" in text and "n=3" in text
+    assert "typed turn (response.create sent → first audio delta received): median" in text and "n=3" in text
     assert "reconnect (old socket closed → new session.created): median" in text
-    assert "measured in the browser (status strip) and the app event log" in text
-    assert "measured in the browser and the app event log" in result.summary
+    # A typed turn is not end of speech → first reply audio, and the app's reply_latency_ms is not that number either
+    # (review realtime-protocol#3): every mention of end of speech says lower bound or not measured here.
+    speech = [line for line in [*result.lines, result.summary] if "end of speech" in line]
+    assert speech and all("lower bound" in line or "not measured here" in line.lower() for line in speech)
+    assert "reply_latency_ms" not in text + result.summary and "status strip" not in text + result.summary
+    assert "time it on a rehearsal recording" in text and "browser console" in text
+    assert "Not measured here: end of speech → first reply audio heard" in result.summary
+
+
+def test_latency_result_sets_a_typed_turn_against_the_spoken_target():
+    stats = verify.Latency(connect=[400], upgrade=[150], created=[200], first_audio=[600, 700, 650], close=[5],
+                           reconnect=[420])
+    result = verify.latency_result("chloe", stats)
+    assert result.status == "PASS"
+    assert ("typed turn (response.create sent → first audio delta received): median 650 ms (min 600, max 700, n=3); "
+            "a lower bound for brief F2's end of speech → first reply audio heard (≤ 1500 ms): leaves 850 ms for turn "
+            "detection, the mic upload and the deck's playback") in result.lines
+    stats.first_audio = [1600, 1700, 1650]
+    result = verify.latency_result("chloe", stats)
+    assert result.status == "FAIL"
+    assert any(line.endswith("(≤ 1500 ms): already 150 ms over before turn detection, the mic upload and the deck's "
+                             "playback") for line in result.lines)
+    stats.first_audio = []
+    result = verify.latency_result("chloe", stats)
+    assert result.status == "FAIL"
+    assert "typed turn (response.create sent → first audio delta received): n/a" in result.lines
 
 
 async def test_check_latency_keeps_its_numbers_when_a_reconnect_fails(live_settings):

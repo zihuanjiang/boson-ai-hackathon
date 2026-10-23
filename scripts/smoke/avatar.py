@@ -77,8 +77,9 @@ def stream(size):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", nargs="*", choices=["job", "stream"], default=["job", "stream"])
+    # No `default=` here: argparse would check a list default against `choices` as one value and reject it.
+    ap.add_argument("mode", nargs="*", choices=["job", "stream"], help="default: job stream")
     ap.add_argument("--size", default="640x640", choices=["640x640", "640x480", "480x640"])
     args = ap.parse_args()
-    for mode in args.mode:
+    for mode in args.mode or ["job", "stream"]:
         {"job": job, "stream": stream}[mode](args.size)

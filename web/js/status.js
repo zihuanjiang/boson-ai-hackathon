@@ -187,6 +187,11 @@ export class Banner {
     this.render();
   }
 
+  /** A resume countdown is running. */
+  get counting() {
+    return this.seconds > 0;
+  }
+
   /** Resume countdown: n > 0 starts it (ticking here), 0 cancels it. @param {number} seconds */
   countdown(seconds) {
     clearInterval(this.timer);

@@ -29,6 +29,7 @@ import { resolveSlide, toInt } from "./util.js";
 /**
  * @typedef {object} Talk
  * @property {string} id
+ * @property {string} version  render version of what the server presents ("" from a server that doesn't send it)
  * @property {string} presenter
  * @property {string} voice
  * @property {"tap"|"hold"} mic_mode
@@ -64,6 +65,7 @@ export function normalizeTalk(raw) {
   const slides = Array.isArray(raw?.slides) ? raw.slides : [];
   return {
     id: String(raw?.id ?? ""),
+    version: typeof raw?.version === "string" ? raw.version : "",
     presenter: String(raw?.presenter ?? "The presenter"),
     voice: String(raw?.voice ?? ""),
     mic_mode: raw?.mic_mode === "hold" ? "hold" : "tap",
@@ -92,6 +94,23 @@ export function normalizeTalk(raw) {
       };
     }),
   };
+}
+
+/**
+ * Does the server's `hello` describe something else than the talk this page loaded? "talk" = another talk id,
+ * "version" = the same talk with other slides or narration (a re-render or an edit, then a server restart): the
+ * page's slides, word timings and decoded audio are stale, while the backend cuts and resumes on the new ones.
+ * null = same talk and version, or nothing to compare (a field missing on either side).
+ * @param {Talk|null} talk  as loaded from /api/talk at boot
+ * @param {unknown} helloTalk  `hello.talk` (the talk id)
+ * @param {unknown} helloVersion  `hello.version`
+ * @returns {"talk"|"version"|null}
+ */
+export function staleTalk(talk, helloTalk, helloVersion) {
+  if (!talk) return null;
+  if (typeof helloTalk === "string" && helloTalk && talk.id && helloTalk !== talk.id) return "talk";
+  if (typeof helloVersion === "string" && helloVersion && talk.version && helloVersion !== talk.version) return "version";
+  return null;
 }
 
 /**

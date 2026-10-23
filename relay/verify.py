@@ -2,7 +2,7 @@
 
     uv run python -m relay.verify voices [--voices chloe,marcus,eleanor] [--line TEXT]   # F1 voice match, by ear
     uv run python -m relay.verify tags [--voice chloe]                                  # F3 tags + timestamps
-    uv run python -m relay.verify latency [--runs 5] [--voice chloe]                    # F2, server side
+    uv run python -m relay.verify latency [--runs 5] [--voice chloe]                    # F2 typed turns + reconnect
     uv run python -m relay.verify session [--talk talks/relay-intro]                    # F6 partial session.update
     uv run python -m relay.verify tools [--talk talks/relay-intro] [--runs 10]          # F5 tool reliability
     uv run python -m relay.verify idle [--wait 330] [--voice chloe]                     # F7 idle timeout + recovery
@@ -43,6 +43,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
 
 from .config import PRESET_VOICES, RATE, REALTIME_MODEL, ROOT, STT_MODEL, TTS_MODEL, Settings, load_settings
+from .render import clean_word, tag_word_names
 from .talk import MAX_SAY_CHARS, Slide, Talk, TalkError, load_talk
 from .textutil import find_tags, has_digits, norm_word, split_sentences, strip_tags, word_count
 
@@ -1124,18 +1125,37 @@ async def check_voices(ctx: Ctx, *, voices: Sequence[str] = DEFAULT_VOICES, line
     return result
 
 
-def tag_leaks(text: str, words: Sequence[TimedWord]) -> tuple[list[str], list[str]]:
-    """(words carrying raw tag text like "<|…|>", words that are bare tag names absent from the spoken text)."""
-    spoken = {norm_word(word) for word in strip_tags(text).split()}
-    names: set[str] = set()
-    for tag in find_tags(text):
-        for part in (tag.kind, tag.value, tag.kind + tag.value, *tag.value.split("_")):
-            token = norm_word(part)
-            if token and token not in spoken:
-                names.add(token)
-    raw = [w.word for w in words if any(ch in w.word for ch in "<|>")]
-    named = [w.word for w in words if w.word not in raw and norm_word(w.word) in names]
-    return raw, named
+TAG_CHARS = "<|>"  # how tag text shows in a TTS word: "<|emotion:enthusiasm|>Here", "<|emotion:", "enthusiasm|>Here"
+
+
+def rendered_word(word: str, names: frozenset[str]) -> str:
+    """`word` as relay.render keeps it in the captions, or "" when the render drops it.
+
+    The render's own per-word rule (`render.api_words_ms`): `render.clean_word` strips whole <|…|> tags and the split
+    pieces TTS 3 may report ("<|emotion:", "enthusiasm|>Here"); a word with nothing speakable left, or a bare tag
+    name from `names` (= `render.tag_word_names(text)`), is dropped.
+    """
+    clean = clean_word(word)
+    return "" if not clean or norm_word(clean) in names else clean
+
+
+def tag_leaks(text: str, words: Sequence[TimedWord]) -> tuple[list[str], list[str], list[str]]:
+    """Tag text in the TTS words for `text`, by what relay.render does with it: (stuck: words the render would caption
+    with tag characters in them, stripped: words whose tag text it removes, named: bare tag names like "enthusiasm"
+    that it drops with a warning)."""
+    names = tag_word_names(text)
+    stuck: list[str] = []
+    stripped: list[str] = []
+    named: list[str] = []
+    for w in words:
+        kept = rendered_word(w.word, names)
+        if any(ch in kept for ch in TAG_CHARS):
+            stuck.append(w.word)
+        elif any(ch in w.word for ch in TAG_CHARS):
+            stripped.append(w.word)
+        elif clean_word(w.word) and not kept:
+            named.append(w.word)
+    return stuck, stripped, named
 
 
 def pause_gap(text: str, words: Sequence[TimedWord]) -> tuple[int | None, str]:
@@ -1164,19 +1184,15 @@ def word_rows(words: Sequence[TimedWord] | None) -> list[str]:
     return textwrap.wrap(" ".join(f"{w.word}@{w.start}-{w.end}" for w in words), width=104)
 
 
-def spoken_words(words: Sequence[TimedWord], named: Sequence[str] = ()) -> list[TimedWord]:
-    """The word list as the render keeps it (tag text stripped, empty words dropped), minus bare tag names."""
-    out = []
-    for w in words:
-        word = strip_tags(w.word)
-        if norm_word(word) and w.word not in named:
-            out.append(TimedWord(word, w.start, w.end))
-    return out
+def spoken_words(text: str, words: Sequence[TimedWord]) -> list[TimedWord]:
+    """The TTS words for `text` as relay.render keeps them (`rendered_word`), times as given."""
+    names = tag_word_names(text)
+    return [TimedWord(kept, w.start, w.end) for w in words if (kept := rendered_word(w.word, names))]
 
 
 @dataclass
 class TagFindings:
-    status: str  # PASS | LISTEN (pause not measurably wider) | FAIL (partial tag text the render can't strip)
+    status: str  # FAIL: the render would caption tag text · LISTEN: the pause isn't measurably wider · PASS
     lines: list[str]
     leak: str
     pause: str
@@ -1184,30 +1200,33 @@ class TagFindings:
 
 def tag_findings(text: str, tagged: Sequence[TimedWord], plain: Sequence[TimedWord] | None,
                  audio_ms: int) -> TagFindings:
-    """What the tagged word list says: tag text in the words? Is the gap at <|prosody:pause|> wider than untagged?"""
-    raw, named = tag_leaks(text, tagged)
-    partial = [word for word in raw if any(ch in strip_tags(word) for ch in "<|>")]
-    if partial:
-        leak = f"partial tag text in {len(partial)} word(s): {', '.join(partial)} (the render can't strip it)"
-    elif named:
-        leak = (f"bare tag names show up as words: {', '.join(named)} (the render drops these with a warning; "
-                "check that the real words' timings still line up)")
-    elif raw:
-        leak = f"raw tag text in {len(raw)} word(s): {', '.join(raw)} (the render strips <|…|> spans)"
-    else:
-        leak = "no tag text in the word list"
-    clean = spoken_words(tagged, named)
+    """What the tagged word list says, judged by the render's own cleanup (`rendered_word`): does tag text reach the
+    captions? Is the gap at <|prosody:pause|> wider than in the untagged reading (`plain`)?"""
+    stuck, stripped, named = tag_leaks(text, tagged)
+    leaks = []
+    if stuck:
+        leaks.append(f"tag text the render can't strip in {len(stuck)} word(s): {', '.join(stuck)} (the captions "
+                     "would show it)")
+    if stripped:
+        leaks.append(f"raw tag text in {len(stripped)} word(s): {', '.join(stripped)} (the render strips it: whole "
+                     "<|…|> tags and split pieces)")
+    if named:
+        leaks.append(f"bare tag names show up as words: {', '.join(named)} (the render drops these with a warning; "
+                     "check that the real words' timings still line up)")
+    leak = "; ".join(leaks) or "no tag text in the word list"
+    clean = spoken_words(text, tagged)
     gap, label = pause_gap(text, clean)
-    base, _ = pause_gap(text, spoken_words(plain or []))
+    base, _ = pause_gap(text, spoken_words(strip_tags(text), plain or []))
     if gap is not None and base is not None:
         pause = f"pause gap [{label}] {gap} ms with the tag, {base} ms without ({gap - base:+d} ms)"
     else:
         pause = f"pause gap [{label}]: not found in the word lists ({gap} / {base})"
     last_end = max((w.end for w in tagged), default=0)
-    lines = [leak, f"words: {len(clean)} from TTS (tags removed), {word_count(text)} in the text", pause,
-             f"last word ends at {last_end} ms; audio is {audio_ms} ms"
+    lines = [leak,
+             f"words: {len(clean)} kept by the render (of {len(tagged)} from TTS), {word_count(text)} in the text",
+             pause, f"last word ends at {last_end} ms; audio is {audio_ms} ms"
              + (" (timings run past the audio!)" if last_end > audio_ms + 50 else "")]
-    if partial:  # the only tag text the render can't remove; bare tag names are dropped by the render
+    if stuck:  # the only tag text that reaches the captions: the render removes everything else
         status = "FAIL"
     elif gap is None or base is None or gap - base < PAUSE_MIN_EXTRA_MS:
         status = "LISTEN"
@@ -1233,9 +1252,18 @@ async def check_tags(ctx: Ctx, *, voice: str = DEFAULT_VOICE, text: str = TAGGED
         result.lines.append(f"    {count}, {seconds(tts.audio_ms)} of audio, request {tts.elapsed_ms} ms ({tts.source})")
         result.lines += [f"    {row}" for row in word_rows(tts.words)]
     if not tagged.words:
-        what = "null (alignment unavailable)" if tagged.words is None else "[] (no speech)"
+        raw = tagged.raw_timestamps
+        if raw is None:
+            what = ("timestamps null (alignment unavailable): the render would fall back to estimated timings, so "
+                    "captions and cut points would be approximate")
+        elif raw == []:
+            what = (f"timestamps [] (TTS 3 heard no speech in the audio): the render can't time such a chunk; listen "
+                    f"to {rel(out_dir)}/tagged.wav")
+        else:
+            what = (f"timestamps this check can't read (a {type(raw).__name__}, see {rel(out_dir)}/tagged.json): "
+                    "compare the shape with relay.render.api_words_ms")
         result.status = "FAIL"
-        result.summary = f"TTS 3 with tags + timestamps returned timestamps {what}; the render would estimate timings."
+        result.summary = f"TTS 3 with tags + timestamps returned {what}."
         return result
 
     findings = tag_findings(text, tagged.words, plain.words, tagged.audio_ms)
@@ -1293,31 +1321,53 @@ async def latency_reconnect(ctx: Ctx, opened: Opened, config: dict, stats: Laten
     return reopened
 
 
+SPOKEN_EXTRAS = "turn detection, the mic upload and the deck's playback"  # what a spoken turn adds to a typed one
+
+
+def typed_budget(first_audio: Sequence[int]) -> str:
+    """How a typed turn's median first audio sits against brief F2's spoken target, which it can only be a lower
+    bound for: a spoken turn also waits for turn detection, uploads the mic audio and plays through the deck."""
+    if not first_audio:
+        return ""
+    spare = TARGET_FIRST_AUDIO_MS - round(statistics.median(first_audio))
+    room = (f"leaves {spare} ms for {SPOKEN_EXTRAS}" if spare >= 0
+            else f"already {-spare} ms over before {SPOKEN_EXTRAS}")
+    return (f"; a lower bound for brief F2's end of speech → first reply audio heard (≤ {TARGET_FIRST_AUDIO_MS} ms): "
+            + room)
+
+
 def latency_result(voice: str, stats: Latency) -> Result:
+    """F2 verdict. It times typed turns (response.create sent → first audio delta received), new sessions and
+    reconnects; end of speech → first reply audio heard needs a spoken turn and is never claimed here."""
     first, reconnect = describe_ms(stats.first_audio), describe_ms(stats.reconnect)
     result = Result("latency", "PASS", [
         f"connect → session.created: {describe_ms(stats.connect)}; WebSocket upgrade alone {describe_ms(stats.upgrade)}",
-        f"typed turn → response.created: {describe_ms(stats.created)}",
-        f"typed turn → first audio: {first}  (spoken target, end of speech → first audio: ≤ {TARGET_FIRST_AUDIO_MS} ms)",
+        f"typed turn (response.create sent → response.created): {describe_ms(stats.created)}",
+        f"typed turn (response.create sent → first audio delta received): {first}{typed_budget(stats.first_audio)}",
         f"reconnect (old socket closed → new session.created): {reconnect}  (target ≤ {TARGET_RECONNECT_MS} ms); "
         f"closing the old socket took {describe_ms(stats.close)}",
         *stats.problems,
-        "not measured here: tap → silence (< 100 ms) and end of speech → first reply audio (≤ 1.5 s); those are "
-        "measured in the browser (status strip) and the app event log (metric reply_latency_ms, out/logs/).",
+        f"not measured here: end of speech → first reply audio heard (≤ {TARGET_FIRST_AUDIO_MS} ms) needs a spoken "
+        "turn: time it on a rehearsal recording, from the speaker's last word to Relay's first word; tap → silence "
+        "(< 100 ms): the deck logs its estimate in the browser console (\"… → silence ≈ N ms\").",
     ])
     slow_turn = not stats.first_audio or statistics.median(stats.first_audio) > TARGET_FIRST_AUDIO_MS
     slow_reconnect = not stats.reconnect or statistics.median(stats.reconnect) > TARGET_RECONNECT_MS
     if stats.problems or slow_turn or slow_reconnect:
         result.status = "FAIL"
-    result.summary = (f"voice {voice}: typed turn → first audio {first}; connect → session.created "
-                      f"{describe_ms(stats.connect)}; reconnect {reconnect} (target ≤ 2 s)"
+    result.summary = (f"voice {voice}: typed turn (response.create sent → first audio delta) {first}, a lower bound "
+                      f"for end of speech → first reply audio heard; connect → session.created "
+                      f"{describe_ms(stats.connect)}; reconnect (old socket closed → new session.created) {reconnect} "
+                      "(target ≤ 2 s)"
                       + (f"; problems: {'; '.join(stats.problems)}" if stats.problems else "")
-                      + ". Tap → silence and end of speech → reply are measured in the browser and the app event log.")
+                      + ". Not measured here: end of speech → first reply audio heard (≤ 1.5 s: time it on a "
+                        "rehearsal recording) and tap → silence (< 100 ms: the deck's browser console).")
     return result
 
 
 async def check_latency(ctx: Ctx, *, runs: int = 5, voice: str = DEFAULT_VOICE) -> Result:
-    """F2, server side: connect → session.created, typed turn → first audio, close → a reopened session."""
+    """F2, server side: connect → session.created, typed turns (response.create sent → first audio delta received),
+    reconnects (old socket closed → new session.created). End of speech → first reply audio needs a spoken turn."""
     config = session_config(ctx.settings, voice=voice, instructions=CHAT_INSTRUCTIONS)
     stats = Latency()
     ctx.echo(f"  … connect, {runs} typed turn(s), {runs} reconnect(s)")
@@ -1757,7 +1807,8 @@ def build_parser() -> argparse.ArgumentParser:
     voices.add_argument("--voices", type=_voice_list, help=f"comma-separated presets (default: {','.join(DEFAULT_VOICES)})")
     voices.add_argument("--line", type=_line, help="the line both APIs say (default: a narration line from the brief)")
     voice_option(sub.add_parser("tags", help="F3: leading delivery tags + a pause, with word timestamps"))
-    latency = sub.add_parser("latency", help="F2 (server side): connect, typed turn → first audio, reconnect")
+    latency = sub.add_parser("latency", help="F2 (server side): connect, typed turn (response.create → first audio "
+                                             "delta), reconnect; not end of speech → reply")
     latency.add_argument("--runs", type=_positive_int, help="typed turns and reconnects (default: 5)")
     voice_option(latency)
     talk_option(sub.add_parser("session", help="F6: does an instructions-only session.update keep voice, VAD, tools?"))

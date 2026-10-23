@@ -2,16 +2,24 @@
 
     app = create_app("talks/test", settings)        # served by `python -m relay serve talks/test`
 
+The talk, its word timings and every rendered wav are loaded once, at startup: `/media` serves that in-memory
+snapshot, never the file on disk, so the audio always matches the timings `/api/talk` and the controller use, whatever
+a render writes meanwhile. A re-render takes effect at the next server restart. `/api/talk` carries
+`version = timeline.render_version(talk, chunks)` (the controller's `hello` carries the same value), so an open deck
+can tell that a restarted server presents different narration. A wav whose length disagrees with its timings (a
+render still writing it) stops the server from starting.
+
 The app owns one `RealtimeLink` and one `Controller`, wired to each other, and a `DeckHub` (the controller's
 `BrowserPort`): one deck socket at a time; a new deck replaces the old one, which is closed with code 4000 (the
-client does not reconnect after it). A deck that stops reading for 5 s is dropped with code 4001 (it reconnects).
-The Realtime link starts with the server (a warm session); `start()` is idempotent, so the controller may call it
-again on `arm`.
+client does not reconnect after it). A deck that stops reading for 5 s is dropped and closed with code 4001 (it
+reconnects once it reads again). The Realtime link starts with the server (a warm session); `start()` is idempotent,
+so the controller may call it again on `arm`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -19,10 +27,10 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Mapping
+from typing import Any, AsyncIterator, Callable, Coroutine, Mapping
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
@@ -33,7 +41,8 @@ from .eventlog import EventLog
 from .ports import LogFn, null_log
 from .realtime import RealtimeLink
 from .talk import Talk, load_talk
-from .timeline import RenderedChunk, load_rendered
+from .timeline import RenderedChunk, RenderMissing, load_rendered, render_version
+from .tts import wav_duration_ms
 
 logger = logging.getLogger("relay.server")
 
@@ -45,8 +54,11 @@ REPLACED_REASON = "replaced by a newer deck"
 STALLED_CLOSE_CODE = 4001  # the client reconnects (any code but 4000)
 STALLED_REASON = "the deck stopped reading"
 DECK_SEND_TIMEOUT_S = 5.0
-DECK_CLOSE_TIMEOUT_S = 1.0
+DECK_CLOSE_TIMEOUT_S = 1.0  # closing the current deck at shutdown; a detached deck's close is never abandoned
 MEDIA_NAME_RE = re.compile(r"([0-9]{1,6})\.wav")
+WAV_MATCH_TOLERANCE_MS = 10  # the render takes `duration_ms` from these very bytes: a bigger gap is another take
+WAV_HEADER_BYTES = 44  # the render's guess for a wav header it can't read: PCM16 mono 24 kHz after 44 bytes
+WAV_BYTES_PER_MS = 48
 
 
 def default_controller_factory(talk: Talk, chunks: Chunks, settings: Settings, *, browser: Any, realtime: Any,
@@ -76,19 +88,72 @@ def talk_json(talk: Talk, chunks: Chunks, settings: Settings) -> dict:
         slides.append({"id": slide.id, "index": slide.index, "speaker": slide.speaker, "mode": slide.mode,
                        "title": slide.title, "fragments": slide.fragments, "chunks": items})
     return {"id": talk.id, "presenter": talk.presenter, "voice": talk.voice, "mic_mode": settings.mic_mode,
-            "fake_audio": any(chunk.fake for chunk in chunks.values()), "slides": slides}
+            "fake_audio": any(chunk.fake for chunk in chunks.values()),
+            "version": render_version(talk, dict(chunks)), "slides": slides}
 
 
-def media_path(chunks: Chunks, slide: str, name: str) -> Path | None:
-    """The wav of a rendered chunk of this talk, or None. Only looks names up, never builds a path from them."""
+# --- the narration snapshot ---------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class NarrationWav:
+    """One rendered wav, read into memory at startup: `/media` serves these bytes, never the file on disk."""
+
+    body: bytes
+    etag: str  # a strong validator (a hash of the bytes), quoted as HTTP wants it
+
+
+def wav_length_ms(data: bytes) -> int:
+    """How long a rendered wav lasts, measured like the render measures it (the header, else the size)."""
+    length = wav_duration_ms(data)
+    if length is None:
+        length = max(0, (len(data) - WAV_HEADER_BYTES) // WAV_BYTES_PER_MS)
+    return length
+
+
+def load_narration(talk: Talk, chunks: Chunks) -> dict[tuple[str, int], NarrationWav]:
+    """Read every rendered wav of `chunks` into memory: the snapshot `/media` serves until the server restarts.
+
+    Raises `RenderMissing` when a wav can't be read or its length disagrees with its word timings: a render was
+    writing that chunk while the server started, or the wav was swapped by hand. Chunks without a `wav_path`
+    (synthetic test chunks) have no audio: `/media` answers 404 and the deck plays their captions silently.
+    """
+    narration: dict[tuple[str, int], NarrationWav] = {}
+    problems: list[str] = []
+    for (slide, index), chunk in chunks.items():
+        if chunk.wav_path is None:
+            continue
+        label = f"{slide}/{index}"
+        try:
+            body = Path(chunk.wav_path).read_bytes()
+        except OSError as exc:
+            problems.append(f"{label}: cannot read {chunk.wav_path} ({exc.strerror or exc})")
+            continue
+        length = wav_length_ms(body)
+        if abs(length - chunk.duration_ms) > WAV_MATCH_TOLERANCE_MS:
+            problems.append(
+                f"{label}: the wav lasts {length} ms but its word timings were made for {chunk.duration_ms} ms. "
+                f"A render is still writing it (let it finish), or the wav was replaced (render it again: "
+                f"`uv run python -m relay.render talks/{talk.id} --force --only {slide}`). Then start the server.")
+            continue
+        narration[(slide, index)] = NarrationWav(body, f'"{hashlib.sha256(body).hexdigest()[:24]}"')
+    if problems:
+        raise RenderMissing(talk.id, problems)
+    return narration
+
+
+def narration_for(narration: Mapping[tuple[str, int], NarrationWav], slide: str, name: str) -> NarrationWav | None:
+    """The snapshot behind `/media/<slide>/<name>`, or None. Only looks names up, never builds a path from them."""
     match = MEDIA_NAME_RE.fullmatch(name)
     if not match:
         return None
-    chunk = chunks.get((slide, int(match.group(1))))
-    if chunk is None or chunk.wav_path is None:
-        return None
-    path = Path(chunk.wav_path)
-    return path if path.is_file() else None
+    return narration.get((slide, int(match.group(1))))
+
+
+def _etag_matches(header: str | None, etag: str) -> bool:
+    """Whether an `If-None-Match` header (entity tags, weak or strong, or `*`) names this representation."""
+    if not header:
+        return False
+    return any(tag == "*" or tag.removeprefix("W/") == etag for tag in (part.strip() for part in header.split(",")))
 
 
 async def _call(log: LogFn, target: Any, method: str, *args: Any) -> None:
@@ -102,6 +167,8 @@ async def _call(log: LogFn, target: Any, method: str, *args: Any) -> None:
         logger.exception("controller.%s failed", method)
 
 
+# --- the deck socket ----------------------------------------------------------------------------------------
+
 @dataclass(eq=False)
 class _Deck:
     """One deck connection. Each has its own send lock, so a stuck old deck never blocks its replacement."""
@@ -109,6 +176,8 @@ class _Deck:
     ws: WebSocket
     number: int
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    stalled: bool = False  # dropped because it stopped reading: its 4001 close is on its way
+    close_done: bool = False  # the close attempt is over (the frame went out, or it failed)
 
 
 class DeckHub:
@@ -116,8 +185,14 @@ class DeckHub:
 
     `send` is serialised per deck and silently drops messages while no deck is connected. Messages from a deck that
     has been replaced are ignored, so a stale tab can never drive the show. A deck that stops reading (a hung tab)
-    for `send_timeout` seconds is dropped (close 4001, so it reconnects once it recovers) instead of blocking the
-    controller, which holds its lock while it sends.
+    for `send_timeout` seconds is dropped instead of blocking the controller, which holds its lock while it sends:
+    the controller hears about it at once, and the deck is closed with 4001 so it reconnects once it recovers.
+
+    A deck that is no longer current (replaced, or dropped) is closed in the background, and that close is never
+    abandoned: uvicorn writes the close frame only once the tab reads again, and a close cancelled half-way can never
+    be sent (Starlette marks the socket closed before the frame goes out), which would leave a recovered tab
+    connected with all its input ignored. The close ends when the frame is out, when the connection dies, or at
+    shutdown.
     """
 
     def __init__(self, log: LogFn = null_log, *, send_timeout: float = DECK_SEND_TIMEOUT_S,
@@ -172,8 +247,10 @@ class DeckHub:
             old, self._deck = self._deck, None
             if old is not None:
                 self._log("deck_replaced", {"deck": old.number, "code": REPLACED_CLOSE_CODE})
-                await self._close(old, REPLACED_CLOSE_CODE, REPLACED_REASON)
                 self._flush_logs()
+                # In the background: the new deck is greeted at once, and a hung old tab still learns it was
+                # replaced once it reads again.
+                self._spawn(self._close_detached(old, REPLACED_CLOSE_CODE, REPLACED_REASON))
                 await _call(self._log, controller, "on_browser_disconnected")
             self._decks += 1
             deck = _Deck(ws, self._decks)
@@ -203,43 +280,69 @@ class DeckHub:
                 self._log("deck_closed", {"deck": deck.number, "code": message.get("code")})
                 return
             msg = self._parse(message)
-            if msg is None or self._deck is not deck:
+            if msg is None:
+                continue
+            if self._deck is not deck:  # replaced or dropped: a stale tab never drives the show
+                if deck.stalled and deck.close_done:
+                    # Dropped for not reading, its 4001 never got out, and now it talks again: end the connection
+                    # (the tab sees it close and reconnects) rather than ignore it for good.
+                    self._log("deck_closed", {"deck": deck.number, "reason": "a dropped deck sent input"})
+                    return
                 continue
             self._log_in(msg)
             await _call(self._log, controller, "on_browser", msg)
 
     def _drop_stalled(self, deck: _Deck) -> None:
-        """Detach a deck that stopped reading; close it and tell the controller from a separate task (the caller
-        may be the controller itself, holding its lock)."""
+        """Detach a deck that stopped reading; tell the controller and close the deck from a separate task (the
+        caller may be the controller itself, holding its lock)."""
         if self._deck is not deck:
             return
         self._deck = None
+        deck.stalled = True
         self._flush_logs()
-        task = asyncio.get_running_loop().create_task(self._after_stall(deck))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._spawn(self._after_stall(deck))
 
     async def _after_stall(self, deck: _Deck) -> None:
-        await self._close(deck, STALLED_CLOSE_CODE, STALLED_REASON)
+        """The controller first (it goes IDLE at once), then the 4001, however long the tab takes to read it."""
         async with self._switch_lock:
             if self._deck is None and self._controller is not None:  # no newer deck took over meanwhile
                 self._log("deck_disconnected", {"deck": deck.number, "reason": "stalled"})
                 await _call(self._log, self._controller, "on_browser_disconnected")
+        await self._close_detached(deck, STALLED_CLOSE_CODE, STALLED_REASON)
 
-    async def _close(self, deck: _Deck, code: int, reason: str) -> None:
-        """Best effort, bounded: a deck whose lock is held by a stuck send is left to that send's timeout."""
+    async def _close_detached(self, deck: _Deck, code: int, reason: str) -> None:
+        """Close a deck that is no longer current, with no time limit (see the class docstring)."""
+        sent = await self._close(deck, code, reason, timeout=None)
+        self._log("deck_close", {"deck": deck.number, "code": code, "sent": sent})
+
+    async def _close(self, deck: _Deck, code: int, reason: str, *, timeout: float | None) -> bool:
+        """Close one deck socket (after any send in flight to it). True when the close frame went out."""
         try:
-            async with asyncio.timeout(self._close_timeout):
+            async with asyncio.timeout(timeout):
                 async with deck.lock:
                     await deck.ws.close(code=code, reason=reason)
-        except Exception:  # noqa: BLE001 - already closed, or not reading at all
-            pass
+            return True
+        except Exception:  # noqa: BLE001 - already closed, gone, or (bounded close) not reading at all
+            return False
+        finally:
+            deck.close_done = True
 
     async def close(self, code: int = 1001, reason: str = "server shutting down") -> None:
-        """Close the current deck socket (shutdown)."""
+        """Shutdown: close the current deck socket (bounded) and give up on closes still waiting for a hung tab."""
         deck, self._deck = self._deck, None
         if deck is not None:
-            await self._close(deck, code, reason)
+            await self._close(deck, code, reason, timeout=self._close_timeout)
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _spawn(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task:
+        task = asyncio.get_running_loop().create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     # --- parsing and logging --------------------------------------------------------------------------------
 
@@ -343,7 +446,8 @@ class _ControllerRef:
 
 class _NoCache:
     """`Cache-Control: no-cache` on every HTTP response that has none: the browser always revalidates (cheap 304s),
-    so an edited web/ file or a re-rendered chunk shows up on the next reload, never minutes later."""
+    so an edited web/ file shows up on the next reload, never minutes later. (The talk and its narration are a
+    snapshot taken at startup: a re-render shows up after a server restart.)"""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -364,7 +468,8 @@ class _NoCache:
 def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_root: Path = OUT,
                connect: Callable[..., Any] | None = None, controller_factory: ControllerFactory | None = None,
                chunks: Chunks | None = None, web_dir: str | Path = WEB) -> FastAPI:
-    """Build the app for one talk. Raises `TalkError` (invalid package) or `RenderMissing` (narration not rendered).
+    """Build the app for one talk. Raises `TalkError` (invalid package) or `RenderMissing` (narration not rendered,
+    or a wav that doesn't match its word timings).
 
     `connect` replaces `websockets.connect` for the Realtime link (`fake_connect` when `settings.fake_realtime`);
     `controller_factory(talk, chunks, settings, browser=, realtime=, log=)` replaces the real controller (tests);
@@ -373,13 +478,16 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     settings = settings if settings is not None else load_settings()
     talk = load_talk(talk_dir)
     chunks = dict(chunks) if chunks is not None else load_rendered(talk, out_root)
+    narration = load_narration(talk, chunks)  # what /media serves until the next start, whatever renders meanwhile
+    version = render_version(talk, chunks)
     web_dir = Path(web_dir)
     log = EventLog.for_talk(talk.id, out_root)
     log("server_start", {"talk": talk.id, "root": str(talk.root), "voice": talk.voice, "mic_mode": settings.mic_mode,
                          "fake_realtime": settings.fake_realtime, "key_set": bool(settings.api_key),
                          "realtime_url": settings.realtime_url, "turn_detection": settings.turn_detection,
                          "temperature": settings.temperature, "full_session_update": settings.full_session_update,
-                         "chunks": len(chunks), "fake_audio": any(chunk.fake for chunk in chunks.values())})
+                         "chunks": len(chunks), "fake_audio": any(chunk.fake for chunk in chunks.values()),
+                         "version": version, "narration_bytes": sum(len(wav.body) for wav in narration.values())})
 
     hub = DeckHub(log)
     ref = _ControllerRef()
@@ -415,6 +523,8 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     app.state.settings = settings
     app.state.talk = talk
     app.state.chunks = chunks
+    app.state.narration = narration
+    app.state.version = version
     app.state.controller = controller
     app.state.link = link
     app.state.hub = hub
@@ -440,11 +550,13 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
         return Response(talk.slides_md, media_type="text/markdown; charset=utf-8")
 
     @app.get("/media/{slide}/{name}")
-    async def media(slide: str, name: str) -> FileResponse:
-        path = media_path(chunks, slide, name)
-        if path is None:
+    async def media(slide: str, name: str, request: Request) -> Response:
+        wav = narration_for(narration, slide, name)
+        if wav is None:
             raise HTTPException(status_code=404, detail="not a rendered chunk of this talk")
-        return FileResponse(path, media_type="audio/wav")
+        if _etag_matches(request.headers.get("if-none-match"), wav.etag):
+            return Response(status_code=304, headers={"etag": wav.etag})
+        return Response(wav.body, media_type="audio/wav", headers={"etag": wav.etag})
 
     @app.get("/healthz")
     async def healthz() -> dict:
