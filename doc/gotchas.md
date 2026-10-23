@@ -104,3 +104,13 @@ Add our own findings here as we hit them (date them).
   JavaScriptCore (`/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc`).
 - Python: uv-managed 3.12 only. `sounddevice` needs PortAudio (bundled in the macOS wheel). `websockets` ≥ 13 uses
   `additional_headers=` (older versions: `extra_headers=`).
+
+## Measured (ours, dated)
+
+- 2026-10-23, `scripts/e2e_chrome.py` in headless Chrome at 1280×720 (fake mic, fake Realtime, fake renders):
+  tap → silence ≈ 55 ms (key handler 0.5 ms + fade + output latency; brief target < 100 ms) · tap → mic open 11 ms
+  (deck socket round trip) · Arm 0.23 s · AudioContext runs at 24000 Hz, output latency 5 ms · the reply player
+  drains in real time (headless Chrome's audio clock advances) · console clean. Reply latency 352–355 ms is the fake's
+  think time, not Higgs: measure the real one with `python -m relay.verify latency` and in the event log.
+- The very first headless run took ~10 s between page load and `arm` (cold Chrome profile); the second took 0.23 s.
+  Open and Arm the deck a few minutes before going on stage.

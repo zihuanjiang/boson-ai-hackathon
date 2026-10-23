@@ -4,11 +4,13 @@ Spec: `doc/brief.md`. Build contract (interfaces, protocol, state machine): `doc
 
 ## Status
 
-2026-10-23 (Fri) 16:30 — offline v1 built and integrated on branch `claude/relay-v1`: every module of
+2026-10-23 (Fri) 16:00 — offline v1 built and integrated on branch `claude/relay-v1`: every module of
 `doc/design.md` exists, 903 tests pass (unit, controller scenarios, backend end-to-end over real uvicorn with the
-fake Realtime, and ~545 deck-client checks under JavaScriptCore). Not yet seen: the deck in a real Chrome (run
-`scripts/e2e_chrome.py` outside the sandbox) and anything against the live API (no key in `.env` yet). Next: an
-adversarial review pass, then the live checks as soon as the key + credits are in.
+fake Realtime, and ~545 deck-client checks under JavaScriptCore), and the full run of show passes in real Chrome
+(`scripts/e2e_chrome.py`: tap → silence ≈ 55 ms). Not yet seen: anything against the live API (no key in `.env`
+yet). Next: an
+adversarial review pass (running; resume notes in `.scratch/relay-build/RESUME.md`), then the live checks as soon as
+the key + credits are in.
 
 ## Architecture (one paragraph)
 
@@ -73,7 +75,8 @@ Offline v1
 - [x] Content: `talks/relay-intro/` first draft (slides, script, kb, run of show) — Ken to edit every spoken line
 - [x] Verify scripts: `python -m relay.verify` (F1, F2, F3, F5, F6, F7)
 - [x] Integration: foundation fixes, design sync, backend e2e (`tests/test_e2e.py`), web checks in pytest
-- [ ] Chrome e2e (`scripts/e2e_chrome.py`, run by Ken outside the sandbox) + a look at the layout
+- [x] Chrome e2e (`scripts/e2e_chrome.py`, run by Ken outside the sandbox): PASS; layout reviewed from screenshots
+      (status strip overflows at 1280×720 with two long tool names: fix pending)
 - [ ] Review pass + fixes
 
 Live (needs key)
