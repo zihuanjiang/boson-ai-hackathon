@@ -94,8 +94,13 @@ Add our own findings here as we hit them (date them).
 
 ## Environment (this machine / Claude Code)
 
-- The sandbox blocks creating `.git` inside this project; `git init` must be run by the user outside the sandbox
-  (observed 2026-10-22). Everything else (writing files, curl to docs.boson.ai / raw.githubusercontent.com with
-  `allowed_domains`) works.
+- The sandbox blocked creating `.git` on 2026-10-22 (the user ran `git init`); from 2026-10-23 `.git` is writable.
+  Local port binding works since the user enabled `sandbox.network.allowLocalBinding` (2026-10-23).
+- Chrome / Playwright cannot run inside the sandbox (2026-10-23): Chrome needs the macOS per-user temp dir
+  (`/var/folders/…/T`, from `getconf DARWIN_USER_TEMP_DIR`, not `$TMPDIR`) for its ProcessSingleton socket and
+  touches `~/Library/Application Support/Google/Chrome/Crashpad`. Browser end-to-end checks run outside the sandbox:
+  the user runs them with `! <command>`.
+- Node/npm are not installed (decision D1): the web client is plain ES modules; JS syntax checks use macOS
+  JavaScriptCore (`/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc`).
 - Python: uv-managed 3.12 only. `sounddevice` needs PortAudio (bundled in the macOS wheel). `websockets` ≥ 13 uses
   `additional_headers=` (older versions: `extra_headers=`).
