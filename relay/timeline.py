@@ -115,9 +115,11 @@ def render_version(talk: Talk, chunks: dict[tuple[str, int], RenderedChunk]) -> 
     The server puts it in `/api/talk` and the controller in `hello`; a deck that sees a different version after a
     reconnect knows its preloaded talk and audio are stale (design §3, §4).
     """
+    # Word timings ride along: a forced re-render of the same text can keep every length but not its timings.
     payload = json.dumps({
         "talk": talk.id, "voice": talk.voice, "slides_md": talk.slides_md,
-        "chunks": sorted((slide, index, c.hash, c.fake, c.duration_ms) for (slide, index), c in chunks.items()),
+        "chunks": sorted((slide, index, c.hash, c.fake, c.duration_ms, [(w.start, w.end) for w in c.words])
+                         for (slide, index), c in chunks.items()),
     }, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 

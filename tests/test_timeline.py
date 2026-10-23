@@ -348,7 +348,7 @@ def test_render_version_is_stable_and_short(test_talk, test_chunks):
     assert len(version) == 12 and int(version, 16) >= 0
 
 
-@pytest.mark.parametrize("change", ["hash", "fake", "duration", "slides", "voice", "drop"])
+@pytest.mark.parametrize("change", ["hash", "fake", "duration", "slides", "voice", "drop", "timings"])
 def test_render_version_changes_with_what_the_deck_preloads(test_talk, test_chunks, change):
     from dataclasses import replace
 
@@ -366,6 +366,10 @@ def test_render_version_changes_with_what_the_deck_preloads(test_talk, test_chun
         talk = replace(test_talk, slides_md=test_talk.slides_md + "\n")
     elif change == "voice":
         talk = replace(test_talk, voice="marcus")
+    elif change == "timings":  # a forced re-render of the same text: same hash and length, new word timings
+        words = list(chunks[key].words)
+        words[1] = replace(words[1], start=words[1].start + 40)
+        chunks[key] = replace(chunks[key], words=words)
     else:
         del chunks[key]
     assert timeline.render_version(talk, chunks) != before

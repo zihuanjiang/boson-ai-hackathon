@@ -209,7 +209,8 @@ class RealtimeLink:
             delay = self._backoff[min(failures, len(self._backoff) - 1)]
             if not good and _rate_limited(reason):
                 delay = max(delay, RATE_LIMIT_BACKOFF_S)
-                reason = self._clip(f"{reason} (rate limited: retrying in {delay:g} s)")
+                suffix = f" (rate limited: retrying in {delay:g} s)"
+                reason = self._clip(reason)[: DETAIL_MAX - len(suffix)] + suffix  # the suffix always survives
             failures += 1
             await self._set_status("reconnecting", reason)
             await self._sleep(delay)

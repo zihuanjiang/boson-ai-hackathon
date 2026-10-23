@@ -342,6 +342,22 @@ async def test_a_rate_limited_rejection_waits_before_retrying() -> None:
     await link.stop()
 
 
+async def test_a_long_rate_limited_reason_keeps_its_retry_note() -> None:
+    from relay.realtime import DETAIL_MAX
+
+    conn = ScriptedConn(auto_created=False)
+    connector, rec, sleeps = Connector(conn), Recorder(), Sleeps(block=True)
+    link = make_link(connector, rec, sleeps)
+    await link.start()
+    await until(lambda: conn.sent)
+    conn.push({"type": "error", "error": {"type": "invalid_request_error",
+                                          "message": "voices API returned HTTP 429 " + "x" * 400}})
+    conn.close_with(1008, "invalid session")
+    await until(lambda: link.status == "reconnecting")
+    assert link.detail.endswith("(rate limited: retrying in 10 s)") and len(link.detail) <= DETAIL_MAX
+    await link.stop()
+
+
 async def test_close_reasons_use_the_received_code_or_connection_lost() -> None:
     first, second = ScriptedConn(), ScriptedConn()
     connector, rec, sleeps = Connector(first, second), Recorder(), Sleeps()

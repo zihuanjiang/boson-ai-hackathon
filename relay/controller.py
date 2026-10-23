@@ -1512,7 +1512,9 @@ class Controller:
         if "invalid_previous_item_id" in kinds:
             return True
         if not self.realtime.ready and "insufficient_quota" not in kinds:
-            return True  # session setup failed (e.g. voice validation 429): the strip shows "reconnecting: …"
+            # Session setup failed (e.g. voice validation 429): the strip shows "Realtime reconnecting…" and the
+            # reason sits in the dot's tooltip and the checklist's Realtime row; a toast would only alarm the room.
+            return True
         turn = self.turn
         return (bool(kinds & SEND_RACE_ERRORS) and self.state == REPLYING and turn is not None
                 and turn.ended_by in ("hand", "listen_max"))
