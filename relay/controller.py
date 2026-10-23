@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
 
 from . import tools
-from .config import RATE, REALTIME_MODEL, STT_MODEL, Settings
+from .config import RATE, STT_MODEL, Settings
 from .ports import AsyncioClock, BrowserPort, Clock, LogFn, RealtimePort, Timer, null_log
 from .prompts import TurnContext, build_instructions
 from .talk import Slide, Talk
@@ -42,6 +42,7 @@ REPLY_WAIT_S = 8.0  # end of the user's turn → response.created, else back to 
 REPLY_STALL_S = 8.0  # a bound reply with no event of its own this long (and no response.done) → treat it as done
 ERROR_GRACE_S = 1.5  # after a non-benign `error` mid-reply: this long without an event of the reply → as a stall
 DOUBLE_SEND_S = 1.0  # tap mode: Space this soon after a spoken turn ended (still thinking) was a "send": ignored
+SEND_NOW_MIN_FRAMES = 5  # tap mode: "send now" needs this many 100 ms mic frames (a quick double tap sends nothing)
 COUNTDOWN_S = 3  # "Resuming…" after a reply that called no tool
 DRAIN_GRACE_S = 2.0  # drain fallback = remaining reply audio + this
 BYTES_PER_MS = RATE * 2 // 1000  # PCM16 mono at 24 kHz: 48 bytes per ms
@@ -62,6 +63,7 @@ BANNER_RESUMING = "Resuming…"
 BANNER_PAUSED = "Paused — P to resume"
 BANNER_PAUSED_R = "Paused — R to resume"
 BANNER_OFFLINE = "Realtime offline — {presenter} has the floor (R resumes)"
+BANNER_OFFLINE_BACK = "Realtime is back — {presenter} has the floor (R resumes)"
 BANNER_END = "End of the talk"
 
 ERR_SILENCE = "Didn't catch that"
@@ -182,6 +184,17 @@ def _error_fields(event: dict) -> tuple[str, str, str]:
     return str(error.get("type") or ""), str(error.get("code") or ""), str(error.get("message") or "")
 
 
+SERVER_TOOLS = frozenset({"web_search"})  # Higgs runs these itself; the names are reserved (doc/higgs-realtime.md)
+
+
+def _server_call(item: dict) -> bool:
+    """A server-executed tool call (`executor: "server"`, e.g. web_search): the server runs it, adds its result and
+    continues by itself, so the client must neither run it nor send a function_call_output. Relay declares no server
+    tools today; this keeps a stray one from being rejected and answered. `function_call_arguments.done` carries no
+    executor, so the reserved name decides there."""
+    return item.get("executor") == "server" or item.get("name") in SERVER_TOOLS
+
+
 def _benign_error(err_type: str, code: str, message: str) -> bool:
     """`response.cancel` with nothing to cancel: expected after a cut during "thinking"; log it, don't show it.
     Higgs answers it with code `response_not_active` (some identifiers ride in `type`); the wording check is a
@@ -290,7 +303,7 @@ class Controller:
         turn_detection = self.settings.session_turn_detection
         config: dict[str, Any] = {
             "type": "realtime",
-            "model": REALTIME_MODEL,
+            "model": self.settings.realtime_model,
             "instructions": self._instructions(),
             "output_modalities": ["audio"],
             "audio": {
@@ -548,10 +561,14 @@ class Controller:
     async def _key_space(self, msg: dict) -> None:
         if self.state == LISTENING:
             # Tap mode: Space again = "send now" (room noise can keep turn detection from ever ending the turn).
-            # Before any audio reached us it is a bounce: ignored. Hold mode: Space is already down.
+            # Under SEND_NOW_MIN_FRAMES of audio it is a bounce or a double tap: ignored, so near-silence is never
+            # sent as a question. Hold mode: Space is already down.
             turn = self.turn
-            if self.settings.mic_mode != "hold" and turn is not None and turn.mic_frames > 0:
-                await self._send_turn(turn, "hand")
+            if self.settings.mic_mode != "hold" and turn is not None:
+                if turn.mic_frames >= SEND_NOW_MIN_FRAMES:
+                    await self._send_turn(turn, "hand")
+                else:
+                    self._note("send_now_too_early", {"frames": turn.mic_frames})
             return
         if not self.realtime.ready:
             await self._offline_floor(msg)
@@ -931,7 +948,12 @@ class Controller:
         self.fragment = self._fragments(slide, 0)
         self._rearm_opening(index)
         await self._send({"type": "slide", "slide": slide.id, "fragment": self.fragment})
-        self._set_state(IDLE, BANNER_OFFLINE.format(presenter=self.talk.presenter))
+        self._set_state(IDLE, self._offline_banner())
+
+    def _offline_banner(self) -> str:
+        """The offline floor's banner; once the link is back it says so (arrows stay silent until R or Space)."""
+        banner = BANNER_OFFLINE_BACK if self.realtime.ready else BANNER_OFFLINE
+        return banner.format(presenter=self.talk.presenter)
 
     def _rearm_opening(self, index: int) -> None:
         """Back on a human slide before the first relay slide (a sound check with R, a projector check with →, a
@@ -1339,6 +1361,10 @@ class Controller:
 
     async def _ev_call_done(self, event: dict) -> None:
         response_id, call_id = event.get("response_id"), event.get("call_id")
+        if _server_call(event):  # the server runs it and answers it itself: never ours to run or to answer
+            self._note("server_tool_call", {"call_id": call_id, "name": event.get("name"),
+                                            "arguments": event.get("arguments"), "response_id": response_id})
+            return
         self._remember_call_item(call_id, event.get("item_id"))
         if isinstance(response_id, str) and response_id in self._ignored:  # cut, stalled or rejected: never run
             await self._owe_output(response_id, call_id, CUT_CALL_OUTPUT)
@@ -1354,7 +1380,8 @@ class Controller:
         response = event.get("response") if isinstance(event.get("response"), dict) else {}
         response_id = response.get("id")
         output = response.get("output") if isinstance(response.get("output"), list) else []
-        calls = [item for item in output if isinstance(item, dict) and item.get("type") == "function_call"]
+        calls = [item for item in output if isinstance(item, dict) and item.get("type") == "function_call"
+                 and not _server_call(item)]  # server-executed calls (web_search) are the server's to answer
         for item in calls:
             self._remember_call_item(item.get("call_id"), item.get("id"))
         self._active.discard(response_id)
@@ -1480,6 +1507,8 @@ class Controller:
         kinds = {err_type, code}
         if "invalid_previous_item_id" in kinds:
             return True
+        if not self.realtime.ready and "insufficient_quota" not in kinds:
+            return True  # session setup failed (e.g. voice validation 429): the strip shows "reconnecting: …"
         turn = self.turn
         return (bool(kinds & SEND_RACE_ERRORS) and self.state == REPLYING and turn is not None
                 and turn.ended_by in ("hand", "listen_max"))
@@ -1504,6 +1533,8 @@ class Controller:
             self._ready_count += 1
             if self._ready_count > 1:
                 await self._send_summary()
+            if self.state == IDLE and self.floor_offline:
+                self._set_state(IDLE, self._offline_banner())  # "Realtime is back …"
         elif status in DROPPED:
             await self._link_lost()
 

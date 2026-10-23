@@ -21,10 +21,11 @@ from typing import Any, Awaitable, Callable
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidStatus, InvalidURI
 
-from .config import REALTIME_MODEL, Settings
+from .config import Settings
 from .ports import LogFn, null_log
 
 BACKOFF_S: tuple[float, ...] = (0.0, 0.5, 1.0, 2.0, 4.0, 5.0)  # delay before retry n; the last one repeats
+RATE_LIMIT_BACKOFF_S = 10.0  # at least this long after a session rejected for rate limiting (gotchas: voice 429)
 OPEN_TIMEOUT_S = 10.0
 CREATED_TIMEOUT_S = 10.0
 SEND_TIMEOUT_S = 2.0
@@ -48,6 +49,13 @@ class _Fatal(Exception):
 
 class _Retry(Exception):
     """This connection is over (its message says why); reconnect."""
+
+
+def _rate_limited(reason: str | None) -> bool:
+    """A failure that more attempts would only prolong, e.g. "Could not validate voice 'chloe': voices API returned
+    HTTP 429" (every new session with a preset voice is validated, and that validation can be rate limited)."""
+    text = (reason or "").lower()
+    return "429" in text or "rate limit" in text or "rate_limit" in text or "too many requests" in text
 
 
 def _close_code(exc: ConnectionClosed, ws: Any) -> int | None:
@@ -199,13 +207,16 @@ class RealtimeLink:
             if good:
                 failures = 0
             delay = self._backoff[min(failures, len(self._backoff) - 1)]
+            if not good and _rate_limited(reason):
+                delay = max(delay, RATE_LIMIT_BACKOFF_S)
+                reason = self._clip(f"{reason} (rate limited: retrying in {delay:g} s)")
             failures += 1
             await self._set_status("reconnecting", reason)
             await self._sleep(delay)
 
     def _url(self) -> str:
         base = self._settings.realtime_url
-        return f"{base}{'&' if '?' in base else '?'}model={REALTIME_MODEL}"
+        return f"{base}{'&' if '?' in base else '?'}model={self._settings.realtime_model}"
 
     async def _session(self) -> tuple[bool, str]:
         """One connection, start to end. Returns (reached ready, why it ended); raises _Fatal to stop for good."""

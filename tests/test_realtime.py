@@ -322,6 +322,26 @@ async def test_session_rejected_before_created_reports_the_error() -> None:
     await link.stop()
 
 
+async def test_a_rate_limited_rejection_waits_before_retrying() -> None:
+    """Live 2026-10-23: each new session validates a preset voice, and that validation can return HTTP 429. Quick
+    retries would keep the limit tripped, so the next attempt waits at least RATE_LIMIT_BACKOFF_S."""
+    from relay.realtime import RATE_LIMIT_BACKOFF_S
+
+    conn = ScriptedConn(auto_created=False)
+    connector, rec, sleeps = Connector(conn), Recorder(), Sleeps(block=True)
+    link = make_link(connector, rec, sleeps)
+    await link.start()
+    await until(lambda: conn.sent)
+    conn.push({"type": "error", "error": {"type": "invalid_request_error", "message":
+               "Session terminated due to Error while handling session update: Could not validate voice 'chloe': "
+               "voices API returned HTTP 429"}})
+    conn.close_with(1008, "invalid session")
+    await until(lambda: link.status == "reconnecting")
+    assert sleeps.delays == [RATE_LIMIT_BACKOFF_S] and RATE_LIMIT_BACKOFF_S >= 10
+    assert "rate limited: retrying in 10 s" in link.detail
+    await link.stop()
+
+
 async def test_close_reasons_use_the_received_code_or_connection_lost() -> None:
     first, second = ScriptedConn(), ScriptedConn()
     connector, rec, sleeps = Connector(first, second), Recorder(), Sleeps()

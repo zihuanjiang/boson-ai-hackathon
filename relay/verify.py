@@ -42,7 +42,7 @@ import requests
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
 
-from .config import PRESET_VOICES, RATE, REALTIME_MODEL, ROOT, STT_MODEL, TTS_MODEL, Settings, load_settings
+from .config import PRESET_VOICES, RATE, ROOT, STT_MODEL, TTS_MODEL, Settings, load_settings
 from .render import clean_word, tag_word_names
 from .talk import MAX_SAY_CHARS, Slide, Talk, TalkError, load_talk
 from .textutil import find_tags, has_digits, norm_word, split_sentences, strip_tags, word_count
@@ -501,14 +501,14 @@ async def tts_request(ctx: Ctx, text: str, voice: str) -> TtsResult:
 
 
 def realtime_url(settings: Settings) -> str:
-    return f"{settings.realtime_url}?model={REALTIME_MODEL}"
+    return f"{settings.realtime_url}?model={settings.realtime_model}"
 
 
 def session_config(settings: Settings, *, voice: str, instructions: str, tools: Sequence[dict] = ()) -> dict:
     """The app's full session object (design §6) with this voice, instructions and tools."""
     config = {
         "type": "realtime",
-        "model": REALTIME_MODEL,
+        "model": settings.realtime_model,
         "instructions": instructions,
         "output_modalities": ["audio"],
         "audio": {

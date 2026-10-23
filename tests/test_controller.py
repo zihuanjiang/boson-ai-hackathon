@@ -17,10 +17,10 @@ import pytest
 
 from relay.config import ROOT, Settings
 from relay.controller import (
-    BANNER_OFFLINE, BANNER_OPENING, BANNER_PAUSED, BANNER_PAUSED_R, BANNER_QA, BANNER_RESUMING, COUNTDOWN_S,
-    CUT_CALL_OUTPUT, DOUBLE_SEND_S, DRAIN_GRACE_S, ERR_LINK_LOST, ERR_NO_REPLY, ERR_SILENCE, ERR_TOO_LONG,
-    ERR_TOO_LONG_HOLD, ERROR_GRACE_S, IDLE, LISTEN_MAX_S, LISTENING, NARRATING, PAUSED, REPLY_STALL_S, REPLY_WAIT_S,
-    REPLYING, SUMMARY_MAX_CHARS, SUMMARY_PREFIX, Controller, Cursor, summary_text,
+    BANNER_OFFLINE, BANNER_OFFLINE_BACK, BANNER_OPENING, BANNER_PAUSED, BANNER_PAUSED_R, BANNER_QA, BANNER_RESUMING,
+    COUNTDOWN_S, CUT_CALL_OUTPUT, DOUBLE_SEND_S, DRAIN_GRACE_S, ERR_LINK_LOST, ERR_NO_REPLY, ERR_SILENCE,
+    ERR_TOO_LONG, ERR_TOO_LONG_HOLD, ERROR_GRACE_S, IDLE, LISTEN_MAX_S, LISTENING, NARRATING, PAUSED, REPLY_STALL_S,
+    REPLY_WAIT_S, REPLYING, SEND_NOW_MIN_FRAMES, SUMMARY_MAX_CHARS, SUMMARY_PREFIX, Controller, Cursor, summary_text,
 )
 from relay.ports import ManualClock
 from relay.talk import Slide, Talk, load_talk
@@ -2322,6 +2322,20 @@ async def test_space_before_any_audio_arrived_is_a_bounce_in_tap_mode(h: Harness
     assert h.realtime.items == [] and h.c.state == LISTENING
 
 
+async def test_send_now_needs_half_a_second_of_audio(h: Harness):
+    """A quick double tap when opening the floor must not send near-silence as a question."""
+    await h.cut_in()
+    await h.mic(SEND_NOW_MIN_FRAMES - 1)
+    h.reset()
+    await h.key("space")
+    assert h.realtime.items == [] and h.c.state == LISTENING  # too early: ignored
+    await h.mic(1)
+    h.reset()
+    await h.key("space")
+    assert h.realtime.types() == ["input_audio_buffer.commit", "response.create"]
+    assert h.c.state == REPLYING
+
+
 async def test_a_send_tap_just_after_turn_detection_ended_the_turn_is_ignored(h: Harness):
     await h.cut_in()
     await h.speak()  # turn detection ends the turn: thinking
@@ -2427,6 +2441,49 @@ async def test_offline_floor_arrows_move_the_deck_without_narrating(make):
     assert (h.last("play")["slide"], h.last("play")["chunk"], h.c.state) == ("how", 0, NARRATING)
     await h.key("next", at=h.at(300))  # narrating again: narration follows the arrows as before
     assert (h.last("play")["slide"], h.c.state) == ("qa", NARRATING)
+
+
+async def test_a_server_executed_call_is_neither_run_nor_answered(h: Harness):
+    """web_search runs on Boson's servers (executor "server"): the server adds its result and continues by itself,
+    so Relay must not reject it, show it, or send a function_call_output for it."""
+    await h.cut_in(chunk=0, word=7)
+    await h.speak()
+    await h.reply(call("web_search", {"objective": "x", "queries": ["x"]}, call_id="ws1"), call("resume_script"))
+    assert set(h.outputs()) == {"call_1"}  # only our own tool is answered
+    assert [(m["name"], m["status"]) for m in h.b("tool")] == [("resume_script", "queued")]
+    await h.drained()
+    assert h.last("tool")["status"] == "applied" and h.c.state == NARRATING
+
+
+async def test_session_config_uses_the_configured_realtime_model(test_talk, test_chunks):
+    h = Harness(test_talk, test_chunks, Settings(realtime_model="higgs-realtime-1.5-preview"))
+    assert h.c.session_config()["model"] == "higgs-realtime-1.5-preview"
+
+
+async def test_offline_banner_says_when_realtime_is_back(make):
+    h = make(ready=False)
+    await h.narrate()
+    await h.key("space", at=h.at(h.word_t("how", 0, 7)))  # Realtime is down: the presenter has the floor
+    assert h.c.banner == BANNER_OFFLINE.format(presenter="Ken")
+    h.realtime.ready = True
+    h.reset()
+    await h.c.on_realtime_status("ready", None)
+    back = BANNER_OFFLINE_BACK.format(presenter="Ken")
+    assert (h.c.state, h.c.banner, h.last("state")["banner"]) == (IDLE, back, back)
+    await h.key("next")  # still the presenter's floor: arrows stay silent until R or Space
+    assert (h.b("play"), h.c.banner) == ([], back)
+
+
+async def test_setup_errors_before_the_session_is_ready_are_not_shown(make):
+    """A session rejected while connecting (e.g. voice validation 429) shows as 'reconnecting' in the strip, not as
+    a red toast; a billing refusal is still shown."""
+    h = make(ready=False)
+    await h.ev("error", error={"type": "invalid_request_error", "code": None, "message":
+                               "Session terminated due to Error while handling session update: Could not validate "
+                               "voice 'chloe': voices API returned HTTP 429"})
+    assert h.errors() == []
+    await h.ev("error", error={"type": "insufficient_quota", "code": "no_billing_account", "message": "no credit"})
+    assert len(h.errors()) == 1
 
 
 async def test_run_of_show_offline_skip_reaches_higgs_without_narrating_demo_or_qa(settings):

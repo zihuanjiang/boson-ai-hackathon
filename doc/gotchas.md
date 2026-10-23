@@ -140,6 +140,25 @@ Add our own findings here as we hit them (date them).
   - F7 idle: with no user audio, `session.idle_timeout` at 299.9 s, then close 1000 "Idle timeout: no user speech
     for 300s" at 300.0 s; reconnect 327 ms and a typed turn answered (first audio 353 ms). During narration the mic
     is closed, so the warm session is replaced every 5 min (one voice validation each time with a preset voice).
+  - F6 (18:18): an instructions-only `session.update` keeps voice, turn detection (semantic_vad resolves to threshold
+    0.85, silence 100 ms), transcription, tools and modalities. Keep `RELAY_FULL_SESSION_UPDATE` off.
+  - **F5 (18:19): only 4/10 typed turns end with the right tool call.** The model calls tools when the user asks for
+    an action ("take it away" → start_presentation 2/2, "skip to the demo" → goto_slide 2/2) but not for the implicit
+    step: after a comment or a plain-language request it says "As I was saying…" and calls nothing (0/4), and after
+    a Q&A answer it does not hand back (0/2). Same with voice `default`; a stronger closing line in STATE didn't help
+    (it then called resume_script in Q&A). The watchdog countdown still resumes narration. **`tool_choice:
+    "required"` breaks the session: no `response.done`, no audio (0/10).**
+  - **Server-side `web_search` works on `higgs-realtime` today** (it was in the docs all along; my notes missed it):
+    declare `{"type": "web_search"}` in `tools`; the call arrives as `function_call` `web_search` with
+    `"executor": "server"`; `response.done` comes right after a spoken preamble ("Let me check…"); the server then
+    adds the `function_call_output` itself and **starts a new response on its own** with the answer (~4 s end to end
+    for "weather in Toronto"). Never answer such a call, never send `response.create` for it. Response ids look like
+    `b8f7_resp_2` (numbered per session).
+  - **`higgs-realtime-1.5-preview`** (tutorial branch `realtime-1.5-preview`, 2026-10-23: same endpoint, used with
+    server-side web search in the Pipecat/LiveKit parts): our key gets `error` "Invalid model
+    'higgs-realtime-1.5-preview': not available on this endpoint" (with or without a trailing slash on the URL), and
+    `GET /v1/models` lists only `higgs-realtime`. Set `BOSON_REALTIME_MODEL=higgs-realtime-1.5-preview` once access
+    works, then rerun `python -m relay.verify tools`.
   - First real render (`talks/test`, chloe): 22.1 s of narration vs 29.5 s for the fake estimate. TTS words come
     without punctuation and some are zero-length (`a@1520-1520`); sentence ids still align. Sentence gaps 400 ms
     (natural) and 720 ms (with `<|prosody:pause|>`), so resume offsets land mid-pause (1560 ms in both examples).

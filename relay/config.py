@@ -20,7 +20,8 @@ TALKS = ROOT / "talks"
 
 RATE = 24_000  # Hz. PCM16 mono everywhere: TTS wav, Realtime in/out, the browser AudioContext.
 TTS_MODEL = "higgs-tts-3"
-REALTIME_MODEL = "higgs-realtime"
+REALTIME_MODEL = "higgs-realtime"  # default; BOSON_REALTIME_MODEL overrides (e.g. higgs-realtime-1.5-preview)
+REALTIME_MODELS = ("higgs-realtime", "higgs-realtime-1.5-preview")  # the ids the fake Realtime accepts
 STT_MODEL = "higgs-stt-3.1"
 PRESET_VOICES = ("default", "chloe", "eleanor", "jake", "marcus", "nora", "oliver")
 MIC_MODES = ("tap", "hold")  # "open" (hands-free) is a nice-to-have, not in v1
@@ -32,6 +33,7 @@ class Settings:
     api_key: str = field(default="", repr=False)
     base_url: str = "https://api.boson.ai"  # without /v1
     realtime_url: str = "wss://api.boson.ai/v1/realtime"
+    realtime_model: str = REALTIME_MODEL
     mic_mode: str = "tap"
     turn_detection: dict | None = field(default_factory=lambda: dict(DEFAULT_TURN_DETECTION))
     temperature: float | None = None
@@ -82,6 +84,7 @@ def load_settings(**overrides) -> Settings:
         "api_key": (env.get("BOSON_API_KEY") or "").strip(),
         "base_url": _base_url(env.get("BOSON_BASE_URL")),
         "realtime_url": (env.get("BOSON_REALTIME_URL") or "wss://api.boson.ai/v1/realtime").strip().rstrip("/"),
+        "realtime_model": (env.get("BOSON_REALTIME_MODEL") or REALTIME_MODEL).strip(),
         "mic_mode": (env.get("MIC_MODE") or "tap").strip().lower(),
         "turn_detection": _turn_detection(env.get("RELAY_TURN_DETECTION")),
         "temperature": float(temperature) if temperature else None,

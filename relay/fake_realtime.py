@@ -45,7 +45,7 @@ from urllib.parse import parse_qs, urlsplit
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError, ConnectionClosedOK
 from websockets.frames import Close
 
-from .config import PRESET_VOICES, RATE, REALTIME_MODEL, STT_MODEL
+from .config import PRESET_VOICES, RATE, REALTIME_MODEL, REALTIME_MODELS, STT_MODEL
 
 DELTA_MS = 20
 DELTA_SAMPLES = RATE * DELTA_MS // 1000  # 480 samples per response.output_audio.delta
@@ -136,7 +136,7 @@ def check_session(update: dict, *, first: bool, url_model: str | None) -> tuple[
     model = update.get("model", url_model if first else REALTIME_MODEL)
     if model is None:
         return "session.model", "No model: set session.model or ?model= on the URL"
-    if model != REALTIME_MODEL:
+    if model not in REALTIME_MODELS:
         return "session.model", f"Unknown model '{model}'"
     modalities = update.get("output_modalities")
     if modalities is not None and modalities not in (["audio"], ["text"]):

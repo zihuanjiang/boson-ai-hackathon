@@ -238,7 +238,20 @@ Rules that bite: `output` must be a string (`json.dumps`), never throw — retur
 dedupe on `call_id` (a call is announced both in `arguments.done` and in `response.done`); for parallel calls send
 every output then exactly **one** `response.create`. Write tool `description`s as *when to call it*; a line like
 "say a short acknowledgement before calling" masks tool latency. A long system prompt made the model stop calling
-tools in the tutorial authors' experience. Only `function` tools exist (no MCP, no approvals).
+tools in the tutorial authors' experience. No MCP, no approvals.
+
+**Server-side tool: `web_search`** (docs: models/higgs-realtime/guides/tool-calling#web-search; verified live
+2026-10-23 on `higgs-realtime`). Declare `{"type": "web_search"}` (optional `allowed_domains` *or*
+`excluded_domains`, ≤ 5 bare hostnames; `location: {"country": "US"}`). The model speaks a short preamble, emits a
+`function_call` named `web_search` with `"executor": "server"` and arguments like
+`{"objective": …, "queries": […]}`; `response.done` arrives right after the preamble; the server adds the
+`function_call_output` itself (`conversation.item.added`) and starts a **new response on its own** with the answer.
+Never send a `function_call_output` or `response.create` for it; `web_search` is a reserved name. Handle only calls
+with `executor: "client"`.
+
+**Model versions.** `higgs-realtime` is the only Realtime model `GET /v1/models` lists (2026-10-23). The tutorial's
+`realtime-1.5-preview` branch uses `higgs-realtime-1.5-preview` on the same endpoint, but our key gets "Invalid model
+… not available on this endpoint". Relay reads the model from `BOSON_REALTIME_MODEL`.
 
 Python handler (from the docs):
 
