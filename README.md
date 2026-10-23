@@ -45,11 +45,15 @@ uv run python -m relay serve talks/relay-intro    # open http://localhost:8000 i
 No key? Everything runs offline with stand-ins: `uv run python -m relay.render talks/test --fake` and
 `uv run python -m relay serve talks/test --fake-realtime`.
 
+A re-render takes effect at the next server restart (the server serves the narration it loaded at startup); an open
+deck then reloads itself, and you click Arm again.
+
 ### Presenter keys
 
 | Key | Action |
 | --- | --- |
 | Space (tap) | Stop Relay now, mark the cut, open the mic for one turn. During a reply: cut the reply off |
+| Space again, while listening | Send now: the question goes out without waiting for turn detection (noisy room) |
 | Esc | Cancel the turn and resume |
 | → / ← (PageDown / PageUp) | Next / previous slide; narration follows |
 | P | Pause / resume narration |
@@ -70,9 +74,23 @@ A talk is a folder: `slides.md` (reveal.js markdown, one `<!-- .slide: id="…" 
 
 ```bash
 uv run pytest                                             # offline test suite
-uv run python -m relay.verify voices|tags|latency|tools|session|idle   # checks against the live API
 uv run --with playwright python scripts/e2e_chrome.py     # end-to-end in Chrome (fake Realtime)
 ```
+
+Live checks need the key. Run them one at a time: the Realtime ones (`realtime.py` and every `relay.verify` check but
+`tags`) open new sessions, each new session validates its preset voice (`default` excepted), and a burst can get
+that validation rate limited (HTTP 429).
+
+```bash
+uv run python scripts/smoke/tts.py                        # TTS 3: tags, word timestamps, streaming, cloning
+uv run python scripts/smoke/realtime.py --tool            # Realtime: a typed turn with a tool call
+uv run python scripts/smoke/avatar.py                     # Avatar: async job and streaming
+uv run python -m relay.verify voices|tags|latency|tools|session|idle   # brief Appendix F (doc/design.md §11)
+uv run python scripts/live_check.py                       # whole live loop, no browser (synthesized speech as mic)
+```
+
+`BOSON_REALTIME_MODEL` selects the Realtime model (default `higgs-realtime`; `higgs-realtime-1.5-preview` once your
+key has access).
 
 ## How we used Higgs (for the submission)
 

@@ -4,13 +4,14 @@ Spec: `doc/brief.md`. Build contract (interfaces, protocol, state machine): `doc
 
 ## Status
 
-2026-10-23 (Fri) 16:00 — offline v1 built and integrated on branch `claude/relay-v1`: every module of
-`doc/design.md` exists, 903 tests pass (unit, controller scenarios, backend end-to-end over real uvicorn with the
-fake Realtime, and ~545 deck-client checks under JavaScriptCore), and the full run of show passes in real Chrome
-(`scripts/e2e_chrome.py`: tap → silence ≈ 55 ms). Not yet seen: anything against the live API (no key in `.env`
-yet). Next: an
-adversarial review pass (running; resume notes in `.scratch/relay-build/RESUME.md`), then the live checks as soon as
-the key + credits are in.
+2026-10-23 (Fri) ~19:00 — on `claude/relay-v1`, 1090 tests pass (unit, controller scenarios, backend end-to-end
+over real uvicorn with the fake Realtime, deck checks under JavaScriptCore). An adversarial review confirmed 29
+findings, all fixed (D27–D45). Live API checks (`doc/gotchas.md` → Measured): smoke tests, F1–F3, F6 and F7 pass;
+F5 shows Higgs rarely calls resume_script / handoff_to_human on its own (4/10), so the watchdog does it (D46); a
+scripted live run (`scripts/live_check.py`: real server + Higgs, synthesized lines as the mic) found turn detection
+ending turns at the first pause, fixed with 700 ms of silence (D47). Ken decided: voice chloe (D48), no web search
+(D49). `higgs-realtime-1.5-preview` is not enabled for our key yet; switching is one `.env` line (D50). Next: Chrome
+layout check of the strip fix, a rehearsal with the real mic in the room, 1.5 access from Boson at the venue.
 
 ## Architecture (one paragraph)
 
@@ -38,19 +39,60 @@ start of its sentence for the resume. Details: `doc/design.md`.
 | D11 | Realtime down → Space gives Ken the floor (narration stops at the cut, R resumes from the sentence start) | brief §13 fallback |
 | D12 | Per-turn `session.update` sends only `instructions`; `RELAY_FULL_SESSION_UPDATE=1` sends the full config | F6 decides which one we keep |
 | D13 | One deck client at a time; a new `/ws` replaces the old | avoids two decks fighting over state |
-| D14 | Timers: listen-silence 8 s, listen-max 30 s, reply-wait 8 s, resume countdown 3 s, drain fallback = remaining audio + 2 s | brief Appendix C plus guards against stuck states |
+| D14 | Timers: listen-silence 8 s, listen-max 30 s, reply-wait 8 s, reply-stall 8 s (D31), resume countdown 3 s, drain fallback = remaining audio + 2 s | brief Appendix C plus guards against stuck states |
 | D15 | `MIC_MODE=hold` = `turn_detection: null`, Space down/up; `open` (hands-free) not in v1 | brief: hold is the noisy-room fallback, open is a nice-to-have |
 | D16 | Session temperature left at the server default unless `RELAY_TEMPERATURE` is set; transcription language hint `en` | read the live ack first (gotchas) |
 | D17 | Event log: JSONL per server run in `out/logs/`, audio payloads replaced by byte counts | debugging + latency numbers for the write-up |
 | D18 | Render hash covers version, model, voice, input, format, timestamps; fake renders carry `fake: true` and get re-rendered by a real render | stale or fake audio can't sneak onto the stage |
 | D19 | A `--fake` render never overwrites real TTS audio (only `--force` does) | a stray offline run on stage day can't replace paid narration with tones |
 | D20 | The server opens the Realtime session at startup (warm); Arm starts it again (idempotent, concurrency-safe) | the first tap never waits for a connect |
-| D21 | A deck that stops reading for 5 s is dropped (close 4001, it reconnects); a Realtime send stalled for 2 s drops and reconnects the session | the controller holds its lock while sending; a hung tab or network must not freeze the presenter keys |
+| D21 | A deck that stops reading for 5 s is dropped (close 4001, it reconnects; see D39); a Realtime send stalled for 2 s drops and reconnects the session | the controller holds its lock while sending; a hung tab or network must not freeze the presenter keys |
 | D22 | `start_presentation` after the talk started = `resume_script`; R while narrating does nothing; P during the countdown pauses at the resume point | model mistakes and extra key presses stay harmless |
 | D23 | A (re)greeting while narrating/listening/replying interrupts everything → IDLE "Paused — R to resume" | a reloaded tab must not leave the backend thinking audio is playing |
 | D24 | Several tool calls in one reply: the last valid one runs; the others get `{"error": "not run: <winner> came after it"}` | every call gets an output; the model's final decision wins |
-| D25 | Slide ids: letters, digits, `-`, `_` only (error); tags must be spelled `<|kind:value|>` (warning) | ids become folder names and URL segments; odd tag spellings are untested with TTS 3 |
+| D25 | Slide ids: letters, digits, `-`, `_` only, unique ignoring case (error); tags must be spelled `<\|kind:value\|>` (warning) | ids become folder names (macOS ignores case) and URL segments; odd tag spellings are untested with TTS 3 |
 | D26 | Web client tested under macOS JavaScriptCore with a fake browser (`tests/web/run.sh`, run by pytest); real-Chrome e2e is `scripts/e2e_chrome.py`, run outside the sandbox | no Node (D1), and Chrome can't start in the sandbox |
+| D27 | Tap mode: Space again while LISTENING = **send now** (`input_audio_buffer.commit` + `response.create`) once ≥ 0.5 s of mic audio (5 frames) has arrived since the mic opened; a quicker second tap is ignored. Listen-max (30 s) also sends what was heard | room noise can keep semantic VAD from ever ending a turn, and tap mode then threw the question away after 30 s; the 0.5 s floor keeps a double tap from sending near-silence as a question |
+| D28 | Space < 1 s after a spoken turn ended, before any reply audio, is ignored (a double send). A turn sent by hand whose first response is cancelled before any audio ("displaced" by turn detection's own) waits for the next `response.created` | a double tap is one send, not a cut that loses the question; with VAD on, our commit and the server's end of turn can race (live check in the task list) |
+| D29 | A human slide before the first relay slide re-arms the opening (`started` and `floor_human` cleared), whether reached by ← / →, a tool or an offline arrow, also after the talk | a sound check, a projector check or a stray clicker press before the hook must not disarm the handoff; the opening no longer needs a server restart |
+| D30 | Facts (`kb.md`) ride along in phase `qa` and on the `mode: qa` slide in any phase (brief Appendix E: "[qa only]") | the run of show's backup question comes after `handoff_to_human` (phase `human`), on the qa slide |
+| D31 | Reply-stall watchdog: a bound reply with no event of its own for 8 s (1.5 s after a shown `error`) and no `response.done` ends like a link drop ("No reply" if nothing was heard) | a stalled or errored reply used to leave Relay in REPLYING / "thinking…" for good |
+| D32 | Every announced tool call gets exactly one `function_call_output`. Calls that never run (a cut, rejected or displaced response, or a stalled one's later calls) get `{"error": "not run: the reply was cut off"}` at their response's `response.done`, inserted after the call, never followed by `response.create`. A new user item + `response.create` wait until no response is active | a call without an output leaves the model waiting on it (gotchas); outputs must land before the next question, not after it |
+| D33 | Errors Ken can't act on are logged, not shown: "nothing to cancel" (Higgs `response_not_active`), `invalid_previous_item_id`, the send races of a hand-sent turn, and any error before the session is ready (the strip says `reconnecting: …`). `insufficient_quota` is always shown | a red toast on the projector must mean something; Higgs's cancel code differs from OpenAI's |
+| D34 | `reply_latency_ms` counts from the estimated end of speech (`speech_stopped.audio_end_ms` mapped through the mic frames' arrival times), else from the turn's end; the log adds `turn_end_latency_ms`. The number quoted on stage comes from a rehearsal recording | `speech_stopped` arrives after the VAD's silence window, so timing from it ran low; F2's typed turns are only a floor |
+| D35 | On every Realtime `ready`, forget the old session's response, call and user-item ids and the input-stream position | a new session may number its ids from 1 again: an old "ignored" id must not swallow a new reply, nor an old call id dedupe a new call |
+| D36 | Late user transcripts are matched to their turn by `item_id`; a finished turn's transcript only fills in its history entry | a late transcript used to caption whatever was current, even over narration |
+| D37 | Narration is a startup snapshot: `/media` serves the wavs read at startup; `/api/talk` and `hello` carry `version` (`render_version`); a re-render or talk edit takes effect at the next restart; a wav whose length differs from its timings by > 10 ms stops startup | audio and word timings can never come from two renders, so the cut/resume maths stays exact; refusing to start beats wrong cut points on stage |
+| D38 | Deck after a server restart: same version → carry on and re-arm (reply numbering reset on every socket close); another version or talk id → silence, toast, one automatic reload per mismatch (sessionStorage guard), then Arm again | a plain restart must not cost an Arm; stale narration must never play; a server that disagrees with itself must not cause a reload loop on stage |
+| D39 | Stalled deck (refines D21): the controller hears of the drop at once; the 4001 close is never abandoned (it goes out whenever the tab reads again); a dropped deck that sends input after its close failed has its connection ended | a recovered tab used to stay connected with every key silently ignored until a reload and re-Arm |
+| D40 | Offline floor (a tap or typed question while Realtime is down): → / ← only move the slides, and a relay slide waits at chunk 0 for R, until narration starts or a live turn opens. When the link is back the banner says "Realtime is back — {presenter} has the floor (R resumes)" | Ken is talking over the deck: skipping with → must not play the opening lines of `demo` and `qa`; the banner must not keep saying "offline" once it isn't |
+| D41 | Realtime link: a session refused for rate limiting before `ready` (e.g. "Could not validate voice 'chloe': voices API returned HTTP 429") waits ≥ 10 s before the next attempt | every new session re-validates a preset voice (live run, 17:35), and quick retries keep that limit tripped |
+| D42 | Live captions show only the transcript words heard so far (≤ 4 words per second of heard audio until `reply_end`), never shrink, and freeze on the words heard at a cut; `reply_played_ms` restarts its estimate when audio reaches a player that ran dry | the transcript arrives ahead of the voice, sometimes whole sentences at once; a generation stall must not count as heard (truncate keeps what was heard) |
+| D43 | Stray clicks never change the show: reveal's progress bar is display-only; a status-strip click reopens the checklist only while IDLE with no countdown; Esc over the checklist only closes it | a click on the stage laptop must not move reveal behind the backend's back or cover the narration |
+| D44 | Render: `timestamps: []` for a chunk with words fails it (not cached, exit 2; `null` still falls back to estimated timings). Validator warnings: abbreviations with periods, and a sentence break before a lowercase word, in `say` | "no speech" audio must never be cached as a good render; such periods end a sentence for cut/resume, so a resume would start mid-sentence |
+| D45 | F3 judges tag text with the render's own cleanup (`render.clean_word` / `tag_word_names`) and FAILs only when tag characters would reach the captions; the pause tag passes at ≥ 150 ms over the untagged reading, else LISTEN | a false FAIL would make Ken delete the delivery tags, a listed Use-of-Higgs feature |
+| D46 | Lean on the watchdog (Ken, 2026-10-23): the "Resuming…" countdown is 1.5 s (the deck shows 2, 1); after a spoken Q&A answer with no valid tool call Relay hands the floor back itself; both show in the tool ticker with status `auto` (dashed, dim), never as the model's call | live F5: Higgs called start_presentation / goto_slide when asked outright (4/4) but resume_script / handoff_to_human 0/6 on its own; a stronger prompt didn't help and `tool_choice: "required"` stalls the session |
+| D47 | Default turn detection = `{"type": "semantic_vad", "silence_duration_ms": 700}` (`RELAY_TURN_DETECTION` overrides) | the scripted live run: the default 100 ms ended 3 of 4 lines at their first pause ("Sorry," → "No worries…"); 700 ms heard every line and replies still started within 0.7–1.2 s |
+| D48 | Voice: chloe (Ken, after the F1 clips) | already rendered; a preset voice costs one validation per new session (D41 keeps retries calm) |
+| D49 | No server-side web search (Ken): Q&A stays grounded in `kb.md`; server-executed calls (`executor: "server"`, reserved `web_search`) are never run, shown or answered | brief scope; predictable on stage; a stray server call must not be rejected and answered |
+| D50 | The Realtime model is a setting: `BOSON_REALTIME_MODEL` (default `higgs-realtime`) | the tutorial's `realtime-1.5-preview` branch uses `higgs-realtime-1.5-preview`, which our key can't use yet ("not available on this endpoint"); switching must be one line |
+| D51 | `render_version` also covers each chunk's word timings | a forced re-render of the same text can keep every length but not its timings, and the deck must reload then |
+
+## Decided (Ken): the Relay voice is chloe
+
+F1 clips of all four candidates are in `out/verify/voices/`. From the 17:35 live run (`doc/gotchas.md`):
+
+| Voice | Validated on every new session (429 risk, D41) | Typed turn → first audio | TTS vs Realtime length, same line | Note |
+| --- | --- | --- | --- | --- |
+| `chloe` | yes | 461 ms median | 0.6 s apart | in `script.yaml` today; both talks are rendered with it |
+| `marcus` | yes | not measured | 0.1 s apart | |
+| `eleanor` | yes | not measured | 0.0 s apart | |
+| `default` | no, never validated | 307 ms median | 0.9 s apart | ~7 dB quieter than chloe |
+
+chloe, marcus and eleanor followed a "repeat this line" prompt word for word. The deciding test is brief F1: a
+listener can't hear the switch from narration to a live reply. With a preset voice every new session is one more
+validation: each reconnect, and every 5 min of narration (the idle timeout replaces the warm session). A change =
+`voice:` in `talks/relay-intro/script.yaml`, a re-render, a server restart (an open deck reloads itself).
 
 ## Milestones
 
@@ -76,23 +118,35 @@ Offline v1
 - [x] Verify scripts: `python -m relay.verify` (F1, F2, F3, F5, F6, F7)
 - [x] Integration: foundation fixes, design sync, backend e2e (`tests/test_e2e.py`), web checks in pytest
 - [x] Chrome e2e (`scripts/e2e_chrome.py`, run by Ken outside the sandbox): PASS; layout reviewed from screenshots
-      (status strip overflows at 1280×720 with two long tool names: fix pending)
-- [ ] Review pass + fixes
+      (the status strip overflowed at 1280×720 with two long tool names: fixed, Chrome check below)
+- [x] Review pass + fixes (821a132): 29 confirmed findings, each with regression tests (D27–D45)
 
-Live (needs key)
-- [ ] Smoke tests (`scripts/smoke/*`), record numbers in gotchas
-- [ ] F1 voice audition (chloe / marcus / eleanor) → set `voice:`; F2 latency; F3 tags + timestamps
-- [ ] Real render of `talks/test`; milestone 2 run in Chrome
-- [ ] F4 semantic VAD with crowd noise; F5 tool reliability; F6 partial session.update; F7 idle timeout
+Live (needs the key, Chrome or the room)
+- [x] Key + credits; smoke tests (`scripts/smoke/*`), numbers in gotchas
+- [x] F1 voice clips (chloe, marcus, eleanor, default) → `out/verify/voices/`, sent to Ken
+- [x] Ken picked the voice: chloe (D48)
+- [x] F2 server side (typed turn → first audio, connect, reconnect); F3 tags + timestamps; F7 idle timeout
+- [x] Real render of `talks/test` and `talks/relay-intro` (chloe; re-render if the voice changes)
+- [x] F5 tool reliability (4/10 → D46) and F6 partial `session.update` (PASS) on the live API
+- [x] Scripted live run without a browser (`scripts/live_check.py`, real Higgs): opening, comment, plain-language
+      cut-in and Q&A all go through (model or watchdog); led to D47
+- [ ] The same in Chrome with the real mic (milestone 2), plus one Space "send now" → exactly one reply (event log:
+      `vad_after_send`, `response_displaced`)
+- [ ] `higgs-realtime-1.5-preview`: ask Boson at the venue for access; then `BOSON_REALTIME_MODEL=…`, rerun
+      `relay.verify tools` and `scripts/live_check.py` (D50)
+- [ ] Rehearsal with the real mic in the room (F4: semantic VAD with crowd noise; compare the log's `speech_end`
+      lines (`tail_ms`) and `reply_latency_ms` with the recording)
+- [ ] Chrome layout check: `tests/web/mock/strip.html` says PASS at 1280×720 and 1920×1080 (outside the sandbox)
 
 ## Risks and fallbacks
 
 | Risk | Mitigation |
 | --- | --- |
 | TTS and Realtime voices don't match (F1) | try other presets; last resort: Realtime text mode + TTS 3 streaming for replies (adds latency) |
-| Semantic VAD cuts people off or never ends in the room (F4) | `MIC_MODE=hold`; listen-max timer |
+| Semantic VAD cuts people off or never ends in the room (F4) | Space again sends the turn (D27); `MIC_MODE=hold`; listen-max sends what was heard |
 | Model narrates a tool call instead of calling it (F5) | short prompt; watchdog countdown resumes anyway; presenter keys |
 | Realtime congestion / drop on stage (`1013`, close) | warm session, instant reconnect ≤ 2 s, offline floor fallback (narration is local) |
+| Voice validation rate limited on new sessions (HTTP 429, live 17:35) | D41 backoff; live checks one at a time; `default` is never validated (open decision) |
 | Partial `session.update` resets voice/VAD (F6) | `RELAY_FULL_SESSION_UPDATE=1` |
 | Venue Wi-Fi | phone hotspot; narration needs no network |
 | Laptop/audio failure | recorded fallback video of the agent segment |

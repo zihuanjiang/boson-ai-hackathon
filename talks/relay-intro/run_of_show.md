@@ -51,7 +51,8 @@ because the model words them live. **KEN: personalise** marks spots only Ken can
 
 - Tap first, then start talking within a couple of seconds: the mic gives up after 8 s of silence.
 - Say both sentences without a pause, then stop. Semantic turn detection ends the turn about a second after you
-  stop, and a long pause after "co-presenter" could end it early.
+  stop, and a long pause after "co-presenter" could end it early. If the strip still says **Listening** a second
+  after you stop (room noise), tap **Space** again: that sends the turn at once.
 - Don't tell the demo-day story in the hook: cut-in (a) is the payoff.
 
 ### Cut-in (a): Ken's comment (`problem`)
@@ -92,10 +93,16 @@ because the model words them live. **KEN: personalise** marks spots only Ken can
 - **Friend**: "How do you know where to pick up after someone interrupts you?"
 - **Relay (gist, up to four sentences from `kb.md`)**: "Every word of my script has its own timestamp. When Ken
   taps, I know the last word you heard, and I go back to the start of that sentence, like a bookmark, so you get
-  the whole thought again. Ken, back to you." Then `handoff_to_human`, and the banner says "Ken has the floor".
+  the whole thought again. Ken, back to you." Then `handoff_to_human` (by the model, or automatically once the
+  answer has played: ticker `auto`), and the banner says "Ken has the floor". The words "Ken, back to you" are the
+  model's choice: it may phrase the hand-back differently, or not say it.
+- **Turn detection waits for 0.7 s of silence** before Relay answers (a shorter wait cut people off at their first
+  pause in the live test): the friend can pause briefly mid-question. If Relay doesn't answer after a long pause,
+  tap **Space** again to send.
 - If the mic misses the question ("Didn't catch that"), Ken taps again and the friend repeats it, louder.
 - **Backup question**, only if the answer itself goes wrong: Ken taps again, and the friend asks "What happens if the
-  Wi-Fi drops?" The answer: the narration is local, and Relay reconnects in about two seconds.
+  Wi-Fi drops?" The answer: the narration is local, and Relay reconnects in about two seconds. Relay has the fact
+  sheet for it even after it handed back: the facts ride along whenever `qa` is on screen.
 
 ### Ken's close (`higgs`, `limits`, `thanks`): talking points, KEN: personalise
 
@@ -105,8 +112,9 @@ because the model words them live. **KEN: personalise** marks spots only Ken can
   **Higgs Realtime**: one warm session, the same preset voice, semantic turn detection, captions from higgs-stt-3.1,
   and five tools that drive this deck. Hard parts: one voice across two models; cutting a reply so the model only
   remembers what you actually heard; holding every tool call until the audio has finished.
-  **KEN: personalise**: add the measured numbers from `doc/gotchas.md` (tap → silence, end of speech → first word,
-  reconnect).
+  **KEN: personalise**: add the measured numbers: tap → silence and reconnect from `doc/gotchas.md`; end of speech →
+  Relay's first word from a rehearsal recording (the speaker's last word → Relay's first word), not from F2 or the
+  event log, which give only lower bounds.
 - **`limits`** (about 30 s): English only. Ken holds the floor control, because Relay can't tell who is speaking.
   Narration is rendered ahead of time, so every script edit means a re-render. It's built for this room, not for a
   video call. In Q&A it knows only the slides and a one-page fact sheet.
@@ -115,24 +123,25 @@ because the model words them live. **KEN: personalise** marks spots only Ken can
   Thanks to Boson AI, MScAC and the teammate. **KEN: personalise**: decide whether to say the questions were planted.
   The suggestion is yes: "The questions were planted. Every answer was live."
 - **Time to spare** (optional, Ken's call: you reach `thanks` before about 8:00 and the room is quiet enough): let
-  the room ask Relay one real, unplanted question. Press **←**
-  three times to get back to `qa`; Relay repeats its one-liner and waits. Check that the status strip shows phase
-  `qa`, not `human`. If it says `human`, press **R** (Relay repeats the one-liner) and check again. Then tap
-  **Space** for the question. Only in `qa` does Relay get the fact sheet. Afterwards press **→** three times to come
-  back to `thanks`.
+  the room ask Relay one real, unplanted question. Press **←** three times to get back to `qa`; Relay repeats its
+  one-liner and waits. Then tap **Space** for the question: the fact sheet rides along whenever `qa` is on screen,
+  whatever phase the strip shows. Afterwards press **→** three times to come back to `thanks`.
 
 ## Pre-show checklist
 
 The night before or Saturday morning:
 
-- [ ] `voice:` in `script.yaml` is set from the F1 audition. After any change, re-render.
+- [x] `voice:` in `script.yaml` is chloe (Ken's pick after the F1 audition). If it ever changes: re-render, then
+      restart the server (an open deck reloads itself; click **Arm** again).
+- [ ] `uv run python scripts/live_check.py` passes (the live loop without a browser: real server + Higgs).
 - [ ] `uv run python -m relay.talk talks/relay-intro` reports `ok`.
 - [ ] `uv run python -m relay.render talks/relay-intro` (a real render, without `--fake`). Listen to every chunk once
       for "Higgs", "Realtime", "pre-rendered", "semantic", "keynote", "re-send", "plain-language", the three
       pauses and the enthusiasm on `demo`.
 - [ ] `uv run python -m relay.verify tools` (F5; it uses this talk by default) gets at least 9 of 10 real tool
       calls. If the `question` turns miss `handoff_to_human`, shorten `kb.md` first: it rides in every Q&A prompt,
-      and the "Team and limits" section is the first to go.
+      and the "Team and limits" section is the first to go. Run live checks one at a time: each opens new Realtime
+      sessions, and a burst got the voice validation rate limited (HTTP 429) on the first live run.
 - [ ] Every item under "Claims to verify" (below) is checked.
 - [ ] Placeholders filled: the `thanks` slide (teammate's name, repo URL with the pinned tag) and the first
       "Team and limits" line in `kb.md` ("one teammate" → name). `kb.md` goes to the model verbatim, so put no notes
@@ -143,8 +152,11 @@ The night before or Saturday morning:
 
 At the venue, T−15 min (brief Appendix A):
 
-1. Start a **fresh** server: `uv run python -m relay serve talks/relay-intro`. The opening greeting only happens once
-   per server run, so restart after every rehearsal or test, and after any edit to the talk files.
+1. Start a **fresh** server: `uv run python -m relay serve talks/relay-intro`, so Relay's live conversation starts
+   empty (it remembers the live exchanges of earlier runs on the same server). Restart after a re-render or any edit
+   to the talk files: an open deck reloads itself when the narration or slides changed (click **Arm** again), and
+   re-arms by itself after a plain restart. A stray tap, sound check or clicker press before the hook is harmless:
+   back on `title`, the next tap is the opening again.
 2. In Chrome, open `http://localhost:8000` (not an IP address: the mic needs localhost). Full screen, display mirrored.
 3. Click **Arm** and check that everything is green: server connected · talk loaded (10 slides, 16 chunks, **no
    fake-audio badge**) · audio unlocked (24000 Hz) · mic granted, and the meter moves · narration preloaded 16/16 ·
@@ -153,7 +165,7 @@ At the venue, T−15 min (brief Appendix A):
    `MIC_MODE=hold` (see Fallbacks).
 5. One test tap on `title`, without speaking: tap **Space**, check that the state shows LISTENING and the meter
    moves, then press **Esc** at once. Esc closes the mic before Relay hears a turn. If Relay replies or starts
-   presenting anyway, restart the server and re-Arm.
+   presenting anyway, press **←** until you are back on `title`: the next tap there is the opening again.
 6. Volume up (laptop speakers near maximum, or venue audio if offered). Turn on Do Not Disturb, close other tabs, plug
    in the charger.
 7. Cue the fallback video on the second device and turn on the hotspot.
@@ -163,6 +175,7 @@ At the venue, T−15 min (brief Appendix A):
 | Key | Does |
 | --- | --- |
 | **Space** (tap) | Stops Relay now and opens the mic for one turn. Tapping during a reply cuts it off. |
+| **Space** again, while the strip says Listening | Sends the question now, when turn detection doesn't end the turn (noisy room). It needs half a second of audio: a quicker double tap is ignored. Once the strip says Thinking, leave Space alone: a press in the first second is ignored, a later one cancels the answer and opens the mic again. |
 | **Esc** | Never mind: closes the mic or cuts the reply, then goes back to what was playing. |
 | **→ / ←** | Next / previous slide (PageDown / PageUp from a clicker) |
 | **P** | Pauses or resumes narration |
@@ -179,51 +192,67 @@ Any key beats whatever the model queued.
   - Opening: finish the hook and press **R** to start the first Relay slide.
   - Cut-in (a): tap, say the line, add "Anyway, go on," and press **R** to resume from the cut sentence.
   - Friend's question: tap, answer it yourself with the actor-and-earpiece line, then press **R**.
-  - Cut-in (b): tap, say "Let's skip ahead," and press **→** three times to reach `higgs`. The `demo` narration
-    describes live moments that didn't happen, and `qa` needs Realtime. Take the planted question yourself.
-  - The link reconnects by itself. If the dot turns green again, go back to the normal plan at the next cut-in.
+  - Cut-in (b): tap, say "Let's skip ahead," and press **→** three times to reach `higgs`. After a tap with Realtime
+    down, the arrows only move the slides, so `demo` and `qa` go by silently (their narration describes live
+    moments that didn't happen, and `qa` needs Realtime). Take the planted question yourself.
+  - The link reconnects by itself. When the dot turns green again, the banner says "Realtime is back"; the arrows
+    stay silent until you press **R** or tap **Space**. Go back to the normal plan at the next cut-in.
   - If Realtime is down before the start and isn't back by T−2 min, play the fallback video of the agent segment,
     then present the human slides live.
 - **Audio down or laptop down**: play the fallback video from the second device, then give the close, with slides
   if you can.
 - **The mic misses someone** ("Didn't catch that"): after about 8 s, Relay resumes the cut sentence on its own. Tap
   again and repeat the question yourself ("The question was: …"), or press **T**, type it and press Enter.
-- **Relay answers but doesn't move on**: after an interruption, a 3-second "Resuming…" countdown resumes the
-  narration anyway. **R** resumes at once; **Esc** holds. In Q&A there is no countdown: if Relay answers but doesn't
-  hand back, press **H** (or just **→** to `higgs`).
+- **Relay answers but doesn't call a tool** (this is the normal case: the live model rarely calls resume_script or
+  handoff_to_human on its own): after an interruption a short "Resuming… 2, 1" countdown (1.5 s) resumes the
+  narration, and the tool ticker shows `resume_script() auto`. **R** resumes at once; **Esc** holds. In Q&A, once
+  Relay's answer has played, Relay hands the floor back itself (`handoff_to_human() auto`, banner "Ken has the
+  floor"), so you don't need **H**.
 - **Relay goes to the wrong place or rambles**: any key wins. **Space** cuts it off, **← / →** fixes the slide, **R**
   resumes, **H** takes the floor.
 - **Relay greets but doesn't start**: press **R**.
-- **Room too noisy for turn detection** (turns end early or never end; you will hear it in the mic check): restart the
-  server with `MIC_MODE=hold uv run python -m relay serve talks/relay-intro` and re-Arm. Then hold Space while Ken or
-  the friend speaks, and release it to send. Relay's `details` line about semantic voice activity detection is then
-  not true, but cut-in (b) lands on that very word.
+- **A turn never ends** (the strip stays on Listening after the speaker stops, room noise): tap **Space** again to
+  send it. After 30 s Relay sends what it heard anyway.
+- **Room too noisy for turn detection** (turns end early, cutting people off; you will hear it in the mic check):
+  restart the server with `MIC_MODE=hold uv run python -m relay serve talks/relay-intro` and re-Arm. Then hold Space
+  while Ken or the friend speaks, and release it to send. Relay's `details` line about semantic voice activity
+  detection is then not true, but cut-in (b) lands on that very word.
 
 ## Claims to verify (KEN)
 
 The narration and `kb.md` state these as facts. Keep each one only if the measurements back it; log the numbers in
 `doc/gotchas.md`.
 
-- `how`: "One tap stops playback within a tenth of a second". Needs F2: tap → silence under 100 ms.
-- `details`: "I reconnect … in about two seconds". Needs F2: reconnect within 2 s.
+- `how`: "One tap stops playback within a tenth of a second". Needs tap → silence under 100 ms: the deck's estimate
+  in the browser console ("space → silence ≈ N ms"; 55 ms in headless Chrome), checked with the speakers you will
+  use.
+- `details`: "I reconnect … in about two seconds". Needs F2: reconnect within 2 s (first live run: ~260 ms from the
+  old socket closing to the new session).
 - `demo`: "If you couldn't hear the switch, that's the point." Needs F1: voice match passes. Cut the sentence if it
   doesn't.
 - `demo`: "shows up in the tool ticker". Needs the ticker to be readable on the projector.
 - `demo`: "When Ken cut in…", "that plain-language answer" and "when Ken asked to skip ahead" assume all three live
   moments happened. If one fails on stage, let it go.
-- Delivery tags (F3): the enthusiasm on `demo` and the three `<|prosody:pause|>` tags. If F3 shows tags misbehave
-  with timestamps, delete them; nothing else depends on them.
+- Delivery tags (F3): the enthusiasm on `demo` and the three `<|prosody:pause|>` tags. Delete them only if F3 FAILs
+  (tag characters would reach the captions) or the pause or the enthusiasm is inaudible in
+  `out/verify/tags/tagged.wav`; raw tag text or bare tag names that F3 lists as stripped or dropped are fine. The
+  first live run found no tag text in the word list; whether the pauses are audible is a call by ear. Nothing else
+  depends on the tags.
 - `problem`: "One of them drafted this talk." This is true (Claude Code drafted it). Cut it if you'd rather not say it.
-- `kb.md`: replace the "Targets" line with the measured numbers. "Ken edited every line" becomes true only after
-  your edit pass.
+- `kb.md`: replace the "Targets" line with the measured numbers (end of speech → first word from the rehearsal
+  recording). "Ken edited every line" becomes true only after your edit pass.
 
 ## After each rehearsal
 
-- Restart the server before the next run.
+- Restart the server before the next run (a fresh live conversation and event log).
 - Note the time of each segment against the table and trim the narration if a slide runs long. The `duration_ms` in
   `out/talks/relay-intro/<slide>/<n>.json` gives exact chunk lengths.
 - After editing a `say` line, re-render (only the changed chunks render again) and validate. Edits to `slides.md`,
-  `plain` or `kb.md` need no re-render, only a server restart.
-- Reply latencies are in the event log in `out/logs/`.
+  `plain` or `kb.md` need no re-render, only a server restart. Let a render finish before restarting: a wav that
+  doesn't match its timings stops the server from starting (it names the chunk). An open deck reloads itself when
+  the narration or slides changed; click **Arm** again.
+- The event log in `out/logs/` has `reply_latency_ms` per turn (estimated end of speech → first reply audio at the
+  backend, before the speakers) and `speech_end` lines (`tail_ms`). The number to quote on stage comes from the
+  rehearsal recording: the speaker's last word → Relay's first word.
 - Video (brief §13): record one full rehearsal on Saturday morning, screen plus room audio, and cut the 2–3 min video
   from it.
