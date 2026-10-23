@@ -11,6 +11,7 @@ import copy
 import dataclasses
 import itertools
 import json
+import math
 from typing import Any
 
 import pytest
@@ -29,6 +30,7 @@ from relay.tools import tool_specs
 from tests.conftest import synthetic_chunks
 
 AUDIO_100MS = base64.b64encode(bytes(4800)).decode()  # 100 ms of 24 kHz PCM16 silence: "AAAA…"
+COUNTDOWN_SHOWN = math.ceil(COUNTDOWN_S)  # the deck counts whole seconds
 MIC_FRAME = AUDIO_100MS
 AUDIO_MARK = "A" * 64  # what an audio payload looks like inside a log line
 
@@ -639,10 +641,10 @@ async def test_no_tool_counts_down_then_resumes(h: Harness):
     assert "function_call_output" not in json.dumps(h.realtime.items)
     await h.drained()
     assert (h.c.state, h.c.banner) == (IDLE, BANNER_RESUMING)
-    assert h.b("countdown") == [{"type": "countdown", "seconds": 3}]
+    assert h.b("countdown") == [{"type": "countdown", "seconds": COUNTDOWN_SHOWN}]
     assert h.last("state")["banner"] == "Resuming…"
     plays = len(h.b("play"))
-    await h.clock.advance(2.9)
+    await h.clock.advance(COUNTDOWN_S - 0.1)
     assert len(h.b("play")) == plays
     await h.clock.advance(0.2)
     assert h.last("play") == {"type": "play", "play_id": 2, "slide": "how", "chunk": 0,
@@ -667,7 +669,7 @@ async def test_space_during_countdown_starts_new_turn_with_origin_narration(h: H
     await h.speak()
     await h.reply()
     await h.drained()
-    assert h.b("countdown")[-1] == {"type": "countdown", "seconds": 3}  # origin narration again
+    assert h.b("countdown")[-1] == {"type": "countdown", "seconds": COUNTDOWN_SHOWN}  # origin narration again
 
 
 async def test_esc_during_countdown_goes_idle_and_r_resumes(h: Harness):
@@ -930,7 +932,44 @@ async def test_next_slide_at_deck_end_is_rejected(h: Harness):
     assert h.outputs() == {"call_1": '{"error": "no next slide"}'}
     assert h.tool_statuses() == [("call_1", "next_slide", "rejected")]
     await h.drained()
-    assert (h.c.state, h.c.banner) == (IDLE, BANNER_QA)  # origin idle
+    # A Q&A answer was given and no valid tool ran: the watchdog hands the floor back itself (shown as "auto").
+    assert (h.c.state, h.c.banner, h.c.phase) == (IDLE, "Ken has the floor", "human")
+    assert h.last("tool") == {"type": "tool", "call_id": "auto_1", "name": "handoff_to_human", "args": {},
+                              "status": "auto"}
+
+
+async def test_a_qa_answer_without_a_tool_hands_back_automatically(h: Harness):
+    """Live F5: after a Q&A answer the model rarely calls handoff_to_human; Ken chose the watchdog (2026-10-23)."""
+    await h.wait_for_question()
+    await h.key("space")
+    await h.speak("How do you know where to pick up?")
+    await h.reply(transcript="Every word has a timestamp, so I resume at the start of the sentence.")
+    await h.drained()
+    assert (h.c.state, h.c.banner, h.c.floor_human) == (IDLE, "Ken has the floor", True)
+    assert h.last("tool")["status"] == "auto" and h.last("tool")["name"] == "handoff_to_human"
+
+
+async def test_a_silent_qa_reply_does_not_hand_back(h: Harness):
+    """No answer was heard (no reply audio): the floor stays with the question, nothing is applied."""
+    await h.wait_for_question()
+    await h.key("space")
+    await h.speak("Hello?")
+    await h.reply(audio_ms=0)
+    await h.drained()
+    assert (h.c.state, h.c.banner, h.c.floor_human) == (IDLE, BANNER_QA, False)
+    assert h.b("tool") == []
+
+
+async def test_the_countdown_resume_shows_as_auto(h: Harness):
+    await h.cut_in(chunk=0, word=7)
+    await h.speak()
+    await h.reply()  # no tool: the watchdog counts down and resumes
+    await h.drained()
+    assert h.b("countdown") == [{"type": "countdown", "seconds": COUNTDOWN_SHOWN}]
+    await h.clock.advance(COUNTDOWN_S + 0.05)
+    assert h.c.state == NARRATING
+    assert h.last("tool") == {"type": "tool", "call_id": "auto_1", "name": "resume_script", "args": {},
+                              "status": "auto"}
 
 
 async def test_handoff_to_human(h: Harness):
@@ -1183,7 +1222,7 @@ async def test_prev_during_the_countdown_cancels_it_and_moves(h: Harness):
     await h.speak()
     await h.reply()
     await h.drained()
-    assert h.b("countdown")[-1] == {"type": "countdown", "seconds": 3}
+    assert h.b("countdown")[-1] == {"type": "countdown", "seconds": COUNTDOWN_SHOWN}
     await h.key("prev")
     assert h.b("countdown")[-1] == {"type": "countdown", "seconds": 0}
     assert (h.c.current_slide.id, h.c.state) == ("title", IDLE)
@@ -1202,7 +1241,7 @@ async def test_an_edge_key_during_the_countdown_cancels_it(make, test_talk):
     await h.speak()
     await h.reply()
     await h.drained()
-    assert h.b("countdown")[-1] == {"type": "countdown", "seconds": 3}
+    assert h.b("countdown")[-1] == {"type": "countdown", "seconds": COUNTDOWN_SHOWN}
     plays = len(h.b("play"))
     await h.key("prev")
     assert h.b("countdown")[-1] == {"type": "countdown", "seconds": 0}
@@ -1437,7 +1476,7 @@ async def test_realtime_drop_while_thinking(h: Harness):
     h.realtime.ready = False
     await h.c.on_realtime_status("error", "billing refused")
     assert (h.c.state, h.c.banner) == (IDLE, BANNER_RESUMING)
-    assert h.b("countdown") == [{"type": "countdown", "seconds": 3}]
+    assert h.b("countdown") == [{"type": "countdown", "seconds": COUNTDOWN_SHOWN}]
 
 
 async def test_reconnect_sends_one_summary(h: Harness):

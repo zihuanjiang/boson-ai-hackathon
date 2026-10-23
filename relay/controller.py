@@ -43,7 +43,7 @@ REPLY_STALL_S = 8.0  # a bound reply with no event of its own this long (and no 
 ERROR_GRACE_S = 1.5  # after a non-benign `error` mid-reply: this long without an event of the reply → as a stall
 DOUBLE_SEND_S = 1.0  # tap mode: Space this soon after a spoken turn ended (still thinking) was a "send": ignored
 SEND_NOW_MIN_FRAMES = 5  # tap mode: "send now" needs this many 100 ms mic frames (a quick double tap sends nothing)
-COUNTDOWN_S = 3  # "Resuming…" after a reply that called no tool
+COUNTDOWN_S = 1.5  # "Resuming…" after a reply that called no tool (the deck shows whole seconds: ceil)
 DRAIN_GRACE_S = 2.0  # drain fallback = remaining reply audio + this
 BYTES_PER_MS = RATE * 2 // 1000  # PCM16 mono at 24 kHz: 48 bytes per ms
 MAX_VAD_TAIL_MS = 5000  # speech_stopped.audio_end_ms this far behind the newest mic audio is not trusted
@@ -225,6 +225,7 @@ class Controller:
         self.started = False  # narration has started once (re-armed on a human slide before the first relay slide)
         self.floor_human = False
         self.floor_offline = False  # the presenter took the floor because Realtime was down: arrows move silently
+        self._autos = 0  # ids of the watchdog's own actions in the ticker ("auto")
         self.turn: Turn | None = None
         self.fragment: int | None = 0 if self.current_slide.is_relay else None  # visible on the current slide
         self.banner: str | None = None
@@ -892,9 +893,12 @@ class Controller:
             await self._apply(call)
             await self._tool_message(call.call_id, call.name, call.args, "applied")
             self._note("tool", {"call_id": call.call_id, "name": call.name, "args": call.args, "status": "applied"})
+        elif self.current_slide.is_qa and turn.first_audio_at is not None:
+            # A Q&A answer was given but the model didn't hand back (live F5: it rarely does; D-watchdog).
+            await self._auto(tools.HANDOFF_TO_HUMAN)
         elif turn.origin == ORIGIN_NARRATION:
             self._set_state(IDLE, BANNER_RESUMING)
-            await self._send({"type": "countdown", "seconds": COUNTDOWN_S})
+            await self._send({"type": "countdown", "seconds": math.ceil(COUNTDOWN_S)})
             self._start_timer("countdown", COUNTDOWN_S, self._on_countdown)
         elif turn.origin == ORIGIN_PAUSED and self.cursor is not None:
             self._set_state(PAUSED, BANNER_PAUSED)
@@ -1636,6 +1640,21 @@ class Controller:
     async def _on_countdown(self) -> None:
         if self.state == IDLE:
             await self._resume("watchdog")
+            if self.state == NARRATING:
+                await self._tool_message(self._auto_id(), tools.RESUME_SCRIPT, {}, "auto")
+                self._note("tool", {"name": tools.RESUME_SCRIPT, "status": "auto"})
+
+    def _auto_id(self) -> str:
+        self._autos += 1
+        return f"auto_{self._autos}"
+
+    async def _auto(self, name: str) -> None:
+        """Do what the model should have called (the watchdog's own action): applied like a tool call, shown in the
+        ticker with status "auto" so it never pretends the model called it."""
+        call = tools.ToolCall(self._auto_id(), name, {})
+        await self._apply(call)
+        await self._tool_message(call.call_id, name, {}, "auto")
+        self._note("tool", {"call_id": call.call_id, "name": name, "status": "auto"})
 
     # --- instructions -----------------------------------------------------------------------------------------
 
