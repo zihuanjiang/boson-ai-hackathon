@@ -159,6 +159,13 @@ Add our own findings here as we hit them (date them).
     'higgs-realtime-1.5-preview': not available on this endpoint" (with or without a trailing slash on the URL), and
     `GET /v1/models` lists only `higgs-realtime`. Set `BOSON_REALTIME_MODEL=higgs-realtime-1.5-preview` once access
     works, then rerun `python -m relay.verify tools`.
+  - **Scripted live run** (`scripts/live_check.py`: real server + Higgs, lines synthesized with TTS as the mic, 18:40):
+    with the default `semantic_vad` (silence 100 ms) the turn ended at the **first pause** in 3 of 4 lines
+    ("Sorry, can you explain…" was heard as "Sorry." → "No worries, I'm back on track"). With
+    `{"type": "semantic_vad", "silence_duration_ms": 700}` all four lines were heard in full, the plain-language
+    reply used the seed metaphor + "As I was saying", and end of speech → first audio stayed 0.7–1.2 s. That is
+    now the default (`relay/config.py`). In this run the model called start_presentation (2/2) and once
+    resume_script on its own; the watchdog did the rest.
   - First real render (`talks/test`, chloe): 22.1 s of narration vs 29.5 s for the fake estimate. TTS words come
     without punctuation and some are zero-length (`a@1520-1520`); sentence ids still align. Sentence gaps 400 ms
     (natural) and 720 ms (with `<|prosody:pause|>`), so resume offsets land mid-pause (1560 ms in both examples).

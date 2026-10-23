@@ -28,7 +28,7 @@ from websockets.http11 import Response
 
 import relay.config
 from relay import render, verify
-from relay.config import RATE, Settings
+from relay.config import DEFAULT_TURN_DETECTION, RATE, Settings
 from relay.talk import load_talk
 from relay.textutil import strip_tags
 from relay.verify import CREDITS_URL, NO_KEY_MESSAGE, Ctx, Result, TimedWord, ToolCallSeen, VerifyError
@@ -691,7 +691,7 @@ def test_session_config_is_the_apps(live_settings):
         "type": "realtime", "model": "higgs-realtime", "instructions": "BASE", "output_modalities": ["audio"],
         "audio": {"input": {"format": {"type": "audio/pcm", "rate": 24000},
                             "transcription": {"model": "higgs-stt-3.1", "language": "en"},
-                            "turn_detection": {"type": "semantic_vad"}},
+                            "turn_detection": DEFAULT_TURN_DETECTION},
                   "output": {"format": {"type": "audio/pcm", "rate": 24000}, "voice": "chloe"}},
         "tools": [{"name": "x"}], "tool_choice": "auto"}
     hold = Settings(api_key=KEY, mic_mode="hold", temperature=0.6, full_session_update=True)
@@ -704,7 +704,7 @@ def test_session_config_is_the_apps(live_settings):
 def test_session_fields_tell_absent_from_changed():
     full = verify.session_config(Settings(), voice="chloe", instructions="x", tools=[{}, {}])
     fields = verify.session_fields(full)
-    assert fields == {"voice": "chloe", "turn_detection": {"type": "semantic_vad"},
+    assert fields == {"voice": "chloe", "turn_detection": DEFAULT_TURN_DETECTION,
                       "transcription": {"model": "higgs-stt-3.1", "language": "en"}, "tools": 2,
                       "output_modalities": ["audio"]}
     bare = verify.session_fields({"instructions": "x", "tools": None})

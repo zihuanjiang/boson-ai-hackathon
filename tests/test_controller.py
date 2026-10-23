@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from relay.config import ROOT, Settings
+from relay.config import DEFAULT_TURN_DETECTION, ROOT, Settings
 from relay.controller import (
     BANNER_OFFLINE, BANNER_OFFLINE_BACK, BANNER_OPENING, BANNER_PAUSED, BANNER_PAUSED_R, BANNER_QA, BANNER_RESUMING,
     COUNTDOWN_S, CUT_CALL_OUTPUT, DOUBLE_SEND_S, DRAIN_GRACE_S, ERR_LINK_LOST, ERR_NO_REPLY, ERR_SILENCE,
@@ -1642,17 +1642,18 @@ def test_session_config_tap_mode(h: Harness, test_talk):
         "audio": {
             "input": {"format": {"type": "audio/pcm", "rate": 24000},
                       "transcription": {"model": "higgs-stt-3.1", "language": "en"},
-                      "turn_detection": {"type": "semantic_vad"}},
+                      "turn_detection": DEFAULT_TURN_DETECTION},
             "output": {"format": {"type": "audio/pcm", "rate": 24000}, "voice": "chloe"},
         },
         "tools": tool_specs(test_talk),
         "tool_choice": "auto",
     }
+    assert DEFAULT_TURN_DETECTION["type"] == "semantic_vad"
     assert config["instructions"].startswith("You are Relay, a voice co-presenter for Ken's talk.")
     assert "Phase: opening" in config["instructions"]
     json.dumps(config)
     config["audio"]["input"]["turn_detection"]["type"] = "server_vad"  # a copy: settings stay untouched
-    assert h.settings.turn_detection == {"type": "semantic_vad"}
+    assert h.settings.turn_detection == DEFAULT_TURN_DETECTION
 
 
 def test_session_config_hold_mode_custom_vad_and_temperature(make):

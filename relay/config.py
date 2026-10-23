@@ -25,7 +25,9 @@ REALTIME_MODELS = ("higgs-realtime", "higgs-realtime-1.5-preview")  # the ids th
 STT_MODEL = "higgs-stt-3.1"
 PRESET_VOICES = ("default", "chloe", "eleanor", "jake", "marcus", "nora", "oliver")
 MIC_MODES = ("tap", "hold")  # "open" (hands-free) is a nice-to-have, not in v1
-DEFAULT_TURN_DETECTION: dict = {"type": "semantic_vad"}
+# Live 2026-10-23: semantic_vad's default 100 ms silence ended 3 of 4 spoken lines at their first pause ("Sorry," →
+# "No worries…"); with 700 ms every line was heard in full and replies still started within ~0.7–1.2 s.
+DEFAULT_TURN_DETECTION: dict = {"type": "semantic_vad", "silence_duration_ms": 700}
 
 
 @dataclass(frozen=True)
