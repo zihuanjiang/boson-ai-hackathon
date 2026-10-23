@@ -1,0 +1,22 @@
+# Test talk for milestone 1 (brief §12) and the test suite. Keep it short and valid.
+talk: test
+voice: chloe
+presenter: Ken
+slides:
+  - id: title
+    speaker: human
+  - id: how
+    speaker: relay
+    plain: "Like a radio host with a script and an earpiece: the script is ready, and the producer can cut in anytime."
+    chunks:
+      - say: "<|emotion:enthusiasm|>Here is how this works. Everything you hear from me right now was written and rendered ahead of time."
+        fragment: 1
+      - say: "Every single word comes with a timestamp, so I always know exactly where I am in the script."
+        fragment: 2
+      - say: "When someone cuts in, I stop on the word, answer live, and then pick up again from the start of that sentence."
+        fragment: 3
+  - id: qa
+    speaker: relay
+    mode: qa
+    chunks:
+      - say: "That is the whole pipeline. <|prosody:pause|> I would love to take a question."

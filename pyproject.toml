@@ -1,13 +1,30 @@
 [project]
-name = "bosonai-hackathon"
+name = "relay"
 version = "0.1.0"
-description = "Higgs Audio Hackathon 2026 entry (Boson AI Higgs Realtime / TTS 3 / Avatar)"
+description = "Relay: a live voice co-presenter on Boson AI Higgs Realtime + Higgs TTS 3 (Higgs Audio Hackathon 2026)"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.115",
     "python-dotenv>=1.0",
+    "pyyaml>=6.0",
     "requests>=2.32",
+    "uvicorn[standard]>=0.32",
     "websockets>=13",
 ]
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q"
