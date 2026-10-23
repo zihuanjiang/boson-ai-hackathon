@@ -35,7 +35,10 @@ class RealtimePort(Protocol):
         """offline | connecting | ready | reconnecting | error"""
 
     async def start(self) -> None:
-        """Start connecting (idempotent)."""
+        """Start connecting (idempotent, safe to call concurrently)."""
+
+    async def stop(self) -> None:
+        """Close the session and stop reconnecting (status offline)."""
 
     async def send(self, event: dict) -> bool:
         """Send one client event; False when not connected."""

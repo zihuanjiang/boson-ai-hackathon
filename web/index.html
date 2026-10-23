@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Relay</title>
+    <meta name="description" content="Relay, a live voice co-presenter: the deck" />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/web/vendor/reveal/reset.css" />
+    <link rel="stylesheet" href="/web/vendor/reveal/reveal.css" />
+    <link rel="stylesheet" href="/web/vendor/reveal/theme/black.css" />
+    <link rel="stylesheet" href="/web/css/relay.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="strip" aria-label="Relay status">
+        <div class="strip-group">
+          <span class="state-badge" data-state="IDLE" title="Relay's state">
+            <i class="dot" aria-hidden="true"></i><span class="state-text">Idle</span>
+          </span>
+          <span class="phase" title="Phase of the talk">Opening</span>
+          <span class="where" title="Slide and narration chunk">—</span>
+        </div>
+        <ol class="ticker" aria-label="Tool calls"></ol>
+        <div class="strip-group strip-right">
+          <span class="latency" title="Reply latency: end of speech to first reply audio">
+            <span class="latency-label">reply</span> <span class="latency-value">—</span>
+          </span>
+          <span class="meter" title="Microphone level (closed)" aria-hidden="true"><span class="meter-fill"></span></span>
+          <span class="rt" data-status="offline" title="Higgs Realtime: offline">
+            <i class="dot" aria-hidden="true"></i><span class="rt-text">Realtime offline</span>
+          </span>
+          <span class="micmode" title="MIC_MODE">Tap</span>
+          <span class="badge fake-badge" title="Narration was rendered with --fake: placeholder tones, not TTS" hidden
+            >Fake audio</span
+          >
+          <span class="badge server-badge" hidden>Server offline</span>
+        </div>
+      </header>
+
+      <main class="stage">
+        <div class="reveal">
+          <div class="slides">
+            <section data-markdown="/api/slides.md" data-separator="^---[ \t]*$" data-charset="utf-8"></section>
+          </div>
+        </div>
+        <div class="banner" role="status" hidden>
+          <span class="banner-text"></span><span class="banner-count" aria-hidden="true" hidden></span>
+        </div>
+      </main>
+
+      <section class="captions" data-mode="idle" aria-label="Captions">
+        <div class="cap-meta">
+          <span class="cap-tag" hidden></span>
+          <span class="cap-user" hidden>
+            <svg class="ico-mic" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"
+              />
+            </svg>
+            <span class="cap-user-text"></span>
+          </span>
+        </div>
+        <div class="cap-main">
+          <p class="cap-narration"><span class="cap-words"></span></p>
+          <p class="cap-live empty"><span class="cap-live-text"></span></p>
+        </div>
+      </section>
+    </div>
+
+    <form class="typed" autocomplete="off" hidden>
+      <label class="typed-label" for="relay-typed-input">Ask Relay</label>
+      <input
+        id="relay-typed-input"
+        class="typed-input"
+        type="text"
+        maxlength="500"
+        spellcheck="false"
+        enterkeyhint="send"
+        placeholder="Type a question · Enter sends · Esc cancels"
+      />
+    </form>
+
+    <div class="toasts" aria-live="polite"></div>
+
+    <div class="overlay" role="dialog" aria-modal="true" aria-labelledby="relay-overlay-title">
+      <div class="panel">
+        <header class="panel-head">
+          <h1 id="relay-overlay-title">Relay</h1>
+          <p class="panel-sub">Pre-show check</p>
+        </header>
+        <ul class="checklist">
+          <li data-item="server" data-status="working">
+            <span class="ic" aria-hidden="true"></span><span class="label">Server connected</span
+            ><span class="detail">connecting…</span>
+          </li>
+          <li data-item="talk" data-status="working">
+            <span class="ic" aria-hidden="true"></span><span class="label">Talk loaded</span
+            ><span class="detail">loading…</span>
+          </li>
+          <li data-item="audio" data-status="pending">
+            <span class="ic" aria-hidden="true"></span><span class="label">Audio unlocked</span
+            ><span class="detail">on Arm</span>
+          </li>
+          <li data-item="mic" data-status="pending">
+            <span class="ic" aria-hidden="true"></span><span class="label">Microphone</span
+            ><span class="detail">on Arm</span><span class="meter" aria-hidden="true"><span class="meter-fill"></span></span>
+          </li>
+          <li data-item="narration" data-status="pending">
+            <span class="ic" aria-hidden="true"></span><span class="label">Narration preloaded</span
+            ><span class="detail">on Arm</span>
+          </li>
+          <li data-item="realtime" data-status="pending">
+            <span class="ic" aria-hidden="true"></span><span class="label">Realtime ready</span
+            ><span class="detail">waiting for the server</span>
+          </li>
+        </ul>
+        <div class="panel-actions">
+          <button type="button" class="arm-button" autofocus>Arm</button>
+          <button type="button" class="done-button" hidden>Hide checklist</button>
+          <p class="panel-hint">Arm unlocks audio, asks for the mic, loads the narration and checks Realtime.</p>
+        </div>
+        <dl class="keys" aria-label="Presenter keys">
+          <div><dt><kbd>Space</kbd></dt><dd>talk / cut in</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>cancel the turn</dd></div>
+          <div><dt><kbd>→</kbd> <kbd>←</kbd></dt><dd>next / previous slide</dd></div>
+          <div><dt><kbd>P</kbd></dt><dd>pause</dd></div>
+          <div><dt><kbd>H</kbd></dt><dd>human has the floor</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>back to Relay</dd></div>
+          <div><dt><kbd>T</kbd></dt><dd>type a question</dd></div>
+        </dl>
+      </div>
+    </div>
+
+    <script src="/web/vendor/reveal/reveal.js"></script>
+    <script src="/web/vendor/reveal/plugin/markdown/markdown.js"></script>
+    <script type="module" src="/web/js/main.js"></script>
+  </body>
+</html>

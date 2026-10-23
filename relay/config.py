@@ -5,6 +5,7 @@ The API key comes from the repo-root `.env` (gitignored). Never log `Settings.ap
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from dataclasses import dataclass, field
@@ -46,8 +47,11 @@ class Settings:
 
     @property
     def session_turn_detection(self) -> dict | None:
-        """`audio.input.turn_detection` for session.update: VAD in tap mode, manual commit (null) in hold mode."""
-        return None if self.mic_mode == "hold" else self.turn_detection
+        """`audio.input.turn_detection` for session.update: VAD in tap mode, manual commit (null) in hold mode.
+
+        A copy, so a caller mutating its session config can't change every later session.update.
+        """
+        return None if self.mic_mode == "hold" else copy.deepcopy(self.turn_detection)
 
 
 def _flag(value: str | None) -> bool:

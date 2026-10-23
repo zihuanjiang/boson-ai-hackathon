@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Relay layout mock: pre-show checklist</title>
+    <link rel="stylesheet" href="../../../web/vendor/reveal/reset.css" />
+    <link rel="stylesheet" href="../../../web/vendor/reveal/reveal.css" />
+    <link rel="stylesheet" href="../../../web/vendor/reveal/theme/black.css" />
+    <link rel="stylesheet" href="../../../web/css/relay.css" />
+  </head>
+  <body class="reveal-viewport">
+    <div class="app">
+      <header class="strip">
+        <div class="strip-group">
+          <span class="state-badge" data-state="IDLE"><i class="dot"></i><span class="state-text">Idle</span></span>
+          <span class="phase">Opening</span>
+          <span class="where">Relay test talk</span>
+        </div>
+        <ol class="ticker"></ol>
+        <div class="strip-group strip-right">
+          <span class="latency"><span class="latency-label">reply</span> <span class="latency-value">—</span></span>
+          <span class="meter" style="--level: 0.4"><span class="meter-fill"></span></span>
+          <span class="rt" data-status="connecting"><i class="dot"></i><span class="rt-text">Realtime connecting…</span></span>
+          <span class="micmode">Tap</span>
+        </div>
+      </header>
+      <main class="stage"></main>
+      <section class="captions" data-mode="idle"></section>
+    </div>
+    <div class="overlay armed">
+      <div class="panel">
+        <header class="panel-head">
+          <h1>Relay</h1>
+          <p class="panel-sub">Pre-show check</p>
+        </header>
+        <ul class="checklist">
+          <li data-item="server" data-status="ok"><span class="ic"></span><span class="label">Server connected</span><span class="detail">127.0.0.1:8000</span></li>
+          <li data-item="talk" data-status="warn"><span class="ic"></span><span class="label">Talk loaded</span><span class="detail">test · 3 slides (2 Relay) · 4 chunks · FAKE AUDIO: placeholder tones, not TTS</span></li>
+          <li data-item="audio" data-status="ok"><span class="ic"></span><span class="label">Audio unlocked</span><span class="detail">running · 24000 Hz · output latency 25 ms</span></li>
+          <li data-item="mic" data-status="ok"><span class="ic"></span><span class="label">Microphone</span><span class="detail">MacBook Pro Microphone</span><span class="meter" style="--level: 0.6"><span class="meter-fill"></span></span></li>
+          <li data-item="narration" data-status="working"><span class="ic"></span><span class="label">Narration preloaded</span><span class="detail">3/4</span></li>
+          <li data-item="realtime" data-status="fail"><span class="ic"></span><span class="label">Realtime ready</span><span class="detail">error: BOSON_API_KEY missing</span></li>
+        </ul>
+        <div class="panel-actions">
+          <button type="button" class="arm-button" hidden>Arm</button>
+          <button type="button" class="done-button">Hide checklist</button>
+          <p class="panel-hint">Arm unlocks audio, asks for the mic, loads the narration and checks Realtime.</p>
+        </div>
+        <dl class="keys">
+          <div><dt><kbd>Space</kbd></dt><dd>talk / cut in</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>cancel the turn</dd></div>
+          <div><dt><kbd>→</kbd> <kbd>←</kbd></dt><dd>next / previous slide</dd></div>
+          <div><dt><kbd>P</kbd></dt><dd>pause</dd></div>
+          <div><dt><kbd>H</kbd></dt><dd>human has the floor</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>back to Relay</dd></div>
+          <div><dt><kbd>T</kbd></dt><dd>type a question</dd></div>
+        </dl>
+      </div>
+    </div>
+  </body>
+</html>

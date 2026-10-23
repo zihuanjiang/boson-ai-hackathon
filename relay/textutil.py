@@ -24,7 +24,7 @@ POSITIONAL_PROSODY = frozenset({"pause", "long_pause"})
 
 TAG_RE = re.compile(r"<\|\s*([A-Za-z_]+)\s*:\s*([A-Za-z_]+)\s*\|>")
 ANY_TAG_RE = re.compile(r"<\|.*?\|>", re.S)
-_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.;:!?…])")
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.;:!?…]+)(?=[\s\"'”’)\]]|$)")  # real punctuation, not ".env"
 _SENTENCE_END_RE = re.compile(r"[.!?…]+[\"'”’)\]]*(?=\s|$)")
 _ENDS_SENTENCE_RE = re.compile(r"[.!?…][\"'”’)\]]*$")
 _NON_WORD_RE = re.compile(r"[^a-z0-9]")
@@ -114,30 +114,35 @@ def align_to_sentences(tts_words: list[str], text: str) -> list[int]:
     """Sentence index for each word the TTS reported, by aligning it to the source text.
 
     TTS tokens can merge or split words ("real-time" vs "real", "time") or drop punctuation, so this aligns the
-    normalised token sequences and maps unmatched stretches proportionally. The result never decreases.
+    concatenated normalised *characters*: split or merged words line up exactly even when the same words recur
+    later in the chunk. Each TTS word takes the sentence of its first matched character; a word with no matched
+    character takes its left neighbour's. The result never decreases.
     """
     ref = sentence_words(text)
     if not tts_words:
         return []
     if not ref:
         return [0] * len(tts_words)
-    a = [norm_word(word) for word in tts_words]
-    b = [norm_word(word) for word, _ in ref]
-    mapping: list[int | None] = [None] * len(a)
-    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
-        if op == "equal":
-            for k in range(i2 - i1):
-                mapping[i1 + k] = j1 + k
-        elif op == "replace":
-            n, m = i2 - i1, j2 - j1
-            for k in range(n):
-                mapping[i1 + k] = j1 + min(m - 1, (k * m) // n)
-        # "delete": TTS words with no counterpart → filled from neighbours below; "insert": nothing to map
-    first = next((j for j in mapping if j is not None), 0)
+    ref_sentence: list[int] = []
+    for word, sentence in ref:
+        ref_sentence.extend([sentence] * len(norm_word(word)))
+    b = "".join(norm_word(word) for word, _ in ref)
+    tokens = [norm_word(word) for word in tts_words]
+    a = "".join(tokens)
+    owner: list[int | None] = [None] * len(a)
+    for i, j, n in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_matching_blocks():
+        owner[i:i + n] = range(j, j + n)
+    mapping: list[int | None] = []
+    pos = 0
+    for token in tokens:
+        matched = next((j for j in owner[pos:pos + len(token)] if j is not None), None)
+        mapping.append(ref_sentence[matched] if matched is not None else None)
+        pos += len(token)
+    first = next((s for s in mapping if s is not None), 0)
     result, last = [], first
-    for j in mapping:
-        last = max(last, j) if j is not None else last
-        result.append(ref[last][1])
+    for sentence in mapping:
+        last = max(last, sentence) if sentence is not None else last
+        result.append(last)
     return result
 
 

@@ -1,0 +1,87 @@
+# Relay introduces itself: the stage talk (brief §13, Appendix A). Claude drafted it; Ken owns every spoken line.
+#   validate: uv run python -m relay.talk talks/relay-intro     render: uv run python -m relay.render talks/relay-intro
+# Narration rules: whole sentences, at most 300 characters per `say` (tags included), numbers spelled as words,
+# no digits, URLs, parentheses or acronyms. Delivery tags only at the start of a chunk; <|prosody:pause|> anywhere.
+# `plain` is the seed for a live plain-language re-explanation; Relay never reads it out as narration.
+# CUE comments mark where Ken taps for the live cut-ins; the exact lines are in run_of_show.md.
+talk: relay-intro
+voice: chloe          # F1 audition (chloe / marcus / eleanor) may change this; re-render after any change
+presenter: Ken
+slides:
+  - id: title
+    speaker: human    # Ken's hook. He taps Space: "...so I built a co-presenter. Relay, take it away." -> start_presentation
+
+  - id: problem
+    speaker: relay
+    plain: "Like a brilliant chef who freezes the moment a guest asks what is in the dish."
+    chunks:
+      - say: "Here's a pattern you've all seen. An engineer spends three months building something brilliant, then gets five minutes on demo day to explain it."
+        fragment: 1
+      # CUE (a): Ken taps on "nervous": "Quick comment: that was literally my last demo day." -> resume_script
+      # replays from "The idea that felt so clear", so "The work was brilliant. The five minutes were not." lands on Ken.
+      - say: "The lights come up, and the room goes quiet. The idea that felt so clear at two in the morning comes out as a nervous tour of the code. The work was brilliant. The five minutes were not."
+        fragment: 2
+      - say: "Coding agents can already write the slides and the script. One of them drafted this talk. But someone still has to stand up and deliver it. <|prosody:pause|> This time, that someone is me."
+        fragment: 3
+
+  - id: idea
+    speaker: relay
+    plain: "Like a radio co-host: you plan the show, it carries the segment and takes the calls, and you can grab the mic back anytime."
+    chunks:
+      - say: "So here's the idea. Give me the slides and the script, then hand me the stage. I'll present it all in one consistent voice, and yes, you're allowed to interrupt me."
+        fragment: 1
+      - say: "Cut in with a comment, and I'll answer and find my place again. Ask for the simple version, and I'll reach for an everyday picture. Ask a question, and I'll answer from the facts I was given."
+        fragment: 2
+      - say: "And when it's time, I hand the floor back. The human stays in charge: one tap, and I stop mid-word. <|prosody:pause|> Most keynote speakers can't promise that."
+        fragment: 3
+
+  - id: how
+    speaker: relay
+    plain: "Think of me as an actor with a script and an earpiece: the script is rehearsed, the earpiece lets Ken cut in anytime, and I always know which line I stopped on."
+    chunks:
+      - say: "How does it work? My script was pre-rendered by Higgs text to speech, chunk by chunk, and every single word came back with its own timestamp."
+        fragment: 1
+      # CUE (friend): Ken taps on "position" and points: "Sorry, can you explain that like I'm not an engineer?"
+      # -> metaphor from `plain`, "As I was saying..." -> resume_script replays from "One tap stops playback",
+      # the sentence that describes what just happened.
+      - say: "Ken holds the floor control. One tap stops playback within a tenth of a second, and the backend maps that playback position to the cut word, the exact word you heard. Then the microphone opens, and one warm Higgs Realtime session hears you and replies live, in the same preset voice."
+        fragment: 2
+      - say: "Once I've answered, I call a tool that drives this deck. When my reply has finished playing, narration resumes from the first word of the sentence I was cut on. Word timing in, exact resume out."
+        fragment: 3
+
+  - id: details
+    speaker: relay
+    plain: "Like a stage manager with a clipboard: always knows who has the floor, never moves the set while someone is mid-line, and keeps a spare headset ready."
+    # Dense on purpose, and the slide shows everything at once (no fragments), so skipping it feels natural.
+    chunks:
+      # CUE (b): Ken taps on "semantic": "That's a lot of detail. Let's skip to the demo." -> goto_slide demo.
+      - say: "Under the hood, I'm a state machine with five states: idle, narrating, paused, listening, and replying. A tap moves me to listening, and semantic voice activity detection ends your turn when your thought sounds finished, not just when you pause."
+      - say: "If you cut off a live reply, the browser counts the samples you actually heard. I truncate the conversation to match, so I never remember saying something nobody heard."
+      # If nobody cuts in (rehearsal), the last line still bridges into the demo.
+      - say: "Tool calls wait until the playback buffer drains, and a watchdog resumes the script if I forget one. If the socket drops, I reconnect and re-send my voice, tools and place in about two seconds. <|prosody:pause|> If your eyes just glazed over, that's exactly what interruptions are for."
+
+  - id: demo
+    speaker: relay
+    plain: "Like a cooking show with nothing made earlier: the recipe was written ahead of time, but every dish you tasted was cooked right in front of you."
+    chunks:
+      # Points back at the three live moments: cut-in (a), the friend's plain-language cut-in, cut-in (b).
+      - say: "<|emotion:enthusiasm|>Everything you've seen so far was live. When Ken cut in, I stopped on the word, answered him, and went back to the start of my sentence. The captions showed you exactly where."
+        fragment: 1
+      - say: "Nobody recorded that plain-language answer. Higgs Realtime made it on the spot, in the same voice Higgs text to speech used for my script. If you couldn't hear the switch, that's the point."
+        fragment: 2
+      - say: "When Ken asked to skip ahead, I didn't just agree. I called a tool and moved the deck myself. Every call I make shows up in the tool ticker, so you can check my work."
+        fragment: 3
+
+  - id: qa
+    speaker: relay
+    mode: qa          # after this chunk Relay waits (IDLE); Ken taps for the planted question
+    plain: "Like a bookmark that remembers the exact word you stopped on, then flips back to the start of that sentence."
+    chunks:
+      - say: "Now for the part nobody can script. I'd love to take a question."
+
+  - id: higgs
+    speaker: human    # Ken: Built on Higgs (talking points in run_of_show.md)
+  - id: limits
+    speaker: human    # Ken: known limitations
+  - id: thanks
+    speaker: human    # Ken: what's next, team, repo, thanks

@@ -4,9 +4,11 @@ Spec: `doc/brief.md`. Build contract (interfaces, protocol, state machine): `doc
 
 ## Status
 
-2026-10-23 (Fri) — brief final; building v1 on branch `claude/relay-v1`. No API key in `.env` yet, so everything
-is built and tested offline first (`--fake` renders, fake Realtime). Smoke tests and Appendix F checks run as soon as
-the key + credits are in.
+2026-10-23 (Fri) 16:30 — offline v1 built and integrated on branch `claude/relay-v1`: every module of
+`doc/design.md` exists, 903 tests pass (unit, controller scenarios, backend end-to-end over real uvicorn with the
+fake Realtime, and ~545 deck-client checks under JavaScriptCore). Not yet seen: the deck in a real Chrome (run
+`scripts/e2e_chrome.py` outside the sandbox) and anything against the live API (no key in `.env` yet). Next: an
+adversarial review pass, then the live checks as soon as the key + credits are in.
 
 ## Architecture (one paragraph)
 
@@ -39,6 +41,14 @@ start of its sentence for the resume. Details: `doc/design.md`.
 | D16 | Session temperature left at the server default unless `RELAY_TEMPERATURE` is set; transcription language hint `en` | read the live ack first (gotchas) |
 | D17 | Event log: JSONL per server run in `out/logs/`, audio payloads replaced by byte counts | debugging + latency numbers for the write-up |
 | D18 | Render hash covers version, model, voice, input, format, timestamps; fake renders carry `fake: true` and get re-rendered by a real render | stale or fake audio can't sneak onto the stage |
+| D19 | A `--fake` render never overwrites real TTS audio (only `--force` does) | a stray offline run on stage day can't replace paid narration with tones |
+| D20 | The server opens the Realtime session at startup (warm); Arm starts it again (idempotent, concurrency-safe) | the first tap never waits for a connect |
+| D21 | A deck that stops reading for 5 s is dropped (close 4001, it reconnects); a Realtime send stalled for 2 s drops and reconnects the session | the controller holds its lock while sending; a hung tab or network must not freeze the presenter keys |
+| D22 | `start_presentation` after the talk started = `resume_script`; R while narrating does nothing; P during the countdown pauses at the resume point | model mistakes and extra key presses stay harmless |
+| D23 | A (re)greeting while narrating/listening/replying interrupts everything → IDLE "Paused — R to resume" | a reloaded tab must not leave the backend thinking audio is playing |
+| D24 | Several tool calls in one reply: the last valid one runs; the others get `{"error": "not run: <winner> came after it"}` | every call gets an output; the model's final decision wins |
+| D25 | Slide ids: letters, digits, `-`, `_` only (error); tags must be spelled `<|kind:value|>` (warning) | ids become folder names and URL segments; odd tag spellings are untested with TTS 3 |
+| D26 | Web client tested under macOS JavaScriptCore with a fake browser (`tests/web/run.sh`, run by pytest); real-Chrome e2e is `scripts/e2e_chrome.py`, run outside the sandbox | no Node (D1), and Chrome can't start in the sandbox |
 
 ## Milestones
 
@@ -55,14 +65,15 @@ start of its sentence for the resume. Details: `doc/design.md`.
 
 Offline v1
 - [x] Brief committed; design contract (`doc/design.md`); decisions (above)
-- [ ] Foundation: config, textutil, talk loader/validator, timeline, ports, test talk, conftest
-- [ ] Render: TTS client, fake synthesizer, render CLI, tests
-- [ ] Brain: prompts, tools, controller + scenario tests
-- [ ] Link + server: RealtimeLink, fake Realtime, event log, FastAPI app, `python -m relay serve`, tests
-- [ ] Web client: deck, audio (narration, reply worklet, mic worklet), captions, status, keys, Arm overlay
-- [ ] Content: `talks/relay-intro/` first draft (slides, script, kb, run of show)
-- [ ] Verify scripts: `python -m relay.verify` (F1, F2, F3, F5, F6, F7)
-- [ ] Integration: full test run, e2e in headless Chrome against fake Realtime
+- [x] Foundation: config, textutil, talk loader/validator, timeline, ports, test talk, conftest
+- [x] Render: TTS client, fake synthesizer, render CLI, tests
+- [x] Brain: prompts, tools, controller + scenario tests
+- [x] Link + server: RealtimeLink, fake Realtime, event log, FastAPI app, `python -m relay serve`, tests
+- [x] Web client: deck, audio (narration, reply worklet, mic worklet), captions, status, keys, Arm overlay
+- [x] Content: `talks/relay-intro/` first draft (slides, script, kb, run of show) — Ken to edit every spoken line
+- [x] Verify scripts: `python -m relay.verify` (F1, F2, F3, F5, F6, F7)
+- [x] Integration: foundation fixes, design sync, backend e2e (`tests/test_e2e.py`), web checks in pytest
+- [ ] Chrome e2e (`scripts/e2e_chrome.py`, run by Ken outside the sandbox) + a look at the layout
 - [ ] Review pass + fixes
 
 Live (needs key)

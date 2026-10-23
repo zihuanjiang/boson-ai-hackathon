@@ -1,0 +1,23 @@
+reveal.js 5.1.0
+source: https://raw.githubusercontent.com/hakimel/reveal.js/5.1.0 (dist/ flattened into this folder)
+fetched: 2026-10-23T16:07:25Z by scripts/vendor_reveal.sh
+
+34014800f4126ac2525e224166f099f26628612e95c41f76d70841b63138c989  LICENSE
+daef024c44fe63d26ac0a403cd1e2442dd3d15c0a46ad271ecbd11ffb8197215  plugin/markdown/markdown.js
+1aa8e84c9cabcbfe4d95b19879fe48b9c2c5e6d54574cbe679bc22edb9fe12b6  reset.css
+9cbc5082797d938f0ee780328790a131ae3d7bc5c09c176e77927c174f29e60a  reveal.css
+9736bf3d8918e391e8c07c85c53773800d4004dc25f948916e319ca371ca881a  reveal.js
+bbb6f57b0fbf5025797aca25fbac7275fa4c85758ec4a94dcf3dfe1fe510e87f  theme/black.css
+ad4b0799608b5dc860cc3bd7ff4781f2d9e13144e48a2e3d9321ce57c5a12f2a  theme/fonts/source-sans-pro/source-sans-pro-italic.eot
+d13268affb2204223a1b6b8483afd989a0e2b20bff853eae05fe5d0d32de8ed9  theme/fonts/source-sans-pro/source-sans-pro-italic.ttf
+05d3615fdbe7d35c62d6a1308dc48e3985016b69e65926ed37b99fe7e6b297dc  theme/fonts/source-sans-pro/source-sans-pro-italic.woff
+dce8869d25c3abcecb33a3486a3c70bb76aed17c21a74069ee83949b1d209c9b  theme/fonts/source-sans-pro/source-sans-pro-regular.eot
+c1865d89d798bc2119872b17774361c7406974b9568121a617007e02af344981  theme/fonts/source-sans-pro/source-sans-pro-regular.ttf
+d4eaa48ba450f4dd2d024ab5b0e895c73c81475718e5453fd1890254c16b7a57  theme/fonts/source-sans-pro/source-sans-pro-regular.woff
+ebb8918da92bae172dfe322a3947929b3df2330dccc6f13c7d8e8ed3815e1696  theme/fonts/source-sans-pro/source-sans-pro-semibold.eot
+a53e27232eff5f0bc1ba1c0af7e0759f0aaaf5c0636370b4c54f83c4652ba924  theme/fonts/source-sans-pro/source-sans-pro-semibold.ttf
+b0abd2736335424f9fd3eb27974a36d03783b3db141e0801dca7d3a635218b46  theme/fonts/source-sans-pro/source-sans-pro-semibold.woff
+dfe0b47abfa0fdb0504d7be14015fa3f1cf9647b97ffd8b3bfcceb25c60f4fa6  theme/fonts/source-sans-pro/source-sans-pro-semibolditalic.eot
+e8ec22b619599ef4088c788ec410ea3e70481acc9ec43cc0a7fcd00da6441646  theme/fonts/source-sans-pro/source-sans-pro-semibolditalic.ttf
+7225cacc06c2f360367c138daa4ce727c2a0d26e42875b1f9e802f181fdb81c5  theme/fonts/source-sans-pro/source-sans-pro-semibolditalic.woff
+5292b4fb38f4e609bf20cd98b3e5c039dbd7271d1c9174302305fbaaf42035cc  theme/fonts/source-sans-pro/source-sans-pro.css

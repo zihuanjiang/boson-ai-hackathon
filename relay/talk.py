@@ -23,10 +23,11 @@ WORDS_PER_MINUTE = 150  # rough narration pace, only for the CLI summary
 
 SLIDE_SPLIT_RE = re.compile(r"^---[ \t]*$", re.M)  # the client's reveal data-separator is the same regex
 SLIDE_ATTRS_RE = re.compile(r"<!--\s*\.slide:(.*?)-->", re.S)
-ID_ATTR_RE = re.compile(r'\bid\s*=\s*"([^"]*)"')
-HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.M)
+ID_ATTR_RE = re.compile(r'(?<![\w-])id\s*=\s*"([^"]*)"')  # not data-id="…"
+HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$", re.M)  # "C#" keeps its "#"
 FRAGMENT_RE = re.compile(r'class\s*=\s*"[^"]*\bfragment\b')
 NOTES_RE = re.compile(r"^\s*notes?:", re.M | re.I)
+SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")  # ids become folder names (out/talks/<id>/<slide>/) and URL segments
 HTML_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 Level = Literal["error", "warning"]
@@ -131,7 +132,8 @@ class Talk:
 def _clean_title(text: str) -> str:
     text = re.sub(r"<!--.*?-->", "", text)
     text = re.sub(r"<[^>]+>", "", text)
-    text = re.sub(r"[*_`]", "", text)
+    text = text.replace("`", "")
+    text = re.sub(r"(?<!\w)[*_]+|[*_]+(?!\w)", "", text)  # emphasis markers only, not snake_case
     return " ".join(text.split())
 
 
@@ -153,8 +155,11 @@ def parse_slides_md(md: str, issues: list[Issue]) -> list[dict]:
             issues.append(Issue("error", where, 'the <!-- .slide: --> comment has no id="..."'))
             continue
         slide_id = id_match.group(1).strip()
-        if not HTML_ID_RE.match(slide_id):
-            issues.append(Issue("warning", where, f"id {slide_id!r} is not a plain HTML id (letters, digits, - _)"))
+        if not SAFE_ID_RE.match(slide_id):
+            issues.append(Issue("error", where, f"id {slide_id!r}: use only letters, digits, - and _ "
+                                                "(it becomes a folder name and a URL segment)"))
+        elif not HTML_ID_RE.match(slide_id):
+            issues.append(Issue("warning", where, f"id {slide_id!r} should start with a letter (plain HTML id)"))
         if NOTES_RE.search(body):
             issues.append(Issue("warning", where, "a line starting with 'Note:' becomes hidden speaker notes in reveal"))
         heading = HEADING_RE.search(body)
@@ -184,6 +189,12 @@ def _check_say(say: str, where: str, issues: list[Issue]) -> None:
             issues.append(Issue("error", where, f"unknown tag {tag.raw!r}"))
         elif not tag.positional and (tag.start, tag.end) not in lead:
             issues.append(Issue("error", where, f"delivery tag {tag.raw!r} must be at the start of the chunk"))
+        elif tag.raw != f"<|{tag.kind}:{tag.value}|>":
+            issues.append(Issue("warning", where, f"write {tag.raw!r} as '<|{tag.kind}:{tag.value}|>' "
+                                                  "(lowercase, no spaces): other spellings are untested with TTS 3"))
+    leftover = strip_tags(say)  # an unclosed "<|…" or a stray "…|>" would be read out by TTS 3
+    if "<|" in leftover or "|>" in leftover:
+        issues.append(Issue("error", where, "unclosed tag: every `<|` needs a closing `|>` (and the reverse)"))
     found = acronyms(say)
     if found:
         issues.append(Issue("warning", where, f"acronyms {', '.join(found)}: check the pronunciation by ear"))
@@ -226,7 +237,11 @@ def _read(path: Path, issues: list[Issue], required: bool = True) -> str | None:
         if required:
             issues.append(Issue("error", path.name, "missing"))
         return None
-    return path.read_text(encoding="utf-8")
+    try:
+        return path.read_text(encoding="utf-8-sig")  # a BOM is dropped
+    except UnicodeDecodeError as exc:  # reported, never raised
+        issues.append(Issue("error", path.name, f"not UTF-8 text (byte {exc.start}): save it as UTF-8"))
+        return None
 
 
 def _parse(root: Path) -> tuple[Talk | None, list[Issue]]:
@@ -237,7 +252,8 @@ def _parse(root: Path) -> tuple[Talk | None, list[Issue]]:
     script_src = _read(root / "script.yaml", issues)
     kb = _read(root / "kb.md", issues, required=False)
     if kb is None:
-        issues.append(Issue("warning", "kb.md", "missing: Relay will have no facts in Q&A"))
+        if not (root / "kb.md").is_file():  # no "missing" warning on top of a decode error
+            issues.append(Issue("warning", "kb.md", "missing: Relay will have no facts in Q&A"))
         kb = ""
     elif word_count(kb) > MAX_KB_WORDS:
         issues.append(Issue("error", "kb.md", f"{word_count(kb)} words (max {MAX_KB_WORDS}): it rides in the prompt"))
@@ -271,7 +287,9 @@ def _parse(root: Path) -> tuple[Talk | None, list[Issue]]:
         return None, issues
 
     md_ids = [slide["id"] for slide in md_slides]
-    yaml_ids = [raw.get("id") if isinstance(raw, dict) else None for raw in raw_slides]
+    # Only string ids take part in the set logic; a list/number id is reported in the slide loop below.
+    yaml_ids = [raw.get("id") if isinstance(raw, dict) and isinstance(raw.get("id"), str) else None
+                for raw in raw_slides]
     for name, ids in (("slides.md", md_ids), ("script.yaml", yaml_ids)):
         for slide_id in sorted({i for i in ids if ids.count(i) > 1 and i is not None}):
             issues.append(Issue("error", name, f"slide id {slide_id!r} appears more than once"))

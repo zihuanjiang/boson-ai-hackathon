@@ -1,0 +1,1103 @@
+/* Relay deck client. Projector first: 16:9 at 1280×720 … 1920×1080, sizes follow the viewport height, and
+   everything that matters sits inside a 5% safe area (projectors crop and dim the edges). Dark, high contrast,
+   calm: the slides and the captions are the show; the strip is for the presenter (and curious judges). */
+
+:root {
+  --bg: #0b0d12;
+  --bg-raise: #141821;
+  --bg-panel: rgba(20, 24, 33, 0.94);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --fg: #f4f6fa;
+  --fg-2: #c9d0dc;
+  --fg-dim: #939cad;
+  --fg-faint: #5f6878;
+
+  --c-idle: #a3acbd;
+  --c-narrating: #3ddc97;
+  --c-paused: #ffc95c;
+  --c-listening: #ff6b81;
+  --c-replying: #6cb2ff;
+  --c-user: #62e3d2;
+  --c-word: #ffd76a;
+  --c-cut: #ff6b6b;
+  --c-resume: #3ddc97;
+  --c-ok: #3ddc97;
+  --c-warn: #ffc95c;
+  --c-fail: #ff6b6b;
+
+  --font: "Source Sans Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --safe-x: 5vw;
+  --safe-y: 5vh;
+  --gap: 1.2vh;
+  --ui: max(12px, 1.95vh); /* status strip text */
+  --strip-h: max(30px, 5vh);
+  --cap: max(28px, 4.3vh); /* caption text: ≥ 28px at 1280×720 */
+  --cap-meta: max(17px, 2.6vh);
+  --cap-pad: 1vh;
+  --cap-h: calc(var(--cap-meta) * 1.5 + var(--cap) * 1.25 * 2 + var(--cap-pad) * 2 + 2px);
+
+  /* reveal.js black theme, toned for a projector */
+  --r-background-color: var(--bg);
+  --r-main-color: var(--fg);
+  --r-heading-color: var(--fg);
+  --r-heading-text-transform: none;
+  --r-heading-letter-spacing: -0.01em;
+  --r-heading-font-weight: 600;
+  --r-link-color: #7cc4ff;
+  --r-link-color-hover: #a9d8ff;
+  --r-selection-background-color: rgba(108, 178, 255, 0.5);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.app {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-columns: var(--safe-x) minmax(0, 1fr) var(--safe-x);
+  grid-template-rows: var(--safe-y) var(--strip-h) var(--gap) minmax(0, 1fr) var(--gap) var(--cap-h) var(--safe-y);
+}
+
+.strip {
+  grid-area: 2 / 2;
+}
+
+.stage {
+  grid-area: 4 / 2;
+  position: relative;
+  min-height: 0;
+  isolation: isolate;
+}
+
+.captions {
+  grid-area: 6 / 2;
+}
+
+/* reveal fills the stage; it scales the 1280×720 slide to fit (non-embedded: it measures .reveal itself). */
+.stage .reveal {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.reveal h1,
+.reveal h2,
+.reveal h3 {
+  font-weight: 600;
+}
+
+.reveal small {
+  color: var(--fg-dim);
+}
+
+.reveal .slides section .fragment {
+  transition-duration: 0.45s;
+}
+
+.reveal .progress {
+  height: 3px;
+  color: var(--c-narrating);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* ---------------------------------------------------------------- status strip */
+
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 1.4vh;
+  min-width: 0;
+  padding: 0 1.2vh;
+  font-size: var(--ui);
+  line-height: 1.2;
+  color: var(--fg-2);
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: 1.2vh;
+  transition: opacity 0.3s ease;
+}
+
+.strip.offline {
+  border-color: rgba(255, 107, 107, 0.45);
+}
+
+.strip-group {
+  display: flex;
+  align-items: center;
+  gap: 1.3vh;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.strip-right {
+  margin-left: auto;
+}
+
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 0.62em;
+  height: 0.62em;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.state-badge {
+  --state-c: var(--c-idle);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55em;
+  padding: 0.26em 0.85em;
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--state-c);
+  background: color-mix(in srgb, var(--state-c) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--state-c) 42%, transparent);
+  transition: color 0.2s, background-color 0.2s, border-color 0.2s;
+}
+
+.state-badge .dot {
+  background: var(--state-c);
+}
+
+.state-badge[data-state="NARRATING"] {
+  --state-c: var(--c-narrating);
+}
+
+.state-badge[data-state="PAUSED"] {
+  --state-c: var(--c-paused);
+}
+
+.state-badge[data-state="LISTENING"] {
+  --state-c: var(--c-listening);
+}
+
+.state-badge[data-state="REPLYING"] {
+  --state-c: var(--c-replying);
+}
+
+.state-badge[data-state="LISTENING"] .dot,
+.state-badge.thinking .dot {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.phase {
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-size: 0.92em;
+}
+
+.where {
+  min-width: 0;
+  max-width: 26vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg);
+}
+
+/* One line of chips, newest first. Chips that don't fit wrap onto a second line, which is clipped: on a crowded
+   strip the older calls drop out instead of all three shrinking into ellipses. */
+.ticker {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 1.8em;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  align-content: flex-start;
+  column-gap: 0.6em;
+  row-gap: 1em;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+}
+
+.tool {
+  --tool-c: var(--c-warn);
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.45em;
+  box-sizing: border-box;
+  height: 1.8em;
+  padding: 0 0.65em;
+  border-radius: 0.55em;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--tool-c) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tool-c) 32%, transparent);
+  animation: tool-in 0.35s ease-out;
+}
+
+.tool:first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.tool:not(:first-child) {
+  opacity: 0.62;
+}
+
+.tool .tool-dot {
+  flex: none;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--tool-c);
+}
+
+.tool .tool-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 0.9em;
+  color: var(--fg);
+}
+
+.tool .tool-status {
+  font-size: 0.82em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--tool-c);
+}
+
+.tool[data-status="applied"] {
+  --tool-c: var(--c-ok);
+}
+
+.tool[data-status="rejected"] {
+  --tool-c: var(--c-fail);
+}
+
+.tool[data-status="discarded"] {
+  --tool-c: var(--fg-faint);
+}
+
+.tool[data-status="discarded"] .tool-name {
+  text-decoration: line-through;
+  color: var(--fg-dim);
+}
+
+.tool.flash {
+  animation: tool-flash 0.6s ease-out;
+}
+
+.latency-label {
+  color: var(--fg-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-size: 0.85em;
+}
+
+.latency-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+.meter {
+  --level: 0;
+  display: inline-block;
+  flex: none;
+  width: 4.6em;
+  height: 0.5em;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.meter-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--fg-dim);
+  transform: scaleX(var(--level));
+  transform-origin: left center;
+  transition: transform 90ms linear;
+}
+
+.meter.open .meter-fill {
+  background: var(--c-listening);
+}
+
+.rt {
+  --rt-c: var(--fg-faint);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+}
+
+.rt .dot {
+  background: var(--rt-c);
+}
+
+.rt[data-status="ready"] {
+  --rt-c: var(--c-ok);
+}
+
+.rt[data-status="connecting"],
+.rt[data-status="reconnecting"] {
+  --rt-c: var(--c-warn);
+}
+
+.rt[data-status="connecting"] .dot,
+.rt[data-status="reconnecting"] .dot {
+  animation: pulse 0.9s ease-in-out infinite;
+}
+
+.rt[data-status="error"] {
+  --rt-c: var(--c-fail);
+  color: var(--c-fail);
+}
+
+.micmode {
+  padding: 0.12em 0.5em;
+  border: 1px solid var(--line-strong);
+  border-radius: 0.4em;
+  font-size: 0.85em;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.badge {
+  padding: 0.14em 0.55em;
+  border-radius: 0.4em;
+  font-size: 0.85em;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.fake-badge {
+  color: var(--c-warn);
+  border: 1px solid color-mix(in srgb, var(--c-warn) 55%, transparent);
+}
+
+.server-badge {
+  color: #fff;
+  background: var(--c-fail);
+}
+
+/* ---------------------------------------------------------------- banner */
+
+.banner {
+  position: absolute;
+  top: 1.4vh;
+  left: 50%;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75em;
+  max-width: 92%;
+  padding: 0.5em 1.25em;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  font-size: max(16px, 2.6vh);
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: var(--fg);
+  background: var(--bg-panel);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 1vh 3vh rgba(0, 0, 0, 0.45);
+  animation: banner-in 0.3s ease-out;
+}
+
+.banner {
+  transition: opacity 0.6s ease, margin-top 0.6s ease;
+}
+
+/* after a few seconds the banner steps aside (the strip keeps showing the state); a countdown always shows */
+.banner.settled:not(.counting) {
+  margin-top: -0.8vh;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.banner-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.banner-count {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 1.8em;
+  height: 1.8em;
+  border-radius: 50%;
+  font-variant-numeric: tabular-nums;
+  color: #06140d;
+  background: var(--c-narrating);
+  animation: count-tick 1s ease-out infinite;
+}
+
+/* ---------------------------------------------------------------- captions */
+
+.captions {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  padding: var(--cap-pad) 2vh;
+  overflow: hidden;
+  border-radius: 1.4vh;
+  background: rgba(255, 255, 255, 0.028);
+  border: 1px solid var(--line);
+  transition: opacity 0.6s ease, background-color 0.4s ease, border-color 0.4s ease;
+}
+
+.captions[data-mode="idle"] {
+  background: transparent;
+  border-color: transparent;
+}
+
+.captions.faded {
+  opacity: 0;
+}
+
+.cap-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1em;
+  min-width: 0;
+  height: calc(var(--cap-meta) * 1.5);
+  overflow: hidden;
+  font-size: var(--cap-meta);
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+
+.cap-tag {
+  --tag-c: var(--fg-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  flex: none;
+  font-weight: 600;
+  color: var(--tag-c);
+}
+
+.cap-tag[data-kind="listening"] {
+  --tag-c: var(--c-listening);
+}
+
+.cap-tag[data-kind="thinking"] {
+  --tag-c: var(--c-replying);
+}
+
+.cap-tag[data-kind="rewind"] {
+  --tag-c: var(--c-resume);
+}
+
+.cap-tag[data-kind="paused"] {
+  --tag-c: var(--c-paused);
+}
+
+.cap-tag[data-kind="listening"]::before,
+.cap-tag[data-kind="thinking"]::before {
+  content: "";
+  width: 0.55em;
+  height: 0.55em;
+  border-radius: 50%;
+  background: var(--tag-c);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+/* a live mic level bar after "Listening…" */
+.cap-tag[data-kind="listening"]::after {
+  content: "";
+  width: 3em;
+  height: 0.3em;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--c-listening) calc(var(--mic-level, 0) * 100%), rgba(255, 255, 255, 0.1) 0);
+}
+
+.cap-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+  min-width: 0;
+  color: var(--c-user);
+}
+
+.cap-user .ico-mic {
+  flex: none;
+  width: 1em;
+  height: 1em;
+}
+
+.cap-user-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cap-main {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  font-size: var(--cap);
+  line-height: 1.25;
+}
+
+.cap-narration,
+.cap-live {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  text-wrap: balance;
+}
+
+.cap-narration {
+  justify-content: center;
+}
+
+/* live text grows upwards: the newest two lines stay visible (plain wrapping: balancing would make words jump
+   between lines as the reply streams in) */
+.cap-live {
+  justify-content: flex-end;
+  text-wrap: wrap;
+}
+
+.captions:not([data-mode="narration"]) .cap-narration,
+.captions:not([data-mode="live"]) .cap-live {
+  display: none;
+}
+
+.cap-words {
+  max-width: 100%;
+}
+
+.cap-narration .w {
+  padding: 0 0.04em;
+  border-radius: 0.14em;
+  color: var(--fg-dim);
+  transition: color 0.12s linear;
+}
+
+.cap-narration .w.past {
+  color: var(--fg);
+}
+
+.cap-narration .w.now {
+  color: var(--c-word);
+}
+
+.cap-narration .w.cut {
+  color: var(--c-cut);
+  text-decoration: underline 0.07em var(--c-cut);
+  text-underline-offset: 0.2em;
+}
+
+/* "cut here": a bar right after the cut word */
+.cap-narration .w.cut::after {
+  content: "";
+  display: inline-block;
+  width: 0.09em;
+  height: 0.95em;
+  margin-left: 0.14em;
+  border-radius: 0.05em;
+  vertical-align: -0.12em;
+  background: var(--c-cut);
+}
+
+/* where narration picks up again */
+.cap-narration .w.resume::before {
+  content: "↺";
+  margin-right: 0.14em;
+  font-size: 0.7em;
+  vertical-align: 0.1em;
+  color: var(--c-resume);
+}
+
+.cap-narration .w.rewind {
+  animation: rewind 0.6s ease-out both;
+}
+
+.captions.frozen .cap-words {
+  opacity: 0.94;
+}
+
+.captions.paused .cap-words {
+  opacity: 0.75;
+}
+
+.cap-live-text {
+  max-width: 100%;
+  color: var(--fg);
+}
+
+/* Relay is speaking live: a small blue dot leads the line */
+.cap-live.speaking .cap-live-text::before {
+  content: "";
+  display: inline-block;
+  width: 0.36em;
+  height: 0.36em;
+  margin-right: 0.45em;
+  border-radius: 50%;
+  vertical-align: 0.18em;
+  background: var(--c-replying);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+/* thinking: three dots until the first audio */
+.captions.thinking .cap-live.empty::after {
+  content: "";
+  width: 3.2em;
+  height: 0.7em;
+  margin-bottom: 0.35em;
+  background: radial-gradient(circle closest-side, var(--c-replying) 85%, transparent) 0 50% / 0.7em 0.7em repeat-x;
+  opacity: 0.85;
+  animation: thinking 1.2s ease-in-out infinite;
+}
+
+/* ---------------------------------------------------------------- toasts */
+
+.toasts {
+  position: fixed;
+  top: calc(var(--safe-y) + var(--strip-h) + var(--gap));
+  right: var(--safe-x);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.8vh;
+  max-width: 36vw;
+  pointer-events: none;
+}
+
+.toast {
+  padding: 0.65em 1em;
+  border-radius: 0.9vh;
+  font-size: max(13px, 2vh);
+  line-height: 1.35;
+  color: var(--fg);
+  background: var(--bg-panel);
+  border: 1px solid var(--line-strong);
+  border-left: 0.35em solid var(--c-fail);
+  box-shadow: 0 1vh 3vh rgba(0, 0, 0, 0.45);
+  animation: toast-in 0.25s ease-out;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.toast.info {
+  border-left-color: var(--c-replying);
+}
+
+.toast.leaving {
+  opacity: 0;
+  transform: translateY(-0.6vh);
+}
+
+/* ---------------------------------------------------------------- typed question */
+
+.typed {
+  position: fixed;
+  left: var(--safe-x);
+  right: var(--safe-x);
+  bottom: calc(var(--safe-y) + var(--cap-h) + var(--gap));
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 1em;
+  padding: 0.9vh 1.8vh;
+  border-radius: 1.2vh;
+  background: var(--bg-panel);
+  border: 1px solid var(--c-replying);
+  box-shadow: 0 1vh 3vh rgba(0, 0, 0, 0.5);
+}
+
+.typed-label {
+  flex: none;
+  font-size: var(--cap-meta);
+  font-weight: 600;
+  color: var(--c-replying);
+}
+
+.typed-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.25em 0;
+  font: inherit;
+  font-size: max(18px, 2.9vh);
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.typed-input::placeholder {
+  color: var(--fg-faint);
+}
+
+/* ---------------------------------------------------------------- Arm overlay (pre-show checklist) */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: var(--safe-y) var(--safe-x);
+  background: rgba(6, 8, 12, 0.86);
+  backdrop-filter: blur(6px);
+}
+
+.panel {
+  width: min(100%, 880px);
+  max-height: 100%;
+  overflow: auto;
+  padding: 3vh 3.6vh;
+  font-size: max(14px, 2.1vh);
+  line-height: 1.35;
+  color: var(--fg-2);
+  background: var(--bg-raise);
+  border: 1px solid var(--line-strong);
+  border-radius: 2vh;
+  box-shadow: 0 3vh 8vh rgba(0, 0, 0, 0.55);
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.8em;
+  margin-bottom: 1.6vh;
+}
+
+.panel-head h1 {
+  font-size: max(26px, 4.4vh);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.panel-sub {
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.85em;
+}
+
+.checklist {
+  margin: 0 0 2.2vh;
+  padding: 0;
+  list-style: none;
+}
+
+.checklist li {
+  --check-c: var(--fg-faint);
+  display: grid;
+  grid-template-columns: 1.5em 11em minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.8em;
+  padding: 0.6em 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.checklist .label {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.checklist .detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+
+.checklist .meter {
+  width: 7em;
+  height: 0.55em;
+}
+
+.checklist .meter .meter-fill {
+  background: var(--c-ok);
+}
+
+.checklist .ic {
+  display: grid;
+  place-items: center;
+  width: 1.3em;
+  height: 1.3em;
+  border-radius: 50%;
+  font-size: 0.85em;
+  font-weight: 600;
+  line-height: 1;
+  border: 2px solid var(--check-c);
+  color: var(--bg);
+}
+
+.checklist li[data-status="ok"] {
+  --check-c: var(--c-ok);
+}
+
+.checklist li[data-status="warn"] {
+  --check-c: var(--c-warn);
+}
+
+.checklist li[data-status="fail"] {
+  --check-c: var(--c-fail);
+}
+
+.checklist li[data-status="working"] {
+  --check-c: var(--c-replying);
+}
+
+.checklist li[data-status="ok"] .ic,
+.checklist li[data-status="warn"] .ic,
+.checklist li[data-status="fail"] .ic {
+  background: var(--check-c);
+}
+
+.checklist li[data-status="ok"] .ic::before {
+  content: "✓";
+}
+
+.checklist li[data-status="warn"] .ic::before {
+  content: "!";
+}
+
+.checklist li[data-status="fail"] .ic::before {
+  content: "×";
+}
+
+.checklist li[data-status="fail"] .detail {
+  color: var(--c-fail);
+}
+
+.checklist li[data-status="warn"] .detail {
+  color: var(--c-warn);
+}
+
+.checklist li[data-status="working"] .ic {
+  border-color: rgba(108, 178, 255, 0.25);
+  border-top-color: var(--c-replying);
+  animation: spin 0.8s linear infinite;
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1.2em;
+  margin-bottom: 2.2vh;
+}
+
+.arm-button,
+.done-button {
+  font: inherit;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.arm-button {
+  padding: 0.5em 2.4em;
+  font-size: max(20px, 3.2vh);
+  color: #04150d;
+  background: var(--c-narrating);
+  border: 0;
+  box-shadow: 0 0 0 0 rgba(61, 220, 151, 0.5);
+  animation: arm-glow 2.2s ease-in-out infinite;
+}
+
+.arm-button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+  animation: none;
+}
+
+.done-button {
+  padding: 0.55em 1.8em;
+  font-size: max(16px, 2.4vh);
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+}
+
+.arm-button:focus-visible,
+.done-button:focus-visible {
+  outline: 3px solid var(--c-replying);
+  outline-offset: 3px;
+}
+
+.panel-hint {
+  flex: 1 1 16em;
+  color: var(--fg-dim);
+  font-size: 0.92em;
+}
+
+.overlay.armed .panel-hint::before {
+  content: "Armed. Any presenter key also hides this. ";
+  color: var(--c-ok);
+  font-weight: 600;
+}
+
+.keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em 1.6em;
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 0.9em;
+}
+
+.keys div {
+  display: flex;
+  align-items: center;
+  gap: 0.45em;
+}
+
+.keys dd {
+  margin: 0;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0.1em 0.45em;
+  font-family: var(--font);
+  font-size: 0.9em;
+  font-weight: 600;
+  text-align: center;
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 0.35em;
+}
+
+/* ---------------------------------------------------------------- motion */
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes rewind {
+  0% {
+    background-color: transparent;
+  }
+  35% {
+    background-color: rgba(61, 220, 151, 0.34);
+    color: var(--fg);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes tool-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.4em);
+  }
+}
+
+@keyframes tool-flash {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--tool-c) 70%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0.5em transparent;
+  }
+}
+
+@keyframes banner-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -0.6vh);
+  }
+}
+
+@keyframes count-tick {
+  0% {
+    transform: scale(1.14);
+  }
+  35%,
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.6vh);
+  }
+}
+
+@keyframes thinking {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+@keyframes arm-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(61, 220, 151, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 0.45em rgba(61, 220, 151, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
