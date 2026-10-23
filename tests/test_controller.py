@@ -2512,6 +2512,9 @@ async def test_offline_banner_says_when_realtime_is_back(make):
     assert (h.c.state, h.c.banner, h.last("state")["banner"]) == (IDLE, back, back)
     await h.key("next")  # still the presenter's floor: arrows stay silent until R or Space
     assert (h.b("play"), h.c.banner) == ([], back)
+    h.realtime.ready = False
+    await h.c.on_realtime_status("reconnecting", "connection lost")  # down again: the banner says so
+    assert (h.c.state, h.c.banner) == (IDLE, BANNER_OFFLINE.format(presenter="Ken"))
 
 
 async def test_setup_errors_before_the_session_is_ready_are_not_shown(make):

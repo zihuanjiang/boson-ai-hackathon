@@ -1541,6 +1541,8 @@ class Controller:
                 self._set_state(IDLE, self._offline_banner())  # "Realtime is back …"
         elif status in DROPPED:
             await self._link_lost()
+            if self.state == IDLE and self.floor_offline:  # down again while "Realtime is back" was showing
+                self._set_state(IDLE, BANNER_OFFLINE.format(presenter=self.talk.presenter))
 
     def _new_session(self) -> None:
         """A new Realtime session: an empty conversation that numbers its ids afresh. Forget the old session's
