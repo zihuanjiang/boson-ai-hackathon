@@ -109,6 +109,19 @@ def load_rendered(talk: Talk, out_root: Path = OUT, *, allow_stale: bool = False
     return chunks
 
 
+def render_version(talk: Talk, chunks: dict[tuple[str, int], RenderedChunk]) -> str:
+    """Identity of what a server run presents: slides + every chunk's render (hash, fake flag, length).
+
+    The server puts it in `/api/talk` and the controller in `hello`; a deck that sees a different version after a
+    reconnect knows its preloaded talk and audio are stale (design §3, §4).
+    """
+    payload = json.dumps({
+        "talk": talk.id, "voice": talk.voice, "slides_md": talk.slides_md,
+        "chunks": sorted((slide, index, c.hash, c.fake, c.duration_ms) for (slide, index), c in chunks.items()),
+    }, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
 def synthetic_timing(text: str, *, lead_ms: int = 150, tail_ms: int = 250) -> tuple[list[Word], int]:
     """Deterministic made-up word timings (fake renders, tests, fallback when TTS gives no timestamps).
 

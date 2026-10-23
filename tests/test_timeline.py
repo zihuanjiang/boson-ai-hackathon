@@ -338,3 +338,34 @@ def test_cut_point_on_conftest_chunks(test_chunks):
         point = cut_point(chunk.words, last.start)
         assert point.cut_word == len(chunk.words) - 1
         assert chunk.words[point.resume_word].sentence == last.sentence
+
+
+# --- render_version ------------------------------------------------------------------------------------------------
+
+def test_render_version_is_stable_and_short(test_talk, test_chunks):
+    version = timeline.render_version(test_talk, test_chunks)
+    assert version == timeline.render_version(test_talk, dict(reversed(list(test_chunks.items()))))
+    assert len(version) == 12 and int(version, 16) >= 0
+
+
+@pytest.mark.parametrize("change", ["hash", "fake", "duration", "slides", "voice", "drop"])
+def test_render_version_changes_with_what_the_deck_preloads(test_talk, test_chunks, change):
+    from dataclasses import replace
+
+    before = timeline.render_version(test_talk, test_chunks)
+    chunks = dict(test_chunks)
+    key = ("how", 1)
+    talk = test_talk
+    if change == "hash":
+        chunks[key] = replace(chunks[key], hash="0" * 16)
+    elif change == "fake":
+        chunks[key] = replace(chunks[key], fake=not chunks[key].fake)
+    elif change == "duration":
+        chunks[key] = replace(chunks[key], duration_ms=chunks[key].duration_ms + 1)
+    elif change == "slides":
+        talk = replace(test_talk, slides_md=test_talk.slides_md + "\n")
+    elif change == "voice":
+        talk = replace(test_talk, voice="marcus")
+    else:
+        del chunks[key]
+    assert timeline.render_version(talk, chunks) != before
