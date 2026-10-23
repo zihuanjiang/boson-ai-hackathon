@@ -6,9 +6,16 @@ The workspace-level `../CLAUDE.md` rules (uv only, scratch dir, git branches, sa
 
 ## Read first
 
-- `doc/README.md` — index of everything we know. Start there every session.
+- `doc/brief.md` — the user's idea, must-haves, constraints, example dialogue. **The spec.** If it is still blank, ask.
+- `doc/plan.md` — Claude's plan derived from the brief (architecture, milestones, task list). Keep it current.
+- `doc/README.md` — index of everything we know about the APIs and the event.
 - `doc/gotchas.md` — read before writing any API code. Most "it silently does nothing" bugs are listed.
-- `doc/plan.md` — the idea, track, and architecture (fill in before building).
+
+## Friday checklist (before any feature work)
+
+1. Key in `.env`, credits claimed (trial + hackathon Realtime credit).
+2. `uv sync`, then `uv run python scripts/smoke/tts.py`, `… realtime.py --tool`, `… avatar.py`.
+   Note the latency numbers in `doc/gotchas.md`; they decide what can be live vs pre-rendered.
 
 ## Key facts (so you don't have to look them up)
 
@@ -21,7 +28,8 @@ The workspace-level `../CLAUDE.md` rules (uv only, scratch dir, git branches, sa
 
 ## Conventions
 
-- Python 3.12 via `uv` (`uv run --project <abs path> python <abs script>`); TypeScript only if the browser needs it.
+- Python 3.12 via `uv` (`pyproject.toml` at the root; `uv run python <script>`); TypeScript only if the browser needs it.
+- Generated media goes to `out/` (gitignored).
 - Scratch/test scripts go in `.scratch/<task>/` (excluded from git locally, never committed).
 - Raw snapshot of the official docs (fetched 2026-10-22) lives in `.scratch/init-docs/raw/`; refresh with
   `scripts/fetch_boson_docs.sh` (docs may change during the hackathon's early-access window).

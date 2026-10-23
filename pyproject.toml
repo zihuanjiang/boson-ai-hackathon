@@ -1,0 +1,13 @@
+[project]
+name = "bosonai-hackathon"
+version = "0.1.0"
+description = "Higgs Audio Hackathon 2026 entry (Boson AI Higgs Realtime / TTS 3 / Avatar)"
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv>=1.0",
+    "requests>=2.32",
+    "websockets>=13",
+]
+
+[tool.uv]
+package = false

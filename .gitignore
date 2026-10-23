@@ -15,6 +15,7 @@ node_modules/
 dist/
 
 # generated media / captures from API experiments
+out/
 out.*
 captures/
 

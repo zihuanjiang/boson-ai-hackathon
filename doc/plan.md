@@ -1,24 +1,8 @@
-# Plan (template — fill in before building)
+# Plan — Claude writes this from `brief.md`, keeps it current while building
 
-## Idea
+Status: **not started** (brief.md is empty as of 2026-10-22).
 
-- One sentence (this becomes the "showcase description" on the form):
-- Problem it solves / why voice-native matters here:
-- Primary track: ☐ Put a Face to the Voice (Avatar) ☐ Conversation as the Interface (Realtime) ☐ Agents That Act (tools)
-
-## How Higgs is central (30% of the score)
-
-| Capability | Used? | Where in the demo it is *visible* |
-| --- | --- | --- |
-| Realtime full-duplex + barge-in | | |
-| Mid-sentence language switching / multilingual | | |
-| Tool calling mid-conversation | | |
-| TTS emotion/style/prosody tags | | |
-| Voice cloning / custom voices | | |
-| Word-level timestamps (captions) | | |
-| Avatar from one image (streamed?) | | |
-
-## Architecture sketch
+## Architecture
 
 ```
 (mic/browser) ──► backend (Python/uv) ──WS──► Higgs Realtime
@@ -26,31 +10,33 @@
                         │  TTS /v1/audio/speech ──► Avatar /v1/videos/stream ──► UI
 ```
 
-- Components and who owns each:
-- Language/framework decision (raw WebSocket vs Pipecat vs browser TS):
-- What is pre-rendered vs live:
+- Components and owners:
+- Stack decision (raw WebSocket / Pipecat / browser TS) and why:
+- Pre-rendered vs live:
 
-## Demo script (2–3 min video + live presentation)
+## Milestones
 
-1. Hook (10 s): what it is.
-2. Show the core voice interaction, including an **interruption** and (if applicable) a **language switch**.
-3. Show the tool action and its result / the avatar reacting.
-4. Close: limitations + what's next.
+| # | Milestone | Done when | Target |
+| --- | --- | --- | --- |
+| 0 | Smoke tests pass (`scripts/smoke/*`), credits claimed | all three scripts print timings | Fri evening |
+| 1 | Core loop end-to-end (ugly) | brief §12 | Fri night |
+| 2 | Must-haves (brief §4) | demo script runs without hands | Sat ~noon |
+| 3 | First demo video recorded | 2–3 min public link | Sat ~noon |
+| 4 | Polish, README, limitations, final video, submit | form submitted | before ~3 pm Sat |
+
+## Task list (live)
+
+- [ ] 
 
 ## Risks and fallbacks
 
 | Risk | Mitigation |
 | --- | --- |
-| Serving congestion (1013 / all_replicas_busy) | retries + recorded fallback video |
-| Avatar render latency too high for "live" | pre-render clips; idle loop |
-| Echo / self-interruption in a noisy room | headphones; raise VAD threshold |
-| Tool latency = dead air | prompt the model to acknowledge first; filler audio |
-
-## Timeline
-
-- Fri evening: claim credits, smoke-test all three APIs (TTS → Avatar → Realtime), pick idea, repo skeleton.
-- Sat morning: core loop working end-to-end; record a first demo video by ~noon.
-- Sat early afternoon: polish UX, README, limitations; final video; submit before presentations (~3 pm).
+| Serving congestion (`1013`, `all_replicas_busy`) | exponential backoff; recorded fallback video |
+| Avatar render latency too high for "live" replies | pre-render clips; idle loop; measure in smoke test |
+| Echo / self-interruption in a noisy room | headphones; raise `server_vad.threshold` |
+| Tool latency = dead air | prompt "acknowledge before calling"; filler audio |
+| Model narrates a tool call instead of calling it | short prompt; test with facts it cannot know |
 
 ## Submission checklist
 

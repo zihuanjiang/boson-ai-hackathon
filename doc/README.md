@@ -13,11 +13,15 @@ re-fetch with `scripts/fetch_boson_docs.sh`.
 | [higgs-avatar.md](higgs-avatar.md) | Talking-head video: job + streaming endpoints, inputs/limits, polling, fMP4 playback |
 | [integrations.md](integrations.md) | OpenAI SDK swap, Pipecat, LiveKit Agents, the official tutorial repo, voice library, open weights |
 | [gotchas.md](gotchas.md) | Everything that bites silently. Read before coding |
-| [plan.md](plan.md) | Our idea, track, architecture, demo script, risk list (template to fill in) |
+| [brief.md](brief.md) | **The user's spec** (idea, must-haves, example dialogue, constraints). Human-written |
+| [plan.md](plan.md) | Claude's plan derived from the brief: architecture, milestones, task list, risks |
+
+Smoke tests for all three APIs live in `scripts/smoke/` (`uv run python scripts/smoke/tts.py`, `realtime.py --tool`,
+`avatar.py`); outputs go to `out/`.
 
 ## Suggested reading order for a fresh session
 
-1. `api-overview.md` (orientation) → 2. the doc for the API we are using → 3. `gotchas.md` → 4. `plan.md`.
+1. `brief.md` → 2. `plan.md` → 3. `api-overview.md` → 4. the doc for the API in use → 5. `gotchas.md`.
 
 ## Official links
 
