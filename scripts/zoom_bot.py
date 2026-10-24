@@ -1185,10 +1185,11 @@ async def run_live(args: argparse.Namespace) -> dict:
             print(f"  warning: the server runs with input {talk.get('input')!r}, not voice: the bot's frames will be "
                   "ignored (start it with --input voice)")
         profile = out_dir / "profile"
-        # No --use-fake-device-for-media-stream: it also fakes getDisplayMedia, so Zoom shared Chrome's green test
-        # pattern instead of the observer tab (live 2026-10-24). inject.js already keeps Zoom off the real mic/camera.
-        flags = ["--use-fake-ui-for-media-stream",
-                 "--autoplay-policy=no-user-gesture-required", "--mute-audio",
+        # No fake media flags (live 2026-10-24): --use-fake-device-for-media-stream also fakes getDisplayMedia (Zoom
+        # shared Chrome's green test pattern), and --use-fake-ui-for-media-stream bypasses the share picker, so the
+        # by-title tab choice below never ran and nothing was shared. inject.js answers getUserMedia itself (never the
+        # real mic/camera) and the context grants microphone/camera, so no prompt shows.
+        flags = ["--autoplay-policy=no-user-gesture-required", "--mute-audio",
                  f"--auto-select-tab-capture-source-by-title={OBSERVER_TITLE}"]
         console = (out_dir / "console.log").open("w", encoding="utf-8")
         keys = TerminalKeys()
