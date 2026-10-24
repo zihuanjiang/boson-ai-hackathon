@@ -263,8 +263,17 @@ class Engine:
         return next((n for n, slot in enumerate(self.checks.slots) if slot.id == slot_id), len(self.checks.slots))
 
     def _participant(self, name: str | None) -> str | None:
+        """An agenda participant's canonical name, or (with the meeting state) someone who spoke in Zoom under a name
+        that is not on the agenda (MeetingState.joined)."""
+        if self.state is not None and hasattr(self.state, "participant"):
+            return self.state.participant(name)
         participant = self.package.participant(name) if self.package is not None else None
         return participant.name if participant else None
+
+    def _names(self) -> list[str]:
+        if self.state is not None and hasattr(self.state, "participant_names"):
+            return list(self.state.participant_names)
+        return self.package.participant_names if self.package is not None else []
 
     @staticmethod
     def _matches(patterns, text: str) -> bool:
@@ -437,7 +446,7 @@ class Engine:
         """(owner, the sentence that gave them the task): a participant named in a resolving sentence with an
         ownership pattern ("Bob owns the announcement."); else the speaker of a resolving sentence that starts with
         I'll / I will; else (no such sentence) the speaker of the conflicting "I'll …" line."""
-        names = self.package.participant_names if self.package is not None else []
+        names = self._names()
         for part in statements:
             if self._matches(self.checks.ownership, part):
                 found = [(match.start(), name) for name in names

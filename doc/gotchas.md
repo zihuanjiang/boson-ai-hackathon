@@ -119,6 +119,15 @@ Add our own findings here as we hit them (date them).
   itself. (`pytest` itself imports the worktree's code from any cwd; its one cwd-dependent test,
   `test_cli_serves_with_flags`, now changes into the repo first.)
 
+- **2026-10-24: the web client's active speaker was not readable with the old selectors.** Ken's real Zoom run
+  (app.zoom.us/wc, the bot as "Facilitator (AI)"): `summary.json` `speakers_seen: {}`, and console.log never said
+  "active speaker read from …": none of the class guesses (`[class*="speaker-active"] [class*="name"]` and six more)
+  nor the aria-label pass matched, so every discussion line was "Room". The markup is undocumented and changes between
+  releases: inject.js now combines independent signals (D89; the green frame's computed colour does not depend on
+  class names), and every run that hears speech without a name saves DOM probes to `out/zoom_bot/speaker-probe/` —
+  read those before guessing more selectors. Unverified live so far: which strategy works, whether the meeting UI sits
+  in an iframe (the probes are per frame), and Zoom's caption markup.
+
 ## Measured (ours, dated)
 
 - 2026-10-23, `scripts/e2e_chrome.py` in headless Chrome at 1280×720 (fake mic, fake Realtime, fake renders):

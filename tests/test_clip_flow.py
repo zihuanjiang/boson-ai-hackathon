@@ -586,6 +586,63 @@ async def test_input_voice_labels_a_room_line_by_the_frames_speaker_or_the_curre
     assert h.c._clip_frame["speaker"] == "Carol"
 
 
+async def zoom_line(h: Harness, text: str, speakers: list[str | None] | str | None, item: str) -> dict:
+    """One line from the Zoom bot's ears: 3 frames of voice and 7 of silence (the segmenter's end), each frame naming
+    `speakers[n]` (one name: every frame), then the transcript. Returns the line as the deck got it."""
+    names = speakers if isinstance(speakers, list) else [speakers] * 10
+    for n in range(10):
+        await voice(h, TONE if n < 3 else SILENCE, speaker=names[n])
+    await h.ev("input_audio_buffer.committed", item_id=item)
+    await h.ev("conversation.item.input_audio_transcription.completed", item_id=item, transcript=text)
+    return h.b("transcript")[-1]["utterance"]
+
+
+async def test_input_voice_labels_a_line_with_the_zoom_name_of_someone_not_on_the_agenda(mk):
+    """Real people in Zoom need not be renamed to the agenda's participants: whoever Zoom shows as the active speaker
+    labels the line under their display name, joins the roster (`joined` in the meeting message) and is named to the
+    facilitator; an agenda name in any case is still the agenda's spelling; a reserved or empty label is no name."""
+    h = mk(settings=Settings(narration="live", input="voice"))
+    await to_discussion(h)
+    h.reset()
+    line = await zoom_line(h, "Good morning everyone.", "Dana Lee", "item_dana")
+    assert (line["speaker"], line["source"]) == ("Dana Lee", "voice")
+    assert h.c.mstate.joined == ["Dana Lee"] and h.c._meeting_message()["joined"] == ["Dana Lee"]
+    assert h.c._meeting_message()["participants"] == h.c.mstate.to_json()["participants"]  # the agenda, as before
+    assert "Dana Lee (joined in Zoom" in h.c._instructions()
+    assert (await zoom_line(h, "Hello from the London office.", "bob", "item_bob"))["speaker"] == "Bob"
+    assert (await zoom_line(h, "Same here.", "DANA LEE", "item_dana2"))["speaker"] == "Dana Lee"
+    for n, raw in enumerate(("Room", "Facilitator", "   ", "42")):
+        assert (await zoom_line(h, f"Line {n}.", raw, f"item_x{n}"))["speaker"] is None, raw
+    assert h.c.mstate.joined == ["Dana Lee"]
+
+
+async def test_input_voice_labels_a_line_by_the_name_most_of_its_frames_carried(mk):
+    """Zoom's active-speaker indicator lags the speech: the first frames of Dana's line still name Bob, who spoke
+    before. The line is labelled with the name most of its frames carried."""
+    h = mk(settings=Settings(narration="live", input="voice"))
+    await to_discussion(h)
+    h.reset()
+    line = await zoom_line(h, "I can take that one.", ["Bob", "Bob", "Dana Lee", *["Dana Lee"] * 7], "item_dana")
+    assert line["speaker"] == "Dana Lee"
+    vote = [data for kind, data in h.logs if kind == "speaker_vote"]
+    assert vote and (vote[-1]["onset"], vote[-1]["voted"]) == ("Bob", "Dana Lee")
+    # the next line votes afresh: all Bob
+    assert (await zoom_line(h, "Thanks Dana.", "Bob", "item_bob"))["speaker"] == "Bob"
+
+
+async def test_clips_mode_never_labels_a_line_with_a_name_off_the_agenda(h: Harness):
+    """Clips: a line's label is the clip's prepared metadata, agenda names only (unchanged): an unknown name is no
+    label, and nobody joins."""
+    await to_discussion(h)
+    h.reset()
+    await speak(h, 3, speaker="Dana Lee", clip="bob-announce")
+    await stop(h, speaker="Dana Lee", clip="bob-announce")
+    await h.ev("input_audio_buffer.committed", item_id="item_dana")
+    await h.ev("conversation.item.input_audio_transcription.completed", item_id="item_dana", transcript="Hello.")
+    assert h.b("transcript")[-1]["utterance"]["speaker"] is None and h.c.mstate.joined == []
+    assert not [kind for kind, _ in h.logs if kind == "speaker_vote"]
+
+
 async def test_input_voice_ignores_clip_frames_and_clips_mode_ignores_voice_frames(mk):
     voice_mode = mk(settings=Settings(narration="live", input="voice"))
     await present_first_point(voice_mode)

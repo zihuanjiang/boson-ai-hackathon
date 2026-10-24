@@ -94,6 +94,109 @@ def test_the_speaker_name_is_tidied_and_never_the_bot():
     assert bot.clean_speaker("Unmute") is None and bot.clean_speaker("") is None and bot.clean_speaker(None) is None
     assert bot.clean_speaker("x" * 61) is None and bot.clean_speaker("x" * 60) == "x" * 60
     assert bot.clean_speaker("Carol", bot_name="Carol") is None
+    assert bot.clean_speaker("Ken Jiang (Host, me)") == "Ken Jiang"  # the participants panel's suffix
+
+
+def test_a_speaker_reading_beats_the_only_other_person_fallback_across_frames():
+    merged = {"speaker": None, "speaker_how": None, "speaker_detail": None, "roster": []}
+    bot.merge_speaker(merged, {"speaker": "Ken Jiang", "speaker_how": "only", "roster": ["Ken Jiang"]})
+    assert (merged["speaker"], merged["speaker_how"]) == ("Ken Jiang", "only")
+    bot.merge_speaker(merged, {"speaker": "Dana Lee", "speaker_how": "frame", "speaker_detail": "border",
+                               "roster": ["Ken Jiang", "Dana Lee"]})
+    assert (merged["speaker"], merged["speaker_how"], merged["speaker_detail"]) == ("Dana Lee", "frame", "border")
+    bot.merge_speaker(merged, {"speaker": "Erin Wu", "speaker_how": "class", "roster": []})
+    assert merged["speaker"] == "Dana Lee"  # (the first reading stands; a frame without one changes nothing)
+    bot.merge_speaker(merged, {"speaker": None, "roster": ["Erin Wu"]})
+    assert merged["roster"] == ["Ken Jiang", "Dana Lee", "Erin Wu"]
+
+
+async def test_the_playwright_page_merges_its_frames_speakers_and_probes_each_frame():
+    class Frame:
+        def __init__(self, url: str, drained: dict | None, probe: dict | None = None) -> None:
+            self.url, self.drained, self.probed = url, drained, probe
+
+        async def evaluate(self, script: str, *args):
+            if "probe" in script:
+                return self.probed
+            if self.drained is None:
+                raise RuntimeError("navigating")
+            return self.drained
+
+    top = Frame("https://app.zoom.us/wc/join/123?pwd=x", {"events": ["a"], "speaker": "Ken Jiang", "speaker_how": "only",
+                                                          "roster": ["Ken Jiang"]}, {"roster": ["Ken Jiang"]})
+    inner = Frame("https://app.zoom.us/wc/123/start", {"events": ["b"], "speaker": "Dana Lee", "speaker_how": "frame",
+                                                       "roster": ["Ken Jiang", "Dana Lee"]}, {"roster": ["Dana Lee"]})
+    gone = Frame("about:blank", None)
+
+    class Page:
+        frames = [top, inner, gone]
+
+    page = bot.PlaywrightPage(Page())
+    merged = await page.drain()
+    assert (merged["speaker"], merged["speaker_how"], merged["roster"]) == ("Dana Lee", "frame", ["Ken Jiang", "Dana Lee"])
+    assert merged["events"] == ["a", "b"]
+    probes = await page.probe()
+    assert list(probes) == ["frame-0 https://app.zoom.us/wc/join/123", "frame-1 https://app.zoom.us/wc/123/start"]
+
+
+class ProbePage(bot.FakeZoomPage):
+    """The fake Zoom page with inject.js's probe: counts the probes taken."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.probed = 0
+
+    async def probe(self) -> dict:
+        self.probed += 1
+        return {"frame-0": {"roster": ["Ken Jiang", "Dana Lee"], "tried": ["class: nothing"], "tiles": []}}
+
+
+async def test_speech_without_a_speaker_saves_a_rate_limited_dom_probe_and_the_summary_says_how_speakers_were_read(
+        tmp_path: Path):
+    ws, page = FakeWS(), ProbePage()
+    probe_dir = tmp_path / "speaker-probe"
+    deck = bot.ZoomDeck(ws, page, server="http://127.0.0.1:1", probe_dir=probe_dir)
+    loud = {"rate": 48000, "pcm": "", "peak_db": -20, "roster": ["Ken Jiang (Host)", "Dana Lee", "Facilitator (AI)"]}
+    try:
+        await deck.hear({**loud, "speaker": None})
+        await deck.settle_probes()
+        (saved,) = sorted(probe_dir.glob("probe-*.json"))
+        body = json.loads(saved.read_text(encoding="utf-8"))
+        assert saved.name.startswith("probe-01-no-speaker-") and body["reason"] == "no-speaker"
+        assert body["level_db"] == -20 and body["frames"]["frame-0"]["tried"] == ["class: nothing"]
+        await deck.hear({**loud, "speaker": None})  # within 5 s of the last one: no new probe
+        await deck.settle_probes()
+        assert page.probed == 1
+        await deck.hear({**loud, "speaker": "Dana Lee", "speaker_how": "frame"})  # a check while one is named
+        await deck.settle_probes()
+        assert page.probed == 2 and deck.probes[-1].startswith("probe-02-check-frame-")
+        await deck.hear({**loud, "speaker": "Dana Lee", "speaker_how": "frame"})  # (one check per 20 s)
+        await deck.hear({**loud, "peak_db": -80, "speaker": None})  # silence: never probed, not speech
+        await deck.settle_probes()
+        assert page.probed == 2
+        summary = deck.speaker_summary()
+        assert summary["speaker_strategy"] == "frame" and summary["speaker_hows"] == {"frame": 2}
+        assert summary["speakers_seen"] == {"Dana Lee": 2} and summary["roster_seen"] == ["Ken Jiang", "Dana Lee"]
+        assert (summary["speech_ticks"], summary["speech_unlabelled_ticks"]) == (4, 2)
+        assert summary["speaker_probes"] == deck.probes and summary["speaker_probe_dir"] == str(probe_dir)
+        lines = bot.speaker_lines(summary, tmp_path)
+        assert lines[0].startswith("speaker  via frame (frame 2 ticks); roster ['Ken Jiang', 'Dana Lee']")
+        assert "2 of 4 speech ticks" in lines[1] and "2 DOM probe(s)" in lines[2]
+    finally:
+        await deck.close()
+    quiet = bot.speaker_lines({"speech_ticks": 9, "speech_unlabelled_ticks": 9, "speaker_probes": []}, tmp_path)
+    assert quiet[0].startswith("speaker  via nothing") and "never readable" in quiet[-1]
+
+
+async def test_without_a_probe_dir_the_ears_never_probe():
+    ws, page = FakeWS(), ProbePage()
+    deck = bot.ZoomDeck(ws, page, server="http://127.0.0.1:1")
+    try:
+        await deck.hear({"rate": 48000, "pcm": "", "peak_db": -20, "speaker": None})
+        await deck.settle_probes()
+        assert page.probed == 0 and deck.speaker_summary()["speech_unlabelled_ticks"] == 1
+    finally:
+        await deck.close()
 
 
 def test_a_mic_frame_is_the_voice_path_frame():

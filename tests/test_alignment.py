@@ -542,6 +542,8 @@ def test_an_unanswered_intervention_expires(package):
     ("Yes, beta users only.", "Carol", None, None),
     ("Yes, beta users only. Dave owns it.", "Carol", None, None),  # Dave is not a participant
     ("Yes, beta users only. I'll send it.", "Room", None, None),  # no speaker label
+    # --input voice: a Zoom name off the agenda who speaks joins the roster (MeetingState.joined): their "I'll" counts
+    ("Yes, beta users only. I'll send it.", "Dana Lee", "Bob", "Dana Lee"),
 ])
 def test_the_owner(package, answer, speaker, bob_speaker, owner):
     room = Room(package)

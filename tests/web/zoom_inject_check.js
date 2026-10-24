@@ -145,16 +145,107 @@ Object.defineProperty(HTMLMediaElement.prototype, "srcObject", {
     return this._src;
   },
 });
-const domNodes = [];
+// A small fake DOM for the speaker strategies: a tree of El, the selectors inject.js uses (`*`, `[attr]`,
+// `[attr*="v"]`, `[attr="v"]`, compounds of those, descendant combinators), contains(), and getComputedStyle with
+// pseudo-elements (an El's `style` and `pseudo["::after"]` override the defaults).
+function parseCompound(s) {
+  if (s === "*") return [() => true];
+  const preds = [];
+  const re = /\[([\w-]+)(?:(\*?=)"([^"]*)")?\]/g;
+  let m;
+  let used = 0;
+  while ((m = re.exec(s))) {
+    const [, name, op, val] = m;
+    used += m[0].length;
+    preds.push((el) => {
+      const v = el.getAttribute(name);
+      if (v === null || v === undefined) return false;
+      return !op ? true : op === "*=" ? v.includes(val) : v === val;
+    });
+  }
+  if (used !== s.length) throw new Error(`the fake DOM can't match ${s}`);
+  return preds;
+}
+function matchesSel(el, sel) {
+  const parts = sel.trim().split(/\s+/).map(parseCompound);
+  const ok = (e, preds) => preds.every((p) => p(e));
+  if (!ok(el, parts[parts.length - 1])) return false;
+  let i = parts.length - 2;
+  for (let anc = el.parentElement; i >= 0 && anc; anc = anc.parentElement) if (ok(anc, parts[i])) i--;
+  return i < 0;
+}
+class El {
+  constructor(tag, cls = "", opts = {}, kids = []) {
+    this.tagName = tag.toUpperCase();
+    this.className = cls;
+    this.attrs = opts.attrs || {};
+    this.ownText = opts.text || "";
+    this.style = opts.style || {};
+    this.pseudo = opts.pseudo || {};
+    this.children = [];
+    this.parentElement = null;
+    for (const k of kids) this.append(k);
+  }
+  append(k) {
+    k.parentElement = this;
+    this.children.push(k);
+    return k;
+  }
+  get id() {
+    return this.attrs.id || "";
+  }
+  get textContent() {
+    return this.ownText + this.children.map((c) => c.textContent).join("");
+  }
+  getAttribute(name) {
+    if (name === "class") return this.className || null;
+    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+  }
+  descendants() {
+    const out = [];
+    const walk = (e) => {
+      for (const c of e.children) {
+        out.push(c);
+        walk(c);
+      }
+    };
+    walk(this);
+    return out;
+  }
+  querySelectorAll(sel) {
+    return this.descendants().filter((e) => matchesSel(e, sel));
+  }
+  contains(other) {
+    for (let e = other; e; e = e.parentElement) if (e === this) return true;
+    return false;
+  }
+  getBoundingClientRect() {
+    return { x: 0, y: 0, width: 160, height: 90 };
+  }
+}
+const el = (tag, cls, opts, kids) => new El(tag, cls, opts, kids);
+const STYLE_DEFAULTS = { outlineStyle: "none", outlineWidth: "0px", outlineColor: "rgb(0, 0, 0)", boxShadow: "none" };
+for (const side of ["Top", "Left", "Bottom", "Right"]) {
+  STYLE_DEFAULTS[`border${side}Style`] = "none";
+  STYLE_DEFAULTS[`border${side}Width`] = "0px";
+  STYLE_DEFAULTS[`border${side}Color`] = "rgb(0, 0, 0)";
+}
+globalThis.getComputedStyle = (node, pseudo) => ({ ...STYLE_DEFAULTS, ...(pseudo ? node.pseudo[pseudo] || {} : node.style) });
+let domRoot = new El("body");
 globalThis.document = {
+  title: "Zoom Meeting",
   createElement: () => ({
     width: 0,
     height: 0,
     getContext: () => ({ fillRect() {}, beginPath() {}, arc() {}, fill() {}, fillText() {} }),
     captureStream: () => new MediaStream([new MediaStreamTrack("video")]),
   }),
-  querySelectorAll: (sel) => domNodes.filter((n) => n.matches(sel)),
+  querySelectorAll: (sel) => domRoot.querySelectorAll(sel),
 };
+function page(...kids) {
+  domRoot = new El("body", "", {}, kids);
+  clock += 1.5; // past the roster's and the speaker's caches
+}
 globalThis.navigator = { mediaDevices: {} };
 globalThis.window = globalThis;
 globalThis.console = { log() {} };
@@ -236,16 +327,104 @@ check(d.position && d.position.key === null, "drain carries the player's positio
 check(Array.isArray(d.events) && d.events.some((e) => e.includes("injected")), "drain carries the page's log lines");
 
 // ---- the active speaker ----------------------------------------------------------------------------------------
-domNodes.push({ matches: (sel) => sel === '[class*="speaker-active"] [class*="name"]', textContent: "  Facilitator (AI)  " });
-check(bot.speaker().name === null, "the bot's own tile is never the speaker");
-domNodes.push({ matches: (sel) => sel === '[class*="speaker-active"] [class*="name"]', textContent: "Ken Jiang (Host)\n" });
-const who = bot.speaker();
-check(who.name === "Ken Jiang" && who.how === '[class*="speaker-active"] [class*="name"]', `the active speaker is ${who.name}`);
-check(bot.drain().speaker === "Ken Jiang", "drain carries the active speaker");
-domNodes.length = 0;
-check(bot.speaker().name === null, "no indicator → no speaker");
-domNodes.push({ matches: (sel) => sel === '[class*="speaker-active"] [class*="name"]', textContent: "Facilitator (AI) (Host)" });
-check(bot.speaker().name === null, "the bot as host is still never the speaker");
+const GREEN = "rgb(35, 217, 89)";
+const tile = (name, opts = {}, cls = "gallery-video-container__video-frame") =>
+  el("div", cls, opts, [el("div", "video-avatar__avatar-footer", {}, [el("span", "video-avatar__avatar-name", { text: name })])]);
+const gallery = (...tiles) => el("div", "gallery-video-container__wrap", {}, tiles);
+
+// the class marker (speaker view)
+page(el("div", "speaker-active-container__video-frame", {}, [el("div", "video-avatar__avatar-name", { text: "  Facilitator (AI)  " })]));
+check(bot.speaker(true).name === null, "the bot's own tile is never the speaker");
+page(el("div", "speaker-active-container__video-frame", {}, [el("div", "video-avatar__avatar-name", { text: "Ken Jiang (Host)\n" })]));
+let who = bot.speaker(true);
+check(who.name === "Ken Jiang" && who.how === "class" && who.detail === '[class*="speaker-active"] [class*="name"]',
+  `class marker: the active speaker is ${who.name} (${who.how}: ${who.detail})`);
+d = bot.drain();
+check(d.speaker === "Ken Jiang" && d.speaker_how === "class" && d.roster.join() === "Ken Jiang", "drain carries the speaker, how and the roster");
+check(d.events.some((e) => e.includes("active speaker read via class")) && d.events.some((e) => e.includes("speaker: Ken Jiang (via class)")),
+  "the strategy that worked and the speaker change are logged");
+page();
+check(bot.speaker(true).name === null, "no indicator → no speaker");
+page(el("div", "speaker-active-container__video-frame", {}, [el("div", "video-avatar__avatar-name", { text: "Facilitator (AI) (Host)" })]));
+check(bot.speaker(true).name === null, "the bot as host is still never the speaker");
+
+// the colour classifier on its own
+check(bot.isActiveColor(GREEN) && bot.isActiveColor("#23d959") && bot.isActiveColor("rgb(173, 255, 47)"), "Zoom's green (and yellow-green) is the active frame");
+check(!bot.isActiveColor("rgb(14, 114, 237)") && !bot.isActiveColor("rgb(255, 255, 255)") && !bot.isActiveColor("rgb(255, 165, 0)") &&
+  !bot.isActiveColor("rgba(35, 217, 89, 0.1)") && !bot.isActiveColor("none"), "blue, white, orange and a faint green are not");
+check(bot.isActiveColor(`rgba(0, 0, 0, 0) 0px 0px 0px 0px, ${GREEN} 0px 0px 0px 2px inset`), "…found inside a box-shadow list");
+
+// the green frame (gallery view, no active class anywhere): on the tile, on an overlay inside it, on its ::after
+const solid = { borderTopStyle: "solid", borderTopWidth: "2px", borderTopColor: GREEN };
+page(gallery(tile("Ken Jiang"), tile("Dana Lee", { style: solid }), tile("Facilitator (AI)")));
+who = bot.speaker(true);
+check(who.name === "Dana Lee" && who.how === "frame", `green border: ${who.name} (${who.how}: ${who.detail})`);
+page(gallery(tile("Ken Jiang"),
+  el("div", "gallery-video-container__video-frame", {}, [
+    el("div", "video-avatar__overlay", { style: { boxShadow: `${GREEN} 0px 0px 0px 3px inset` } }),
+    el("div", "video-avatar__avatar-footer", {}, [el("span", "video-avatar__avatar-name", { text: "Dana Lee" })])])));
+check(bot.speaker(true).name === "Dana Lee", "green box-shadow on an overlay inside the tile");
+page(gallery(tile("Ken Jiang", { pseudo: { "::after": { outlineStyle: "solid", outlineWidth: "3px", outlineColor: GREEN } } }), tile("Dana Lee")));
+check(bot.speaker(true).name === "Ken Jiang", "green outline on the tile's ::after");
+page(gallery(tile("Ken Jiang"), tile("Dana Lee"), tile("Facilitator (AI)", { style: solid })));
+check(bot.speaker(true).name === null, "the bot's own green frame is nobody's (and two others: no fallback)");
+
+// an aria-label (free text needs a roster name when there is a roster)
+page(gallery(tile("Ken Jiang"), tile("Dana Lee")), el("div", "toast", { attrs: { "aria-label": "You appear to be talking while muted" } }));
+check(bot.speaker(true).name === null, "an aria-label sentence that names nobody on the roster is no speaker");
+page(gallery(tile("Ken Jiang"), tile("Dana Lee")), el("div", "sr-only", { attrs: { "aria-label": "Dana Lee is talking" } }));
+who = bot.speaker(true);
+check(who.name === "Dana Lee" && who.how === "aria", `aria-label: ${who.name} (${who.how})`);
+
+// Zoom's captions: the latest line names its speaker; a line that stopped changing goes stale
+const captions = (name, text) => el("div", "live-transcription-subtitle__box", {}, [
+  el("div", "live-transcription-subtitle__item", {}, [el("span", "live-transcription-subtitle__display-name", { text: name }),
+    el("span", "live-transcription-subtitle__text", { text })])]);
+page(gallery(tile("Ken Jiang"), tile("Dana Lee")), captions("Dana Lee", "we ship on Friday"));
+who = bot.speaker(true);
+check(who.name === "Dana Lee" && who.how === "captions", `captions: ${who.name} (${who.how}: ${who.detail})`);
+clock += 1;
+check(bot.speaker(true).name === "Dana Lee", "…while the line is fresh");
+clock += 3;
+check(bot.speaker(true).name === null, "…and nobody once it hasn't changed for 3 s");
+domRoot.children[1].children[0].children[1].ownText = "we ship on Friday, to beta users";
+check(bot.speaker(true).name === "Dana Lee", "…until it changes again");
+page(gallery(tile("Ken Jiang"), tile("Dana Lee")), captions("Ken Jiang", "agreed"));
+check(bot.speaker(true).name === "Ken Jiang", "the next speaker's line");
+
+// the fallback: exactly one other person on the roster; the participants panel's aria-labels join the roster
+page(gallery(tile("Ken Jiang"), tile("Facilitator (AI)")));
+who = bot.speaker(true);
+check(who.name === "Ken Jiang" && who.how === "only", `only one other person: ${who.name} (${who.how})`);
+page(gallery(tile("Ken Jiang")), el("div", "participants-list", {}, [
+  el("div", "participants-item__item-layout", { attrs: { "aria-label": "Erin Wu (Host, me), Computer audio unmuted, video off" } })]));
+check(JSON.stringify(bot.roster()) === JSON.stringify(["Ken Jiang", "Erin Wu"]) && bot.speaker(true).name === null,
+  "the participants panel's rows join the roster (two others: no fallback)");
+
+// the cache: a read within 300 ms is the cached one
+page(gallery(tile("Ken Jiang"), tile("Dana Lee", { style: solid })));
+check(bot.speaker(true).name === "Dana Lee", "frame again");
+domRoot = new El("body", "", {}, [gallery(tile("Ken Jiang", { style: solid }), tile("Dana Lee"))]);
+clock += 0.1;
+check(bot.speaker().name === "Dana Lee", "within 300 ms the cached speaker");
+clock += 0.3;
+check(bot.speaker().name === "Ken Jiang", "after 300 ms a fresh read");
+check(bot.speakerChanges >= 6, `speaker changes counted (${bot.speakerChanges})`);
+
+// the probe: what the page offered, as plain JSON
+page(gallery(tile("Ken Jiang"), tile("Dana Lee", { style: solid }), tile("Facilitator (AI)")),
+  el("div", "toast", { attrs: { "aria-label": "Mute my microphone" } }), captions("Dana Lee", "hello"));
+const probe = JSON.parse(JSON.stringify(bot.probe()));
+check(probe.roster.join() === "Ken Jiang,Dana Lee" && probe.speaker.name === "Dana Lee" && Array.isArray(probe.tried) &&
+  probe.tried.length >= 1, `probe: roster ${probe.roster}, speaker ${probe.speaker.name}, tried ${probe.tried}`);
+check(probe.tiles.length >= 6 && probe.tiles.some((t) => t.green && t.text === "Dana Lee") &&
+  probe.tiles.every((t) => typeof t.cls === "string" && typeof t.border === "string"), `probe: ${probe.tiles.length} tile-like elements with their computed frame`);
+check(probe.greens.length >= 1 && probe.greens[0].text === "Dana Lee", "probe: every green-framed element");
+check(probe.aria.some((a) => a.aria === "Mute my microphone") && probe.captions.some((c) => c.text.includes("hello")),
+  "probe: the aria-labels and the caption candidates");
+page();
+const empty = bot.probe();
+check(empty.roster.length === 0 && empty.speaker.name === null && empty.tried.some((t) => t.startsWith("only:")), "probe of an empty page");
 
 if (failures) print(`${failures} check(s) failed`);
 else print("all checks passed");

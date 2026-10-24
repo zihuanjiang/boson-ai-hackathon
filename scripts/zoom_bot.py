@@ -15,13 +15,18 @@ own Zoom (real mic and speakers). The bot:
     "On the Same Page"), then clicks Share Screen: Chrome picks that tab by title (no picker);
   · EARS: every 100 ms it drains what the Zoom page plays (the Web Audio tap, 48 kHz), resamples to 24 kHz PCM16 and
     streams 100 ms `mic` frames (`source: "voice"`, Zoom's active speaker when readable) with the reply position;
+    the speaker is read off the page by several strategies (inject.js: a class marker, an aria-label, the green
+    frame's computed style, Zoom's captions, the only other person on the roster); speech with no name saves a DOM
+    probe to out/zoom_bot/speaker-probe/ (≤ 1 per 5 s, 20 per run);
   · MOUTH: the facilitator's `reply_audio` is queued into the page's microphone stream; `reply_drained` goes out when
     it has played out, `reply_flush` drops what is queued; a backup narration chunk (`play`) is fetched from /media
     and played the same way (`chunk_ended` after);
   · KEYS in this terminal: Space, R, arrows, P, H, N (next phase), 0 (reset), `t <text>` + Enter (a typed line),
     q (leave and quit). --auto-start presses R three seconds after the share begins.
-Writes out/zoom_bot/: step screenshots, console.log, server.log, heard.wav (everything the bot heard, 24 kHz mono),
-frames.jsonl (the deck messages without audio payloads), summary.json.
+Writes out/zoom_bot/: step screenshots, console.log (the page's `[bot]` lines: the speaker strategy that worked, each
+speaker change), server.log, heard.wav (everything the bot heard, 24 kHz mono), frames.jsonl (the deck messages without
+audio payloads), summary.json (with the speaker attribution: speaker_strategy, speaker_hows, speakers_seen,
+roster_seen, speech_unlabelled_ticks, speaker_probes), speaker-probe/probe-*.json.
 
 --dry-run: no Zoom. A fake Zoom page with the same drain/push/flush surface whose "participants" are the talk's demo
 clips (demo.yaml), played on their cues (resampled 24→48→24 kHz on the way, as the real tap would be), against
@@ -68,7 +73,16 @@ KEY_HELP = """keys (this terminal):  Space = send now (cut in)   R = start / res
                        P = pause   H = hand over to a human   N = next agenda phase   0 = restart the meeting
                        t <text> ⏎ = a typed line (a question, or a line of the discussion)   q = leave and quit"""
 UI_WORDS = re.compile(r"^(mute|unmute|more|video|audio|share|participants|chat|reactions|leave|you|me|host)$", re.I)
-NAME_SUFFIX = re.compile(r"\s*\((?:host|co-host|me|you|guest)\)\s*$", re.I)
+NAME_SUFFIX = re.compile(r"\s*\((?:host|co-host|me|you|guest)(?:\s*,\s*(?:host|co-host|me|you|guest))*\)\s*$", re.I)
+# Speaker diagnostics (the live run): a drain this loud is somebody talking; when the page names nobody then, the bot
+# saves what the page offered (web/zoom/inject.js B.probe) to out/zoom_bot/speaker-probe/, at most one per
+# PROBE_EVERY_S and PROBE_MAX per run, plus PROBE_CHECKS while a speaker *is* found (to verify the strategy's pick).
+SPEECH_DB = -40
+PROBE_EVERY_S = 5.0
+PROBE_MAX = 20
+PROBE_CHECKS = 3
+PROBE_CHECK_EVERY_S = 20.0
+HOW_RANK = {"class": 0, "aria": 0, "frame": 0, "captions": 0, "fake": 0, "only": 1}  # a fallback loses to a reading
 
 
 # --- pure helpers (tests/test_zoom_bot.py) --------------------------------------------------------------------------
@@ -100,6 +114,20 @@ def clean_speaker(raw: Any, bot_name: str = BOT_NAME) -> str | None:
     if not name or len(name) > 60 or UI_WORDS.match(name):
         return None
     return name
+
+
+def merge_speaker(merged: dict, drained: dict) -> None:
+    """One frame's speaker reading into the drains merged so far: a reading (class, aria, frame, captions) beats the
+    fallback (`only`: the only other person on that frame's roster); the rosters are joined."""
+    for name in drained.get("roster") or []:
+        if name not in merged["roster"]:
+            merged["roster"].append(name)
+    if not drained.get("speaker"):
+        return
+    rank = HOW_RANK.get(drained.get("speaker_how") or "", 1)
+    if not merged.get("speaker") or rank < HOW_RANK.get(merged.get("speaker_how") or "", 1):
+        merged["speaker"], merged["speaker_how"] = drained["speaker"], drained.get("speaker_how")
+        merged["speaker_detail"] = drained.get("speaker_detail")
 
 
 def mic_frame(pcm: bytes, speaker: str | None, where: dict) -> dict:
@@ -314,7 +342,7 @@ class PlaywrightPage:
 
     async def drain(self) -> dict:
         merged: dict = {"events": [], "pcm": "", "rate": 48000, "peak_db": -120, "others": {}, "position": None,
-                        "speaker": None, "counts": {}}
+                        "speaker": None, "speaker_how": None, "speaker_detail": None, "roster": [], "counts": {}}
         for frame in self.page.frames:
             try:
                 d = await frame.evaluate("() => window.__bot ? window.__bot.drain() : null")
@@ -332,9 +360,21 @@ class PlaywrightPage:
             pos = d.get("position")
             if isinstance(pos, dict) and (merged["position"] is None or pos.get("key") is not None):
                 merged["position"] = pos
-            if d.get("speaker") and not merged["speaker"]:
-                merged["speaker"] = d["speaker"]
+            merge_speaker(merged, d)
         return merged
+
+    async def probe(self) -> dict:
+        """What every frame with the hooks offers for finding the speaker (inject.js B.probe), by frame URL."""
+        out: dict = {}
+        for n, frame in enumerate(self.page.frames):
+            try:
+                p = await frame.evaluate("() => window.__bot && window.__bot.probe ? window.__bot.probe() : null")
+            except Exception as exc:  # noqa: BLE001
+                out[f"frame-{n}"] = {"error": repr(exc)[:200]}
+                continue
+            if p:
+                out[f"frame-{n} {(frame.url or '').split('?')[0][:120]}"] = p
+        return out
 
     async def push(self, b64: str, key: Any) -> dict:
         return await self.page.evaluate("([b, k]) => window.__bot.push(b, k)", [b64, key])
@@ -395,7 +435,8 @@ class FakeZoomPage:
             clip["pos"] += take
         speaker = self.speaking
         return {"events": [], "rate": self.rate, "pcm": base64.b64encode(bytes(out)).decode("ascii"),
-                "peak_db": -120, "others": {}, "position": self._position(), "speaker": speaker, "counts": {}}
+                "peak_db": -120, "others": {}, "position": self._position(), "speaker": speaker,
+                "speaker_how": "fake" if speaker else None, "counts": {}}
 
     async def position(self) -> dict:
         return self._position()
@@ -441,14 +482,27 @@ class ZoomDeck(Deck):
     the end of everything queued for it; the mic frames carry the page's own count of what has been heard."""
 
     def __init__(self, ws: Any, page: Any, *, server: str, talk: dict | None = None,
-                 log: Callable[[str], None] | None = None, keep_audio: bool = False) -> None:
+                 log: Callable[[str], None] | None = None, keep_audio: bool = False,
+                 probe_dir: Path | None = None) -> None:
         super().__init__(ws, talk=talk, log=log, keep_audio=keep_audio)
         self.page = page
         self.server = server.rstrip("/")
         self.heard = bytearray()  # 24 kHz PCM16 of everything the bot heard
         self.frames_sent = 0
         self.speaker: str | None = None  # Zoom's active speaker, as last read
-        self.speakers_seen: dict[str, int] = {}
+        self.speakers_seen: dict[str, int] = {}  # name → drains (100 ms ticks) it was the speaker
+        # speaker diagnostics: which strategy named the speaker (ticks), the names Zoom showed, the speech heard
+        # with and without a name, and the DOM probes saved for the ticks without one (None: no probes, e.g. dry run)
+        self.speaker_hows: dict[str, int] = {}
+        self.roster_seen: list[str] = []
+        self.speech_ticks = 0
+        self.speech_unlabelled = 0
+        self.probe_dir = probe_dir
+        self.probes: list[str] = []  # the files saved
+        self._probe_at = -1e9
+        self._checks = 0
+        self._check_at = -1e9
+        self._probing: asyncio.Task | None = None
         self.levels: list[int] = []  # the tap's peak per drain (dBFS)
         self.page_events: list[str] = []
         self.stopped = asyncio.Event()
@@ -602,9 +656,21 @@ class ZoomDeck(Deck):
             self.say(f"[page] {line}")
         self._set_page_pos(drained.get("position"))
         self.speaker = clean_speaker(drained.get("speaker"))
+        how = (drained.get("speaker_how") or "?") if self.speaker else None
         if self.speaker:
             self.speakers_seen[self.speaker] = self.speakers_seen.get(self.speaker, 0) + 1
-        self.levels.append(int(drained.get("peak_db", -120)))
+            self.speaker_hows[how] = self.speaker_hows.get(how, 0) + 1
+        for raw_name in drained.get("roster") or []:
+            name = clean_speaker(raw_name)
+            if name and name not in self.roster_seen and len(self.roster_seen) < 50:
+                self.roster_seen.append(name)
+        level = int(drained.get("peak_db", -120))
+        self.levels.append(level)
+        if level >= SPEECH_DB:
+            self.speech_ticks += 1
+            if not self.speaker:
+                self.speech_unlabelled += 1
+            self._maybe_probe(level, how)
         raw = drained.get("pcm")
         if not raw:
             return
@@ -618,6 +684,54 @@ class ZoomDeck(Deck):
         for frame in self._framer.feed(pcm24):
             await self.send(mic_frame(frame, self.speaker, self.position(time.monotonic())))
             self.frames_sent += 1
+
+    # --- speaker diagnostics ------------------------------------------------------------------------------------
+
+    def _maybe_probe(self, level: int, how: str | None) -> None:
+        """Speech heard: save a DOM probe when the page named nobody (≤ 1 per PROBE_EVERY_S, PROBE_MAX per run), or now
+        and then when it did (PROBE_CHECKS, to check the strategy's pick). In the background: the ears never wait."""
+        if self.probe_dir is None or not hasattr(self.page, "probe") or len(self.probes) >= PROBE_MAX:
+            return
+        if self._probing is not None and not self._probing.done():
+            return
+        now = time.monotonic()
+        if self.speaker is None:
+            if now - self._probe_at < PROBE_EVERY_S:
+                return
+            self._probe_at, reason = now, "no-speaker"
+        else:
+            if self._checks >= PROBE_CHECKS or now - self._check_at < PROBE_CHECK_EVERY_S:
+                return
+            self._checks += 1
+            self._check_at, reason = now, f"check-{how}"
+        self._probing = asyncio.create_task(self._probe(reason, level))
+
+    async def _probe(self, reason: str, level: int) -> None:
+        try:
+            data = await self.page.probe()
+        except Exception as exc:  # noqa: BLE001 - a probe never stops the run
+            data = {"error": repr(exc)[:300]}
+        n = len(self.probes) + 1
+        body = {"reason": reason, "t": round(self.now(), 1), "level_db": level, "speaker": self.speaker,
+                "state": self.state.get("state"), "agenda_phase": self.state.get("agenda_phase"), "frames": data}
+        try:
+            self.probe_dir.mkdir(parents=True, exist_ok=True)
+            path = self.probe_dir / f"probe-{n:02d}-{reason}-t{self.now():05.0f}s.json"
+            path.write_text(json.dumps(body, indent=1, ensure_ascii=False), encoding="utf-8")
+            self.probes.append(path.name)
+            self.say(f"   speaker probe saved: {path.name} ({reason}, {level} dBFS)")
+        except OSError as exc:
+            self.say(f"!! speaker probe: {exc!r}")
+
+    def speaker_summary(self) -> dict:
+        """The summary's speaker attribution: which strategy named the speaker, who, the roster, how much speech had
+        no name, the probes saved."""
+        best = max(self.speaker_hows.items(), key=lambda kv: kv[1])[0] if self.speaker_hows else None
+        return {"speaker_strategy": best, "speaker_hows": dict(self.speaker_hows),
+                "speakers_seen": dict(self.speakers_seen), "roster_seen": list(self.roster_seen),
+                "speech_ticks": self.speech_ticks, "speech_unlabelled_ticks": self.speech_unlabelled,
+                "speaker_probes": list(self.probes),
+                "speaker_probe_dir": str(self.probe_dir) if self.probe_dir is not None else None}
 
     # --- keys -------------------------------------------------------------------------------------------------
 
@@ -640,8 +754,17 @@ class ZoomDeck(Deck):
         await self.send({"type": "typed", "text": text, "speaker": None, "at": where["at"], "reply": where["reply"],
                          "reply_played_ms": where["played_ms"]})
 
+    async def settle_probes(self) -> None:
+        """A probe being saved finishes (before the summary counts them)."""
+        if self._probing is not None and not self._probing.done():
+            try:
+                await asyncio.wait_for(self._probing, 3)
+            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                pass
+
     async def close(self) -> None:
         self.stopped.set()
+        await self.settle_probes()
         await super().close()
         self._mouth_task.cancel()
 
@@ -655,6 +778,27 @@ def write_outputs(out_dir: Path, deck: ZoomDeck, summary: dict) -> None:
     (out_dir / "frames.jsonl").write_text("".join(json.dumps(f) + "\n" for f in frames), encoding="utf-8")
     write_wav(out_dir / "heard.wav", bytes(deck.heard))
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+
+def speaker_lines(summary: dict, out_dir: Path) -> list[str]:
+    """The terminal's speaker-attribution lines: the strategy that named the speaker (ticks per strategy), the roster
+    Zoom showed, how much of the speech had no name, the probes saved (the files to send when nobody was named)."""
+    hows = summary.get("speaker_hows") or {}
+    lines = [f"speaker  via {summary.get('speaker_strategy') or 'nothing'}"
+             + (f" ({', '.join(f'{k} {v} ticks' for k, v in sorted(hows.items(), key=lambda kv: -kv[1]))})"
+                if hows else "")
+             + f"; roster {summary.get('roster_seen') or []}"]
+    speech = summary.get("speech_ticks") or 0
+    if speech:
+        lines.append(f"speaker  {summary.get('speech_unlabelled_ticks', 0)} of {speech} speech ticks (100 ms, "
+                     f"≥ {SPEECH_DB} dBFS) had no speaker name")
+    probes = summary.get("speaker_probes") or []
+    if probes:
+        lines.append(f"speaker  {len(probes)} DOM probe(s) in {summary.get('speaker_probe_dir') or out_dir}: "
+                     f"{', '.join(probes[:3])}{' …' if len(probes) > 3 else ''}")
+    if speech and not hows:
+        lines.append("speaker  !! Zoom's active speaker was never readable: the probes show what the page offered")
+    return lines
 
 
 def report(summary: dict, out_dir: Path) -> bool:
@@ -686,6 +830,8 @@ def report(summary: dict, out_dir: Path) -> bool:
     print(f"  notes    decisions {[(d.get('decision'), d.get('owner')) for d in decisions]}")
     print(f"  heard {summary.get('heard_ms', 0) / 1000:.1f} s of participant audio, {summary.get('frames_sent', 0)} "
           f"frames sent; speakers seen {summary.get('speakers_seen')}")
+    for line in speaker_lines(summary, out_dir):
+        print(f"  {line}")
     ok = True
     for name, check in (summary.get("checks") or {}).items():
         print(f"  {'ok ' if check['ok'] else 'MISS'} {names.get(name, name)}: {check['seen']}")
@@ -947,9 +1093,8 @@ async def dry_run(talk_dir: Path, *, out_root: Path, out_dir: Path, log: Callabl
                                 analyses=len(getattr(analyzer, "calls", [])),
                                 checks={name: {"ok": ok, "seen": seen} for name, (ok, seen) in checks.items()},
                                 heard_ms=len(deck.heard) // BYTES_PER_MS, frames_sent=deck.frames_sent,
-                                speakers_seen=deck.speakers_seen, pushed_ms={str(k): v // BYTES_PER_MS
-                                                                             for k, v in page.pushed.items()},
-                                flushes=[(str(k), p) for k, p in page.flushes])
+                                pushed_ms={str(k): v // BYTES_PER_MS for k, v in page.pushed.items()},
+                                flushes=[(str(k), p) for k, p in page.flushes], **deck.speaker_summary())
             write_outputs(out_dir, deck, summary)
             await deck.close()
             return summary
@@ -1168,6 +1313,9 @@ async def run_live(args: argparse.Namespace) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.png"):
         old.unlink()
+    probe_dir = out_dir / "speaker-probe"  # this run's DOM probes only (an earlier run's would mislead)
+    for old in probe_dir.glob("probe-*.json"):
+        old.unlink()
     meeting, link_pwd = meeting_target(args.url)
     url = join_url(args.web_host, meeting, link_pwd)
     base = args.server.rstrip("/")
@@ -1230,7 +1378,7 @@ async def run_live(args: argparse.Namespace) -> dict:
             import websockets
 
             async with websockets.connect(ws_url, max_size=None) as ws:
-                deck = ZoomDeck(ws, PlaywrightPage(page), server=base, talk=talk, log=print)
+                deck = ZoomDeck(ws, PlaywrightPage(page), server=base, talk=talk, log=print, probe_dir=probe_dir)
                 try:
                     hello = await deck.handshake(timeout=30)
                     print(f"deck armed: {(hello.get('meeting') or {}).get('title')}; input {hello.get('input')}",
@@ -1271,15 +1419,18 @@ async def run_live(args: argparse.Namespace) -> dict:
                         await asyncio.wait_for(ears, 3)
                     except (asyncio.TimeoutError, Exception):  # noqa: BLE001
                         pass
+                    await deck.settle_probes()
                     frames = frames_of(deck)
-                    checks = assess(frames, participants=[p["name"] for p in (talk.get("meeting") or {}).get(
-                        "participants", []) if isinstance(p, dict) and p.get("name")])
+                    # a line is labelled when it carries the agenda name or the real name Zoom showed
+                    agenda = [p["name"] for p in (talk.get("meeting") or {}).get("participants", [])
+                              if isinstance(p, dict) and p.get("name")]
+                    checks = assess(frames, participants=agenda + [n for n in deck.speakers_seen if n not in agenda])
                     summary.update(summarize(
                         frames, joined=summary["joined"], shared=summary["shared"],
                         checks={name: {"ok": ok, "seen": seen} for name, (ok, seen) in checks.items()},
                         heard_ms=len(deck.heard) // BYTES_PER_MS, frames_sent=deck.frames_sent,
-                        speakers_seen=deck.speakers_seen, page_events=deck.page_events[-200:],
-                        peak_db=max(deck.levels or [-120])))
+                        page_events=deck.page_events[-200:], peak_db=max(deck.levels or [-120]),
+                        **deck.speaker_summary()))
                     write_outputs(out_dir, deck, summary)
                     await deck.close()
             await shot(page, "end", summary["shots"], out_dir)

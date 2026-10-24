@@ -18,8 +18,9 @@ import pytest
 import yaml
 
 from relay.config import ROOT
-from relay.meeting import (NOTES_MAX_CHARS, ActionItem, Checks, MeetingPackage, MeetingState, Participant, Phase,
-                           Slot, Statement, fact_prefix, load_meeting, validate_meeting, value_label)
+from relay.meeting import (JOINED_ROLE, NOTES_MAX_CHARS, ActionItem, Checks, MeetingPackage, MeetingState,
+                           Participant, Phase, Slot, Statement, fact_prefix, live_speaker_name, load_meeting,
+                           validate_meeting, value_label)
 from relay.talk import TalkError, check_talk, load_talk, main
 
 TEST_TALK = ROOT / "talks" / "test"
@@ -752,10 +753,11 @@ def test_context_lines_order_by_time(package):
 def test_to_json(state):
     state.checkpoint = {"slide_id": "how", "talking_point_id": "how-2", "status": "presenting"}
     body = state.to_json()
-    assert set(body) == {"title", "host", "phase", "started", "agenda", "participants", "checkpoint",
+    assert set(body) == {"title", "host", "phase", "started", "agenda", "participants", "joined", "checkpoint",
                          "clarifications", "decisions", "action_items", "open_questions", "issues", "assumptions",
                          "candidate_decisions", "alignment", "notes"}
     assert (body["issues"], body["assumptions"], body["candidate_decisions"], body["alignment"]) == ([], [], [], {})
+    assert body["joined"] == []
     assert body["agenda"] == [
         {"id": "presentation", "title": "Rollout plan", "prompt": "", "current": True},
         {"id": "discussion", "title": "Launch announcement", "prompt": "What goes out on Friday, and who sends it?",
@@ -768,6 +770,41 @@ def test_to_json(state):
     body = state.to_json()
     assert body["notes"]["phase"] == "wrapup" and [a["current"] for a in body["agenda"]] == [False, False, True]
     json.dumps(body)
+
+
+def test_the_roster_is_the_agenda_plus_whoever_spoke_under_another_name(state):
+    """`--input voice` (Zoom): a line whose speaker is not an agenda participant adds them to the roster (`joined`,
+    first spoke first): from then on a name the analysis and a decision's owner may use, canonically spelled. Agenda
+    names are never duplicated, "Room"/None join nobody, and a reset forgets the joined like the transcript."""
+    assert state.participant_names == ["Alice", "Bob", "Carol"] and state.joined == []
+    state.add_utterance("Morning all.", "Dana Lee", "voice")
+    state.add_utterance("Hi.", "bob", "voice")  # an agenda name in another case: the agenda's spelling
+    state.add_utterance("Yes.", "DANA  LEE", "voice")  # the joined name, another spelling: the first one's
+    state.add_utterance("Noise.", "Room", "voice")
+    state.add_utterance("Unlabelled.", None, "voice")
+    state.add_utterance("Me too.", "Erik", "voice")
+    assert [u.speaker for u in state.transcript] == ["Dana Lee", "Bob", "Dana Lee", None, None, "Erik"]
+    assert state.joined == ["Dana Lee", "Erik"]
+    assert state.participant_names == ["Alice", "Bob", "Carol", "Dana Lee", "Erik"]
+    assert state.participant("dana lee") == "Dana Lee" and state.participant("carol") == "Carol"
+    assert state.participant("Frank") is None and state.participant(None) is None
+    assert state.people()[1] == {"name": "Bob", "role": "Customer communications"}
+    assert state.people()[3:] == [{"name": "Dana Lee", "role": JOINED_ROLE}, {"name": "Erik", "role": JOINED_ROLE}]
+    assert state.to_json()["joined"] == ["Dana Lee", "Erik"]
+    assert state.to_json()["participants"] == [{"name": p.name, "role": p.role} for p in state.package.participants]
+    decision = state.add_decision("Dana sends it", "dana lee", "Send it", [])
+    assert decision.owner == "Dana Lee" and state.action_items[-1].owner == "Dana Lee"
+    state.reset()
+    assert state.joined == [] and state.participant_names == ["Alice", "Bob", "Carol"]
+
+
+def test_a_live_speaker_name_is_bounded_and_never_a_reserved_label():
+    assert live_speaker_name("  Dana \t Lee\n") == "Dana Lee"
+    assert live_speaker_name("Ken\x00 Jiang") == "Ken Jiang"
+    assert live_speaker_name("x" * 60) == "x" * 60 and live_speaker_name("x" * 61) is None
+    assert live_speaker_name("Room") is None and live_speaker_name("facilitator") is None
+    assert live_speaker_name("123") is None and live_speaker_name("") is None and live_speaker_name(None) is None
+    assert live_speaker_name("李雷") == "李雷"
 
 
 def test_issue_records_and_superseding_decisions(state):
