@@ -11,9 +11,9 @@
 # am saying now is live"; the lookups, the alignment check, the decisions and the notes are live either way.
 # Keep the facts in step with sources/*.md (the evidence the facilitator cites) and with doc/gotchas.md (the
 # 2026-10-24 live runs): one Realtime session, talking points from notes (DES-1); cut, trim, lookup, answer with the
-# source, resume (DES-3, DES-4); listen, compare, speak only before a confirmation, save the decision (DES-5..7);
+# source, resume (DES-3, DES-4); listen, compare, speak only before a confirmation, save the decision (DES-5..10);
 # the measured numbers (RES-1..3; the 8/8 checks and the 1,600 tests of RES-4 stay on the slide, see `live-numbers`);
-# English only, documents only, per-meeting patterns (LIM-1, LIM-5, LIM-6); online meetings, a shared microphone
+# English only, documents only, a model's judgement that is verified but not guaranteed (LIM-1, LIM-5, LIM-6, LIM-8); online meetings, a shared microphone
 # needs echo cancellation before hands-free in-person use (LIM-2, LIM-3; one stream per participant and no speaker
 # identification, LIM-4, stay on the slide). The talking points never answer Alice's question in advance beyond what
 # `limits-room` says later: the answer must come from lookup_evidence, live, during `interrupt-answer`.
@@ -82,10 +82,10 @@ slides:
 
   - id: limits
     speaker: relay
-    plain: "Like a product label that lists what is not in the box: one language, the documents you gave it, the kind of mistake it was prepared for, and a call where each voice arrives on its own line."
+    plain: "Like a product label that lists what is not in the box: one language, the documents you gave it, a judgement that is checked but not guaranteed, and a call where each voice arrives on its own line."
     chunks:
       - id: limits-scope
-        say: "The limits: English only, answers only from the documents, and per-meeting patterns that catch only the prepared kind of contradiction."
+        say: "The limits: English only, answers only from the documents, and the alignment check is a model's reading of the discussion: it cites verified evidence, but it can still miss a conflict or ask one question too many."
         fragment: 1
       # After this point drains: the hand-over (one live sentence), then the discussion phase (the facilitator
       # listens to the participant clips; demo.yaml `bob-claim` follows 1.5 s later). LIM-2/LIM-3, never as a

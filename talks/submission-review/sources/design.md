@@ -15,10 +15,13 @@ doc/gotchas.md 2026-10-23 evening). One statement per line; the facilitator cite
 
 ## The discussion
 
-- [DES-5] In the discussion every utterance is transcribed. Claims are extracted with patterns written for the meeting and compared with the source statements and with the clarifications recorded earlier in the meeting.
-- [DES-6] Intervention policy: silent by default. The facilitator speaks only when a conflicting claim comes with an action and a confirmation follows within a few utterances; weaker mismatches are shown on screen only. It is asked for one neutral question, thirty words at most, never saying anyone is wrong.
-- [DES-7] A confirmed correction is saved as a decision with its owner, follow-up and source ids. The model's save_decision call is validated against the transcript; an invalid or missing call saves the check's own draft, tagged auto.
+- [DES-5] In the discussion every utterance is transcribed. Claude, a language model, reads the discussion against the source statements, the clarifications recorded in the meeting and the confirmed decisions, and reports evidence conflicts, hidden disagreements and unresolved details.
+- [DES-6] The application verifies every id and quote the analysis cites against its own records before anything is shown or said. A citation that does not check out is dropped, never spoken.
+- [DES-7] Intervention policy: silent by default. The facilitator speaks only when the group is confirming a decision that conflicts with the evidence, hides a disagreement or leaves a material detail open; weaker or earlier signals are shown on screen only.
+- [DES-8] An intervention is one neutral question, thirty words at most, never saying anyone is wrong.
+- [DES-9] A confirmed correction is saved as a decision with its owner, follow-up, source ids and the utterances that agreed. Decisions the group confirms without any conflict are saved the same way.
+- [DES-10] The facilitator's save_decision call is validated against the transcript; an invalid or missing call saves the analysis's own validated proposal instead, tagged analysis.
 
 ## Backup
 
-- [DES-8] Every talking point is also rendered ahead of time with Higgs text to speech 3 from the same notes. When Realtime is unavailable the backup narration plays; no live answers are possible then.
+- [DES-11] Every talking point is also rendered ahead of time with Higgs text to speech 3 from the same notes. When Realtime is unavailable the backup narration plays; no live answers are possible then.

@@ -106,6 +106,33 @@ For the judges and Boson:
 > robust echo handling and possibly single-microphone speaker diarization, which we consider future work and useful
 > integration questions for Boson.
 
+### The alignment check (Claude)
+
+During the discussion the facilitator stays silent unless the group is about to confirm something that doesn't hold
+together. What counts is decided by a model, not by patterns: **Claude** reads the meeting's documents, the
+discussion so far, the earlier clarifications and the decisions, and reports three kinds of issue — an **evidence
+conflict** (a proposal contradicts a document, a clarification or a decision), a **hidden disagreement** (people
+agree in the same words while meaning incompatible things), an **unresolved detail** (the group commits while an
+owner, a date or a contingency is still open). The application checks every citation against its own records,
+decides whether to stay silent, show a silent suggestion or let the facilitator ask one neutral question (only when
+the group is confirming, with verified evidence), and records only the decisions the participants actually confirm.
+Higgs Realtime still does all the listening and talking; Claude only interprets.
+
+```bash
+# .env: ANTHROPIC_API_KEY=...        # Anthropic billing, separate from Boson; real keys only in .env
+uv run python -m relay serve talks/rollout-review                 # alignment: claude (the default)
+uv run python -m relay serve talks/rollout-review --alignment off # transcripts and notes, nobody checks
+uv run python scripts/alignment_eval.py                           # opt-in live evaluation on labelled scenarios
+```
+
+Settings: `RELAY_ALIGNMENT` (`claude` | `legacy` | `off`), `RELAY_ALIGNMENT_MODEL` (default `claude-opus-5-5`; the
+measured latency/quality tradeoff against `claude-sonnet-5-5` and `claude-haiku-5-5` is in `doc/gotchas.md`),
+`RELAY_ALIGNMENT_EFFORT`, `RELAY_ALIGNMENT_TIMEOUT_S`, `RELAY_ALIGNMENT_MAX_TOKENS`. Without the key the page says
+*Alignment unavailable* and the meeting goes on without the check — there is no fallback to rules. `--alignment
+legacy` is the old regex engine over a `checks.yaml`, kept for older fixtures and labelled as such. Documents can be
+plain fact sheets: a `sources/*.md` file without `- [ID]` lines gets stable ids (`FACTS-1 …`) on load. Design:
+[`doc/design.md`](doc/design.md) §12; the guide this follows: [`doc/alignment_replacement_prompt.md`](doc/alignment_replacement_prompt.md).
+
 ### Presenter keys
 
 | Key | Action |
@@ -147,8 +174,10 @@ uv run python -m relay.verify voices|tags|latency|tools|session|idle   # brief A
 uv run python scripts/live_check.py                       # whole live loop, no browser (synthesized speech as mic)
 ```
 
-`BOSON_REALTIME_MODEL` selects the Realtime model (default `higgs-realtime`; `higgs-realtime-1.5-preview` once your
-key has access).
+`BOSON_REALTIME_MODEL` selects the Realtime model (default `higgs-realtime-1.5-preview`, the newest; `higgs-realtime`
+to go back). `scripts/alignment_eval.py` evaluates the Claude alignment analysis live on the labelled scenarios in
+`scripts/alignment_scenarios/` (per issue kind: missed and unnecessary interventions, attribution, evidence, decisions,
+open questions, latency, usage); it spends Anthropic credits, so it is never part of `pytest`.
 
 ## How we used Higgs (for the submission)
 
@@ -165,3 +194,8 @@ The meeting demo is an online meeting, simulated: the participants are prerecord
 labels, and the script is fixed. In-person or hybrid meetings, where one room microphone also hears the facilitator's
 speakers, would need echo handling and possibly single-microphone diarization: future work, and an integration
 question for Boson rather than a known Higgs limitation.
+
+The alignment check is a model's judgement, validated but not calibrated: it can miss a conflict or raise one that a
+participant would have corrected a sentence later (the controller waits for an analysis in flight before speaking,
+but not forever), and each check is a model round trip, so a question comes a few seconds after the confirming line
+rather than instantly. It needs an Anthropic key and the network; without them the meeting runs without the check.

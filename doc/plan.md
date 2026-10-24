@@ -4,6 +4,13 @@ Spec: `doc/brief.md`. Build contract (interfaces, protocol, state machine): `doc
 
 ## Status
 
+2026-10-24 (Sat) — **Model-based alignment in progress** (D76–D82, branch `claude/semantic-alignment`, worktree
+`.scratch/worktrees/alignment-worker`): `relay/semantic.py` (snapshot, typed result, reconcile, policy, Claude
+adapter, fake, runner) and the meeting-state additions are built and tested; the controller integration, the issue
+cards and the second corpus + live evaluation are being built from `.scratch/semantic-alignment/contract.md`. Live
+verification (`scripts/alignment_eval.py`, `scripts/live_check.py` with the Claude analyzer) still to run once
+`ANTHROPIC_API_KEY` is in the worktree's `.env`.
+
 2026-10-24 (Sat) ~00:45 — **The online-meeting demo passes its definition of done live** (patch §8, all 8 checks of
 `scripts/live_check.py --talk talks/rollout-review`, twice in a row): voice barge-in by Alice's clip, a lookup-grounded
 answer, resume at the interrupted talking point, silence on Bob's line, a short neutral intervention citing CL-1,
@@ -116,6 +123,13 @@ start of its sentence for the resume. Details: `doc/design.md`.
 | D73 | `lookup_evidence` for a question fuses the model's query with a search on the asker's own words (summed normalised BM25) | live: the model's "Release 4.3 rollout dates" missed REQ-2 and the answer said the documents didn't say |
 | D75 | **`higgs-realtime-1.5-preview` is the default Realtime model**, and the newest Higgs model always is (Ken, 2026-10-24: "this is permanent, we should always use the latest API"); `BOSON_REALTIME_MODEL=higgs-realtime` goes back | the key gained access on 2026-10-24 (F6 session check PASS on 1.5: same resolved defaults); Use of Higgs Audio is 30% of the judging |
 | D74 | **The demo presentation introduces On the Same Page itself** (Ken, 2026-10-24, branch `claude/self-intro-meeting`): a new package `talks/submission-review` — background, the pipeline (Alice's interruption lands here), live results, limitations; the team then discusses which limitations go in the write-up (Bob: "it works in person too" vs LIM-2 online only) — with **no pipeline change**; `talks/rollout-review` stays as the fictional-meeting example. A human-in-the-loop version is the next step after Ken's review | "an introduction of what the current thing is" beats "a created meeting which is hard to understand"; the interruption and the intervention then demonstrate the very features being described |
+| D76 | **Alignment is model-based** (Ken's guide `doc/alignment_replacement_prompt.md`, 2026-10-24, branch `claude/semantic-alignment`): the **Claude API** (Anthropic SDK, `ANTHROPIC_API_KEY`, separate billing) reads every source passage, the discussion, the clarifications and the decisions and returns a typed result (`relay/semantic.py`: claims, assumptions, issues of three kinds — evidence conflict, hidden disagreement, ambiguous decision — updates, decision proposals); Higgs Realtime keeps transcription and speech. The regex engine (`relay/alignment.py`, `checks.yaml`) survives only as the explicit `--alignment legacy` mode | the facilitator was "not clever in responding and deciding when and what to interrupt": the patterns caught only the prepared contradiction; the guide authorizes Claude for the analysis |
+| D77 | The analysis runs **outside the controller lock** (`AnalysisRunner`: one request in flight, a newer snapshot replaces the waiting one, results applied under the lock and discarded when the meeting generation changed) | a network call must never hold the lock that handles audio and interruptions; coalescing keeps every intervening utterance (the newest snapshot has them all) |
+| D78 | **Deterministic gate** over the model's recommendation (`decide_policy`): a spoken clarification needs `clarify` with at least medium confidence, commitment `confirming`/`committed`, evidence the snapshot vouches for (a passage/clarification/decision for an evidence conflict; two participants' own words for a hidden disagreement; a named missing detail for an ambiguous decision) and a question; otherwise a silent suggestion; nothing without verified evidence. Every cited id and quote is checked against the snapshot (`reconcile`); owners must be participants | the guide: the model interprets, the application decides and writes; a confident accusation without support is worse than silence |
+| D79 | Default analysis model `claude-opus-5-5` at effort `low` (`RELAY_ALIGNMENT_MODEL`, `RELAY_ALIGNMENT_EFFORT`); the documents block is cached across the meeting's requests; latency and quality measured against `claude-sonnet-5-5` / `claude-haiku-5-5` by `scripts/alignment_eval.py` and recorded in `doc/gotchas.md` | the current Opus is the default for the analysis; the eval decides whether a faster model keeps the quality |
+| D80 | **No fallback**: `claude` mode without a key, or with the API down, shows `unavailable` and keeps transcribing and recording; it never runs the legacy patterns on its own | the guide: never present rules as a semantic success; a meeting without the check is still a meeting |
+| D81 | Sources may be a plain fact sheet: a `sources/*.md` file without `- [ID]` lines gets stable auto ids (`FACTS-1 …`, file order, located by line); `checks.yaml` is optional and only for the legacy mode | users supply documents, not extraction rules |
+| D82 | A validated decision proposal (confirmed, with an agreement utterance, owner a participant or unknown) is saved `by="analysis"`: spoken when it answers an intervention, silently into the notes otherwise; the facilitator's own `save_decision` is accepted only when it matches that proposal, never on transcript word overlap | the guide: capture agreed decisions without a conflict, but never an unconfirmed guess; content-word overlap is not proof |
 
 ## Decided earlier (Ken): the Relay voice was chloe (superseded by D54: `default`)
 
@@ -171,11 +185,26 @@ Live (needs the key, Chrome or the room)
       cut-in and Q&A all go through (model or watchdog); led to D47
 - [ ] The same in Chrome with the real mic (milestone 2), plus one Space "send now" → exactly one reply (event log:
       `vad_after_send`, `response_displaced`)
-- [ ] `higgs-realtime-1.5-preview`: ask Boson at the venue for access; then `BOSON_REALTIME_MODEL=…`, rerun
-      `relay.verify tools` and `scripts/live_check.py` (D50)
+- [x] `higgs-realtime-1.5-preview`: accessible since 2026-10-24 ~01:50, the default (D75); `relay.verify session`
+      and both demos' `scripts/live_check.py` passed on it
 - [ ] Rehearsal with the real mic in the room (F4: semantic VAD with crowd noise; compare the log's `speech_end`
       lines (`tail_ms`) and `reply_latency_ms` with the recording)
 - [ ] Chrome layout check: `tests/web/mock/strip.html` says PASS at 1280×720 and 1920×1080 (outside the sandbox)
+
+Model-based alignment (D76–D82, 2026-10-24, branch `claude/semantic-alignment`)
+- [x] Contract (`.scratch/semantic-alignment/contract.md`); `relay/semantic.py` (snapshot, schema, Claude adapter,
+      fake, reconcile, policy, runner) with `tests/test_semantic.py`; meeting state (issues, fact sheets, auto ids,
+      `checks.yaml` optional); settings + `.env.example`; plan/design/README/discrepancies/run-of-show text
+- [ ] Controller integration (`Controller.on_analysis`, events, hold before speaking, wrap-up), `--alignment` flag,
+      `tests/test_semantic_flow.py`; web: issue-kind cards, alignment status, web tests; `talks/budget-review`,
+      `scripts/alignment_eval.py` + `scripts/alignment_scenarios/` — in progress (three builders); then the full
+      suite and a review pass
+- [ ] **Live** (needs `ANTHROPIC_API_KEY` in the worktree's `.env`): `.scratch/semantic-alignment/probe_claude.py`
+      per model; `scripts/alignment_eval.py` across opus/sonnet/haiku; `scripts/live_check.py` with the Claude
+      analyzer on both demos; record latency, usage, misses and false alarms in `doc/gotchas.md`; confirm or change
+      the default model (D79)
+- [ ] Commit on `claude/semantic-alignment`; Ken pushes and opens the PR; completion report (provider/model/billing,
+      live vs fake, what fails, how to reproduce)
 
 ## Risks and fallbacks
 
