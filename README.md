@@ -61,7 +61,6 @@ confirmed. The format: [`doc/design.md`](doc/design.md) §2; who says what with 
 [`talks/project-overview/run_of_show_people.md`](talks/project-overview/run_of_show_people.md).
 
 ```bash
-uv run python -m relay.render talks/project-overview    # backup narration (TTS 3)
 uv run python scripts/probe_guided.py --runs 3          # live: are the guided lines performed word for word?
 uv run --with playwright python scripts/zoom_bot.py --url "<Zoom join link>" --talk talks/project-overview   # Alice joins your call
 ```

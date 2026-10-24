@@ -156,6 +156,7 @@ BANNER_QA = "Waiting for a question — tap Space"
 BANNER_RESUMING = "Resuming…"
 BANNER_STARTING = "Starting…"
 BANNER_PAUSED = "Paused — P to resume"
+BANNER_NO_BACKUP = "Higgs Realtime didn't answer — P to try again"
 BANNER_PAUSED_R = "Paused — R to resume"
 BANNER_OFFLINE = "Realtime offline — {presenter} has the floor (R resumes)"
 BANNER_OFFLINE_BACK = "Realtime is back — {presenter} has the floor (R resumes)"
@@ -1900,6 +1901,18 @@ class Controller:
         """Play the rendered chunk at `cursor` (the narration of rendered mode; the backup in live mode)."""
         slide = self.talk.slide(cursor.slide)
         fragment = self._fragments(slide, cursor.chunk)
+        if self._live_mode and (slide.id, cursor.chunk) not in self.chunks:
+            # No backup audio (Ken 2026-10-24: everything is live): show the point and pause; P retries it live.
+            if show_slide or slide.index != self.slide_index or self.fragment != fragment:
+                self.slide_index = slide.index
+                await self._send({"type": "slide", "slide": slide.id, "fragment": fragment})
+            self.fragment = fragment
+            self.cursor = Cursor(slide.id, cursor.chunk)
+            self._last_point = (slide.id, cursor.chunk)
+            self.started = True
+            self._note("no_backup", {"slide": slide.id, "chunk": cursor.chunk})
+            self._set_state(PAUSED, BANNER_NO_BACKUP)
+            return
         if show_slide or slide.index != self.slide_index:
             self.slide_index = slide.index
             await self._send({"type": "slide", "slide": slide.id, "fragment": fragment})

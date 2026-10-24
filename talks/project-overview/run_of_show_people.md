@@ -26,7 +26,7 @@ the Partner).
 2. Display names: the bot labels each line with the name Zoom shows; no renaming to Alice, Bob or Carol is needed
    (D89). The owner line below says "Ken": if Zoom shows Ken as "Ken Jiang", either set the display name to "Ken"
    before joining or say "Ken Jiang" in that line.
-3. Start the bot (`BOSON_API_KEY` and `ANTHROPIC_API_KEY` in `.env`; the backup narration rendered):
+3. Start the bot (`BOSON_API_KEY` and `ANTHROPIC_API_KEY` in `.env`; nothing to render: everything is live):
    `! uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --passcode <passcode> --talk talks/project-overview`
    Admit "Alice (AI co-host)" from the waiting room if Zoom asks. Wait until its screen share shows "Imagine…".
    What to do when it can't join or share: `talks/submission-review/run_of_show_zoom.md` ("Starting the bot",
@@ -99,7 +99,7 @@ Why these lines work:
 - **It doesn't go back to the slide** after its answer: **R** in the bot terminal; **→** moves on a point.
 - **An optional second interruption**, only if the first went well and you have time (~15 s): during "Achievements
   and limits", right after "Here's what works so far.", Partner says: "Wait, what happens if your connection drops?"
-  It answers from HOW-3: the Higgs TTS 3 recording of the same script presents instead.
+  It answers from HOW-3: everything is live, so the presentation pauses at that point until the host tries again.
 
 ## If the facilitator misses its moment
 
@@ -112,8 +112,8 @@ Why these lines work:
   best effort, ZOOM-4). Ken says once: "I'll brief the judges." That helps only if this line does carry his name;
   otherwise the decision stays without an owner: note it. After the run, `out/zoom_bot/summary.json` shows how
   speakers were read (`speaker_strategy`, `speakers_seen`).
-- **A dropped connection** to Higgs: the Higgs TTS 3 backup presents the same points; carry on (no live answers until
-  the link is back).
+- **A dropped connection** to Higgs: the presentation pauses at that point (banner "P to try again"); press P in the bot's terminal
+  once the link is back. There is no recorded backup.
 - **It talks in the discussion before anyone confirms anything:** a miss to note; carry on with the next line.
 
 ## How long each part takes

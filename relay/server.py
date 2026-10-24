@@ -624,7 +624,9 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
 
     settings = settings if settings is not None else load_settings()
     talk = load_talk(talk_dir)
-    chunks = dict(chunks) if chunks is not None else load_rendered(talk, out_root)
+    # live narration needs no backup audio (Ken 2026-10-24: everything is online); rendered mode still does
+    chunks = (dict(chunks) if chunks is not None
+              else load_rendered(talk, out_root, required=settings.narration != "live"))
     narration = load_narration(talk, chunks)  # what /media serves until the next start, whatever renders meanwhile
     version = render_version(talk, chunks)
     # the online meeting's prerecorded participants (contract v3.1): the script, and the clips /clips serves until the

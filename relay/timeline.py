@@ -84,8 +84,10 @@ class RenderMissing(Exception):
                          "\n" + "\n".join(f"  {problem}" for problem in problems))
 
 
-def load_rendered(talk: Talk, out_root: Path = OUT, *, allow_stale: bool = False) -> dict[tuple[str, int], RenderedChunk]:
-    """Every relay chunk of `talk`, keyed by (slide id, chunk index). Raises RenderMissing if any is missing/stale."""
+def load_rendered(talk: Talk, out_root: Path = OUT, *, allow_stale: bool = False,
+                  required: bool = True) -> dict[tuple[str, int], RenderedChunk]:
+    """Every relay chunk of `talk`, keyed by (slide id, chunk index). Raises RenderMissing if any is missing/stale,
+    unless not `required` (live narration: the backup is optional, Ken 2026-10-24): then only the usable ones."""
     chunks: dict[tuple[str, int], RenderedChunk] = {}
     problems: list[str] = []
     for slide in talk.relay_slides:
@@ -104,7 +106,7 @@ def load_rendered(talk: Talk, out_root: Path = OUT, *, allow_stale: bool = False
                 problems.append(f"{label}: stale (script text or voice changed since it was rendered)")
                 continue
             chunks[(slide.id, chunk.index)] = rendered
-    if problems:
+    if problems and required:
         raise RenderMissing(talk.id, problems)
     return chunks
 
