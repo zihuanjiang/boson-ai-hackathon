@@ -1,8 +1,8 @@
-# On the Same Page presents itself to the hackathon room (D88). Claude wrote this script before the meeting; Higgs
-# Realtime performs it live, one talking point per response. Every talking point has a `guide`: its job for the
-# listener (intent), its beats (verbatim lines that must land exactly, or a gist with key phrases), delivery, length,
-# what to avoid, and, where a cut is staged, the prepared `resume` line that picks it up. A `bridge` is the performer's
-# own words, so it goes only before a gist: a point that opens word for word has its bridge written into its line.
+# On the Same Page presents itself in a Zoom call (D88). Claude wrote this script before the meeting; Higgs Realtime
+# performs it live, one talking point per response. Every talking point has a `guide`: its job for the listener
+# (intent), its beats (verbatim lines that must land exactly, or a gist with key phrases), delivery, length, what to
+# avoid, and, where a cut is staged, the prepared `resume` line that picks it up. A `bridge` is the performer's own
+# words, so it goes only before a gist: a point that opens word for word has its bridge written into its line.
 # `say` is the Higgs TTS 3 backup line (what plays when the link is down); it is left out where every beat is
 # verbatim, and the beats joined are then the backup.
 #
@@ -10,8 +10,9 @@
 # speech", never TTS; "Boson AI" is the one exception, a name); every line stays true while the backup plays it (the
 # answers, lookups, checks and notes are live either way; never "what you hear is live"). Pause and pace come from
 # punctuation and the delivery notes: there is no SSML. Facts: talks/project-overview/sources/ and doc/gotchas.md.
-# Length: ~280 words presented at ~2.6 words a second (the guides' seconds add up to ~2 minutes); if the first live
-# run is long, run_of_show.md lists what to cut first.
+# Length: ~245 words presented at ~2.6 words a second (the guides' seconds add up to ~1:45, RELAY_PACE shortens each
+# live point further); if a live run is long, run_of_show.md lists what to cut first. The real-people Zoom run:
+# run_of_show_people.md.
 talk: project-overview
 voice: default
 presenter: Alice
@@ -45,38 +46,15 @@ slides:
     chunks:
       - id: name
         guide:
-          intent: name the product as the answer to the hook, and promise what it does
-          seconds: 9
+          intent: name the product as the answer to the hook, say what it does in a Zoom call, and the problem it is for
+          seconds: 14
           beats:
             - verbatim: "I'm On the Same Page, a meeting facilitator built on Higgs Audio."
               delivery: bright, a small lift on the name
-            - verbatim: "I join your Zoom calls, I present, I answer, and then I listen."
+            - verbatim: "I join your Zoom call, I present, I answer, and then I listen."
               delivery: four quick steps, a light stress on the last one
-
-  - id: problem
-    speaker: relay
-    plain: "Like a group dinner where everyone agrees on the restaurant, and nobody checks it is closed on Mondays."
-    chunks:
-      - id: nods
-        fragment: 1
-        guide:
-          intent: turn from presenting to the harder half, the discussion, where tired agreement comes cheap
-          seconds: 6
-          beats:
-            - verbatim: "Because the hard part comes after the slides."
-              delivery: lower, with weight
-            - verbatim: "A tired room nods along. Everyone agrees."
-              delivery: two short sentences, a little dry
-      - id: apparent
-        fragment: 2
-        guide:
-          intent: land the problem in one line the room will remember, a callback to the product's name
-          seconds: 9
-          beats:
-            - verbatim: "And the plan they agree on contradicts the documents nobody opened."
-              delivery: steady, weight on contradicts
-            - verbatim: "So the meeting ends in agreement, and nobody is on the same page."
-              delivery: quiet, like a punchline
+            - verbatim: "Because too many meetings end in an agreement nobody checked against the documents."
+              delivery: steady, a little dry, weight on nobody checked
           avoid: naming any real team or meeting
 
   - id: present
@@ -103,8 +81,8 @@ slides:
               delivery: crisp, a tiny pause after it
             - verbatim: "I look the answer up, show you the source, and pick up where I was cut."
               delivery: brisk, one breath
-          # the demo's interruption lands about a second and a half into this point (Alice, run_of_show.md): the
-          # prepared line finishes the promise, now kept
+          # the demo's interruption lands about a second and a half into this point (Alice in demo.yaml; Ken in
+          # run_of_show_people.md): the prepared line finishes the promise, now kept
           resume:
             verbatim: "As I was saying, I stop, look it up, show you the source, and pick up right where I left off. Just like that."
             delivery: brisk, a small smile on the last three words
@@ -125,53 +103,45 @@ slides:
             - verbatim: "Before you confirm a plan like that, I ask one neutral question."
               delivery: calm, weight on before you confirm
 
-  - id: results
+  - id: achieved
     speaker: relay
-    plain: "Like a lab notebook: what ran for real, and what the stopwatch said."
+    plain: "Like a project's status report: what works, how far it was tested, and what it can't do yet, on one page."
     chunks:
-      - id: measured
-        guide:
-          intent: prove it is real, with two measured facts the room can hold on to
-          seconds: 14
-          delivery: confident and brisk; clear on the numbers
-          beats:
-            - verbatim: "Every answer, lookup, check and note is live."
-              delivery: a light stress on each item
-            - verbatim: "With recorded participants, I start answering about seven tenths of a second after they stop."
-            - verbatim: "And two earlier test meetings passed all eight of our checks."
-
-  - id: limits
-    speaker: relay
-    plain: "Like the small print, read out loud for once."
-    chunks:
-      - id: limits-scope
+      - id: achieved
         fragment: 1
         guide:
-          intent: say plainly where it does not work yet, without apology
-          seconds: 6
+          intent: say what works today, and how it was tested, without overclaiming real people
+          seconds: 14
+          delivery: confident and brisk
+          beats:
+            - verbatim: "Here's what works so far."
+              delivery: plain, a short pause after it
+            - verbatim: "I join real Zoom calls as my own participant, and present Claude's script word for word."
+            - verbatim: "And with recorded participants, I've taken interruptions, answered from the documents, and flagged a plan that contradicted them."
+              delivery: a light stress on recorded participants, then each item
+      - id: limits
+        fragment: 2
+        guide:
+          intent: say plainly where it does not work yet, without apology, and warn the room about the pause before it asks
+          seconds: 14
+          delivery: plain, no apology
           beats:
             - verbatim: "Now, my limits."
               delivery: plain, a brief pause after it
-            - verbatim: "I'm built for online meetings, and for now I speak English only."
-      - id: limits-check
-        fragment: 2
-        guide:
-          intent: be honest about the check, with its measured score, and warn the room about the pause before it asks
-          seconds: 9
-          delivery: plain, no apology
-          beats:
-            - verbatim: "Claude's check got forty-seven of fifty-three test lines right, so it can miss one."
-            - verbatim: "And it takes a few seconds before I ask."
+            - verbatim: "In one room, a shared microphone needs echo cancellation."
+            - verbatim: "I read speaker names off Zoom's web page, so one can be wrong."
+            - verbatim: "And Claude's check takes a few seconds, and it can miss one."
+              delivery: lighter, an open ending
 
   - id: discussion
     speaker: human
 
 # The hand-over to the discussion (its own response after the last talking point).
 handover:
-  intent: give the floor to the room with the question on the screen
+  intent: give the floor to the call with the question on the screen
   seconds: 8
   beats:
     - verbatim: "That's the project. Now it's your turn."
       delivery: warm, a brief pause after it
-    - verbatim: "How do we run the demo with real people, and who sets it up?"
+    - verbatim: "How do the judges ask their questions in Zoom, and who briefs them?"
       delivery: an open, inviting question

@@ -954,12 +954,13 @@ DRY_RUN_ANALYSIS: dict[str, dict[str, Any]] = {
         "claim": "bob-plan", "confirm": "carol-confirm", "fix": "carol-correct",
         "evidence": [("ZOOM-3", "it never sees raised hands or the chat"),
                      ("ZOOM-2", "people just speak up")],
-        "topic": "How people interrupt the facilitator in Zoom",
-        "said": "Everyone raises a hand in Zoom to interrupt the facilitator",
-        "question": "Before we confirm: didn't we establish that in Zoom I hear voices, not raised hands? Should "
-                    "people just speak up instead?",
-        "decision": "In the demo with real people, everyone interrupts by speaking up; no raised hands",
-        "owner": "Bob", "follow_up": "Bob briefs the participants",
+        "topic": "How the judges put their questions to the facilitator in Zoom",
+        "said": "The judges type their questions in the Zoom chat and the facilitator answers them",
+        "question": "Before we confirm: didn't we establish that in Zoom I hear voices only, not the chat? Should "
+                    "the judges just speak up instead?",
+        "decision": "In the judges' demo, the judges ask their questions by speaking up; nothing goes through the "
+                    "Zoom chat",
+        "owner": "Bob", "follow_up": "Bob briefs the judges",
     },
 }
 

@@ -10,3 +10,4 @@ Live measurements, dated (doc/gotchas.md "Measured", doc/plan.md Status).
 - [MEAS-6] One Claude Opus 5.5 analysis took 3.7 s at the median and 5.9 s at the 95th percentile.
 - [MEAS-7] End to end with Claude Opus 5.5, the facilitator's question came 7.6 s after the confirming line, and the decision with its owner landed in the notes.
 - [MEAS-8] About 1,900 offline tests run without the network, with stand-ins for Higgs and Claude.
+- [MEAS-9] In a live run of this presentation with recorded participants on 24 October 2026, every talking point was said word for word; a participant's question cut it 1.7 s into a point, the answer came from the documents, and the question came 9.9 s after the confirming line.

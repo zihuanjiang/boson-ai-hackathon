@@ -4,6 +4,18 @@ Spec: `doc/brief.md`. Build contract (interfaces, protocol, state machine): `doc
 
 ## Status
 
+2026-10-24 (Sat) — **Deck v2: the demo is real Zoom with real people** (D90, branch `claude/deck-v2`, offline only).
+`talks/project-overview` now has six slides, all in one dark visual language: the `problem` slide is dropped (its one
+idea, "meetings end in an agreement nobody checked against the documents", is the name slide's last line), and
+"What we measured" + "What it can't do yet" became one **Achievements and limits** table (what ran live in Zoom; the
+interruption and the check with recorded participants only; echo, the check's seconds and misses, speaker names off
+Zoom's page; no language limit: Ken, the pipeline is language-agnostic). Seven guided points, ~1:40 live. The discussion: "How do the judges ask their
+questions in Zoom, and who briefs them?"; the planned conflict is a chat plan (ZOOM-3: it never sees the chat).
+`run_of_show_people.md` is the script for Ken and a co-worker; the clips (`demo.yaml`) are the fallback. Offline:
+the package tests, the designed-deck test and the Zoom bot dry run (claude and legacy) pass. **To do: re-render the
+backup narration and the clips** (`relay.render`, `relay.clips`: every changed point and the three new discussion
+lines), then Ken's real-people rehearsal.
+
 2026-10-24 (Sat) — **Zoom: real speakers, not "Room"** (D89, branch `claude/zoom-speakers`, offline only, waits for a
 live run). The bot reads Zoom's active speaker with five strategies (inject.js) and saves DOM probes when it hears
 speech but finds no name; lines are labelled with real Zoom names, which join the meeting's roster and can own decisions.
@@ -159,6 +171,7 @@ start of its sentence for the resume. Details: `doc/design.md`.
 | D87 | **Zoom (`--input voice`) runs the model-based check**: `zoom_bot.py --alignment` defaults to `claude` (passes `ANTHROPIC_API_KEY` from `.env`, warns without it); its offline dry run proves the path with a scripted stand-in (`DRY_RUN_ANALYSIS`, quotes verified against the talk); an unlabelled line keeps an unknown speaker, and one labelled plus one unlabelled line may be a hidden disagreement | the finished Zoom path wins conflicts (Ken via the main session); Zoom labels speakers best effort, so the check must never invent who said what |
 | D88 | **Script guidance: Claude writes the script, Higgs Realtime performs it** (Ken, 2026-10-24: "write the script 'guidance' … more granular", the hook at his grain; branch `claude/project-deck`). A talking point may carry a `guide` (intent, bridge, beats — verbatim lines or a gist with key phrases — delivery, seconds, avoid, and an optional prepared `resume` line; a top-level `handover` likewise); the per-response instructions perform it beat by beat; a guided point is asked for its own length (≤ 45 s); after a cut it performs its `resume` line, or else only what is left: the unheard rest of the interrupted verbatim line, then the later beats (asked for their length by the guide); a bridge goes only before a gist (a verbatim opening carries its bridge in its line); a guided first point opens the presentation with no greeting before it. `say` stays the TTS 3 backup (derived from all-verbatim beats). The new demo deck `talks/project-overview` uses it on every point, all word for word | one "say it in your own words, one to three sentences" line per point couldn't land a hook, a punchline or a disclosure; live findings shaped the wording (F1 on `higgs-realtime`: a typed "repeat this line" came back word for word, unverified for guided beats on `higgs-realtime-1.5-preview`, hence `scripts/probe_guided.py`; ~1.4× the notes, emphasis words, source ids read aloud); beats inside one point keep a hook continuous (each point is its own response.create, so there is a first-audio gap between points), and truncate-to-heard still handles a cut; listing a heard line again next to "never repeat what the room heard" invited a restart (review, 2026-10-24) |
 | D89 | **Zoom labels lines with the names people actually use.** The bot reads the active speaker five ways, in order, the last that worked first (inject.js): an active class with a name inside, an aria-label, the **green frame's computed border/outline/box-shadow** on a roster name's tile (survives class renames), Zoom's captions (fresh lines only), the only other person on the roster; cached 300 ms. Speech with no name saves a DOM probe (`out/zoom_bot/speaker-probe/`, 1 per 5 s, 20 per run). In `--input voice` a non-agenda name labels the line and, once that person has spoken, **joins `MeetingState.joined`** (the roster = the agenda + the joined): the analysis's participants, a valid owner (reconcile, `save_decision`, the legacy engine), named in the facilitator's prompts. A line's label is the name most of its frames carried (the indicator lags the onset). Clips, the room mic and the dry run unchanged | Ken, 2026-10-24: "the agent need to know who is speaking … but not 'room' for all"; live the old class guesses found nothing (`speakers_seen: {}`), and asking people to rename to Alice/Bob/Carol doesn't survive a real meeting. A dynamic roster seeded from the agenda is the smallest change that keeps every agenda-based path (clips, dry run, renamed people) as it was; the Zoom Meeting SDK (real active-speaker events) needs Marketplace app credentials |
+| D90 | **Deck v2: real Zoom with real people is the demo** (Ken, 2026-10-24: "we now host on real zoom with real user … 'what we achieved' and 'what are the limitation' probably in one slide with a table … slide 3 is quite not-consistent"). `talks/project-overview`: six slides in one dark visual language (one heading style at the top margin, one type scale, one palette); the `problem` slide dropped (its idea is the name slide's last line); one **Achievements and limits** table (builds = the two talking points) instead of the measured numbers and the limits; no language limit at all (Ken: the pipeline is language-agnostic; "English only" is gone); the discussion is how the judges put their questions in Zoom, with a chat plan as the conflict (ZOOM-3); `run_of_show_people.md` for Ken and a co-worker (Ken owns the decision: he has spoken, so his Zoom name is on the roster, D89); the clips stay as the unattended fallback | the deck still told the prerecorded-clips story after the facilitator had run in a real Zoom call; numbers measured with recorded participants matter less than what works and what doesn't; a contradiction about the chat is one real people make naturally in Zoom, and it contradicts both a source and the answer to the interruption |
 
 ## Decided earlier (Ken): the Relay voice was chloe (superseded by D54: `default`)
 
@@ -256,6 +269,14 @@ Script guidance and the new deck (D88, 2026-10-24, branch `claude/project-deck`)
 - [ ] The live page shows `slides.md` in reveal's black theme; the designed Slides deck is for a human presenter, the
       video's intro and the write-up. Optional: a per-talk `theme.css` to carry its palette into the live page
 - [ ] Ken: the human-involved run (`talks/project-overview/run_of_show.md`), listen to the hook
+
+Deck v2 (D90, 2026-10-24, branch `claude/deck-v2`)
+- [x] Six slides in one visual language (problem dropped, one achievements-and-limits table), the script for them,
+      the judges'-questions discussion with the chat conflict (`checks.yaml` slot `zoom_questions`, `demo.yaml`, the
+      dry run's scripted analysis), `run_of_show_people.md` for Ken and a co-worker, tests
+- [ ] Re-render the backup narration and the clips; listen to the new name, achieved and limits points
+- [ ] Ken's real-people rehearsal in Zoom (`talks/project-overview/run_of_show_people.md`); then drop "with recorded
+      participants" from the table and LIM-8 if the interruption and the question work with real people
 
 ## Risks and fallbacks
 

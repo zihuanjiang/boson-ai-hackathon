@@ -1,8 +1,8 @@
 <section id="listen" style="background:#0F1217; color:#F0ECE4; font-family:'Space Grotesk', Arial, sans-serif; padding:128px; display:flex; flex-direction:column; justify-content:start; align-items:start; gap:0px">
 <h2 style="font-size:96px; font-weight:700; line-height:1.1; letter-spacing:-2px; color:#F0ECE4">How it listens</h2>
-<!-- nodes (canvas px, left,top,width,height): room 128,376,320,256 · session band 496,376,1296,256 (same box and id as on present) · transcribe 520,456,384,152 · ask 952,456,384,152 · save 1384,456,384,152 · claude 520,704,816,auto · notes 1384,704,384,240 · arrows: room→transcribe y=532 · transcribe↓claude x=712 · claude↑ask x=1144 · ask→save y=532 · save↓notes x=1576 -->
+<!-- nodes (canvas px, left,top,width,height): call 128,376,320,256 · session band 496,376,1296,256 (same box and id as on present) · transcribe 520,456,384,152 · ask 952,456,384,152 · save 1384,456,384,152 · claude 520,704,816,auto · notes 1384,704,384,240 · arrows: room→transcribe y=532 · transcribe↓claude x=712 · claude↑ask x=1144 · ask→save y=532 · save↓notes x=1576 -->
 <div style="position:absolute; left:128px; top:376px; width:320px; height:256px; background:#1A1F28; border:1px solid #333B48; border-radius:20px; padding:32px; display:flex; flex-direction:column; justify-content:center; gap:12px">
-<p style="font-family:'JetBrains Mono', 'Courier New', monospace; font-size:24px; font-weight:600; line-height:1.3; letter-spacing:3px; text-transform:uppercase; color:#A3ABB8">The room</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace; font-size:24px; font-weight:600; line-height:1.3; letter-spacing:3px; text-transform:uppercase; color:#A3ABB8">The call</p>
 <p style="font-size:32px; font-weight:700; line-height:1.25; color:#F0ECE4">talks it through</p>
 </div>
 <div id="session" style="position:absolute; left:496px; top:376px; width:1296px; height:256px; background:#1A1F28; border:3px solid #6CB6FF; border-radius:24px"></div>
@@ -50,7 +50,7 @@
 Higgs transcribes every line, and Claude checks each one for a conflict with the documents, a hidden disagreement, or a detail nobody settled.
 Before you confirm a plan like that, I ask one neutral question.
 
-Delivery: about seventeen seconds, word for word. Slower and calmer than the presenting part; count the three kinds off evenly; weight on “before you confirm”.
+Delivery: about seventeen seconds, word for word. Calm and clear; count the three kinds off evenly; weight on “before you confirm”.
 
 What happens behind it: the application checks every citation and quote Claude reports against its own records, and lets the facilitator ask only when the group is confirming and the evidence holds; otherwise it stays silent or shows a silent suggestion. A decision goes into the notes only once the participants confirm it, and its owner, when one is named, must be one of them.</aside>
 </section>

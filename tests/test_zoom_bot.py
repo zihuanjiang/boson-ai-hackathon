@@ -594,7 +594,12 @@ async def test_the_dry_run_end_to_end_over_the_fake_realtime(tmp_path, talk_id):
     assert set(summary["speakers_seen"]) == {"Alice", "Bob", "Carol"} and summary["frames_sent"] > 300
     assert summary["heard_ms"] >= 30_000
     kinds = [r["kind"] for r in summary["replies"]]
-    assert kinds.count("narration") >= 9 and "intervention" in kinds and "decision" in kinds and kinds[-1] == "summary"
+    # every talking point once, plus the resume of the cut one (the project overview: seven points since deck v2)
+    from relay.talk import load_talk
+
+    narrations = sum(len(slide.chunks) for slide in load_talk(ROOT / "talks" / talk_id).relay_slides) + 1
+    assert kinds.count("narration") >= narrations >= 8
+    assert "intervention" in kinds and "decision" in kinds and kinds[-1] == "summary"
     cut = [r for r in summary["replies"] if r["flushed"]]
     assert len(cut) == 1 and cut[0]["kind"] == "narration"
     assert all(r["drained_ms"] is not None for r in summary["replies"] if not r["flushed"] and r["kind"] != "answer")

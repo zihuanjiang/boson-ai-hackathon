@@ -54,10 +54,12 @@ The facilitator presents On the Same Page to the room in about two minutes, from
 meeting and Higgs Realtime performs live: every talking point carries **guidance** (what it must do for the listener,
 its beats — lines that must land word for word, or a gist with key phrases — delivery, length, what to avoid, and a
 prepared line for picking it up after a cut), starting with a hook ("Imagine you're an engineer, up since yesterday
-morning…"). Alice interrupts the line that promises it can be interrupted; the team then plans its demo with real
-people, and the facilitator asks one question before a plan that contradicts the documents is confirmed. The format:
-[`doc/design.md`](doc/design.md) §2; who says what, with clips or with real people:
-[`talks/project-overview/run_of_show.md`](talks/project-overview/run_of_show.md).
+morning…"). In a real Zoom call it joins as its own participant and shares its slides; someone interrupts the line
+that promises it can be interrupted; the team then plans how the judges put their questions in Zoom, and the
+facilitator asks one question before a plan that contradicts the documents (the Zoom chat, which it never sees) is
+confirmed. The format: [`doc/design.md`](doc/design.md) §2; who says what with two real people in Zoom:
+[`talks/project-overview/run_of_show_people.md`](talks/project-overview/run_of_show_people.md); the unattended run
+with prerecorded clips and the room mode: [`talks/project-overview/run_of_show.md`](talks/project-overview/run_of_show.md).
 
 ```bash
 uv run python -m relay.render talks/project-overview    # backup narration (TTS 3)
@@ -230,7 +232,7 @@ open questions, latency, usage); it spends Anthropic credits, so it is never par
 
 ## Known limitations
 
-_TBD_ — English only; narration must be pre-rendered (live narration falls back to it); Relay's talks use
+_TBD_ — narration must be pre-rendered (live narration falls back to it); Relay's talks use
 tap-to-talk floor control in the room (no speaker identification).
 
 The meeting demos are online meetings: either simulated (the participants are prerecorded clips with prepared speaker

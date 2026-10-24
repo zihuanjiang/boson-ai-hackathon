@@ -8,18 +8,7 @@ Two days. One demo. A very tired room.
 <!-- .slide: id="name" -->
 # On the Same Page
 
-AI meeting facilitator, built on Higgs Audio
-
-**Presents · answers · listens**
-
----
-
-<!-- .slide: id="problem" -->
-## The meeting after the slides
-
-Everyone nods. <!-- .element: class="fragment" -->
-
-Nobody opened the documents. <!-- .element: class="fragment" -->
+AI meeting facilitator in your Zoom call, built on Higgs Audio
 
 ---
 
@@ -41,27 +30,18 @@ Conflict · hidden disagreement · detail nobody settled
 
 ---
 
-<!-- .slide: id="results" -->
-## What we measured
+<!-- .slide: id="achieved" -->
+## Achievements and limits
 
-0.7 s to answer (recorded participants)
+Runs in real Zoom calls <!-- .element: class="fragment" -->
 
-8 of 8 checks, two test meetings
-
----
-
-<!-- .slide: id="limits" -->
-## What it can't do yet
-
-Online meetings · English only <!-- .element: class="fragment" -->
-
-Claude's judgement · seconds to ask <!-- .element: class="fragment" -->
+Limits: echo, check delay, speaker names <!-- .element: class="fragment" -->
 
 ---
 
 <!-- .slide: id="discussion" -->
 ## Your turn
 
-How do we run the demo with real people, and who sets it up?
+How do the judges ask their questions in Zoom, and who briefs them?
 
 The facilitator is listening
