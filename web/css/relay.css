@@ -2968,13 +2968,18 @@ kbd {
   display: none;
 }
 
-.meeting.has-demo .people {
+/* the participants' tiles (prerecorded, or in Zoom) share a 2 × 2 grid with the facilitator's */
+.meeting.has-people .people {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .tile-participant .avatar-face {
   background: linear-gradient(145deg, #7c5cff, #3b4fd8);
+}
+
+.tile-participant[data-kind="live"] .avatar-face {
+  background: linear-gradient(145deg, #2d8cff, #1f6fd0);
 }
 
 .tile-tag {
@@ -3015,6 +3020,52 @@ kbd {
 
 .tile-relay[data-interrupted="true"] .tile-status {
   color: var(--c-conflict);
+}
+
+/* ================================================================ the facilitator in Zoom (.in-zoom, .observer)
+   Contract v5: the bot joined a Zoom meeting as its own participant (input `voice`): the participants are real
+   people, tagged "In Zoom" on their tiles (the ring when the backend heard them), the disclosure badge takes the
+   "viewing" badge's room; the observer page the bot shares as its screen hides every control that would send
+   something and says where it comes from, in the mic button's place. */
+
+.zoom-pill {
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: #fff;
+  background: #1f9d55;
+}
+
+.meeting.in-zoom .viewing {
+  display: none;
+}
+
+.tile-tag[data-kind="live"] {
+  color: #fff;
+  background: rgba(31, 157, 85, 0.75);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.observer-note {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 8px;
+  overflow: hidden;
+  font-size: clamp(11.5px, 1.2vh, 13px);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+}
+
+.meeting.observer .tb:disabled {
+  color: var(--fg-dim);
+  cursor: default;
+}
+
+.meeting.observer .tb:disabled:hover {
+  background: transparent;
 }
 
 /* the agenda strip: the steps fold, the demo script's controls take the room */
@@ -3245,8 +3296,8 @@ kbd {
     width: calc(100% - 2 * var(--gap) - 2.8vh);
   }
 
-  /* the prerecorded participants: one row of tiles with the facilitator's */
-  .meeting.has-demo .people {
+  /* the participants (prerecorded, or in Zoom): one row of tiles with the facilitator's */
+  .meeting.has-people .people {
     grid-template-columns: none;
     grid-auto-columns: minmax(0, 1fr);
     grid-auto-flow: column;

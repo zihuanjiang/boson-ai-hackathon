@@ -108,6 +108,10 @@ def input_note(demo: Any, mode: str) -> str | None:
         return (f"input: clips — an online meeting with prerecorded participants ({speakers}; {ready}/{clips} clips "
                 "loaded): the page plays each clip and streams the same samples to Higgs, the microphone stays off, "
                 "and a participant who starts talking while the facilitator speaks interrupts it")
+    if mode == "voice":
+        return ("input: voice — a live participant stream (the Zoom bot, scripts/zoom_bot.py): real people, no "
+                "clips, no local microphone; a participant who starts talking while the facilitator speaks interrupts "
+                "it. The page at / is an observer (?view=observer); the bot is the deck")
     if demo:
         return "input: mic (--input mic): the room microphone with tap-to-talk; the demo's clips are not played"
     return None

@@ -11,12 +11,16 @@
  * (contract v3.1 §4: the participants are prerecorded clips, the mic is off) replaces the room's tile with one tile
  * per participant (a "Recorded" tag, a speaking ring from their own clip), shows the disclosure badge in the topbar,
  * the demo script's controls in the agenda strip and the routing line in Meeting info, and the facilitator's tile
- * says who interrupted it (a barge-in). A plain talk looks and behaves exactly like Relay. DOM only: main.js owns the
- * socket and every action. It calls these methods from its message handlers, and the controls call back through
+ * says who interrupted it (a barge-in). The facilitator in Zoom (contract v5: the backend's input is `voice`, the
+ * participants are real people in the meeting the bot joined) shows them as "In Zoom" tiles (a ring when the backend
+ * heard them speak) and a "Live in Zoom" badge; the observer page the bot shares as its screen (`?view=observer`)
+ * hides every control that would send something (the mic, Leave, the phase button, the speaker picker, the chat box)
+ * and says where it comes from. A plain talk looks and behaves exactly like Relay. DOM only: main.js owns the socket
+ * and every action. It calls these methods from its message handlers, and the controls call back through
  * MeetingHandlers.
  */
 import { FACILITATOR_KINDS, idKind } from "./facilitator.js";
-import { Agenda, Callout, DemoStrip, ParticipantTiles, SidePanel, Speakers } from "./panels.js";
+import { Agenda, Callout, DemoStrip, LIVE_TAG, ParticipantTiles, SidePanel, Speakers } from "./panels.js";
 import { RT_LABELS } from "./status.js";
 import { talkTitle } from "./talk.js";
 import { clockText, meterLevel, toolLabel } from "./util.js";
@@ -93,6 +97,10 @@ export const HINT_EVERY_MS = 20000;
 export const HINT_SHOW_MS = 5000;
 export const RESET_CONFIRM_MS = 5000; // "Restart meeting" waits this long for its confirming second click
 export const BARGE_IN_MS = 2000; // the facilitator's tile says who interrupted it this long
+export const SPOKE_MS = 2500; // a participant in Zoom keeps the speaking ring this long after the backend heard them
+export const SPOKE_RING = 0.6; // …at this level (no audio here to measure)
+/** The observer tab's title: the bot's screen share picks the tab by it (Chrome's auto-select by title), as is. */
+export const OBSERVER_TITLE = "On the Same Page";
 const CHAT_MAX_LINES = 200;
 /** @type {ReadonlySet<string>} */
 const MENU_ACTIONS = new Set(["pause", "human", "relay", "prev", "next", "type"]);
@@ -244,6 +252,11 @@ export class Meeting {
     this.interrupted = null;
     /** @type {ReturnType<typeof setTimeout>|undefined} */
     this.interruptTimer = undefined;
+    // the facilitator in Zoom (contract v5): real participants (input `voice`), and the observer page it shares
+    this.live = false; // the participants are people in the Zoom meeting: their tiles replace the room's
+    this.observer = false; // this page is the bot's shared screen: it shows, it never sends
+    /** @type {ReturnType<typeof setTimeout>|undefined} */
+    this.spokeTimer = undefined;
 
     this.brandName = part(root, ".brand-name");
     this.viewingText = part(root, ".viewing-text");
@@ -293,6 +306,11 @@ export class Meeting {
     this.callout = new Callout(part(root, ".callout"));
     this.side = new SidePanel(this.chat, { onChange: () => this.renderUnread() });
     this.demoPill = part(root, ".demo-pill");
+    this.zoomPill = part(root, ".zoom-pill");
+    this.observerNote = part(root, ".observer-note");
+    this.leaveButton = part(root, ".leave-button");
+    this.prevButton = part(root, ".prev-button");
+    this.nextButton = part(root, ".next-button");
     this.routingEl = part(root, ".strip-routing");
     this.demoStrip = new DemoStrip(part(root, ".demo"), {
       onRun: () => this.handlers.onDemoRun?.(),
@@ -325,8 +343,8 @@ export class Meeting {
       h.onMic("up");
     };
     for (const type of ["pointerup", "pointercancel", "pointerleave"]) mic.addEventListener(type, release);
-    part(this.root, ".prev-button").addEventListener("click", () => h.onAction("prev"));
-    part(this.root, ".next-button").addEventListener("click", () => h.onAction("next"));
+    this.prevButton.addEventListener("click", () => h.onAction("prev"));
+    this.nextButton.addEventListener("click", () => h.onAction("next"));
     this.peopleButton.addEventListener("click", () => this.togglePeople());
     this.chatButton.addEventListener("click", () => this.toggleChat());
     this.chatClose.addEventListener("click", () => this.toggleChat(false));
@@ -334,7 +352,7 @@ export class Meeting {
     this.infoButton.addEventListener("click", () => this.toggleInfo());
     this.moreButton.addEventListener("click", () => this.toggleMenu());
     this.menu.addEventListener("click", (/** @type {MouseEvent} */ e) => this.onMenu(e));
-    part(this.root, ".leave-button").addEventListener("click", () => {
+    this.leaveButton.addEventListener("click", () => {
       this.closeMenus();
       h.onLeave();
     });
@@ -385,7 +403,8 @@ export class Meeting {
     this.agenda.setup(info);
     this.side.enable(info);
     this.speakers.setup(info.participants);
-    this.resetItem.hidden = false;
+    this.resetItem.hidden = this.observer; // an observer restarts nothing
+    if (this.live) this.participants.setup(info.participants, LIVE_TAG);
     this.chatButtonLabel.textContent = "Panels";
     this.chatButton.title = "Evidence, notes, transcript and chat";
     this.chatClose.setAttribute("aria-label", "Close the panel");
@@ -415,9 +434,9 @@ export class Meeting {
     for (const el of document.querySelectorAll(".ai-name")) el.textContent = n.ai;
     for (const el of document.querySelectorAll(".ai-name-cap")) el.textContent = n.aiCap;
     part(this.root, ".share").setAttribute("aria-label", `${n.aiCap}'s shared screen`);
-    part(this.root, ".leave-button").title = `Stop ${n.ai}: ${this.presenter} has the floor (H)`;
+    this.leaveButton.title = `Stop ${n.ai}: ${this.presenter} has the floor (H)`;
     const title = this.talkNameEl.textContent;
-    document.title = title ? `${n.product} · ${title}` : n.product;
+    document.title = this.observer ? OBSERVER_TITLE : title ? `${n.product} · ${title}` : n.product;
     this.renderPrompts();
     this.renderMic();
   }
@@ -520,7 +539,7 @@ export class Meeting {
     }
     this.agendaPhase = phase;
     this.agenda.phase(phase);
-    this.speakers.show(phase === "discussion");
+    this.speakers.show(phase === "discussion" && !this.observer && !this.live); // in Zoom the speaker is who Zoom hears
     if (moved) {
       const tab = /** @type {Record<string, "evidence"|"notes"|"transcript">} */ (PHASE_TABS)[phase];
       if (tab) this.side.select(tab);
@@ -623,7 +642,7 @@ export class Meeting {
   enableDemo(participants) {
     if (this.clips) return;
     this.clips = true;
-    this.root.classList.add("has-demo");
+    this.root.classList.add("has-demo", "has-people");
     this.youTile.hidden = true;
     this.hideHint();
     this.participants.setup(participants);
@@ -631,6 +650,72 @@ export class Meeting {
     this.routingEl.hidden = false;
     this.demoStrip.show(true);
     this.renderMic();
+  }
+
+  // ---- the facilitator in Zoom (contract v5: input `voice`, and the observer page it shares)
+
+  /**
+   * The backend's input (`hello.input`): with `voice` the participants are real people in the Zoom meeting the
+   * facilitator joined: the topbar says so, and (a meeting talk) their tiles replace the room's, tagged "In Zoom".
+   * @param {string|null} mode  clips | mic | voice
+   * @param {{name: string, role: string}[]|null} participants  the meeting's (null: a plain talk, no tiles)
+   */
+  inputMode(mode, participants) {
+    const voice = mode === "voice";
+    this.zoomPill.hidden = !voice;
+    this.root.classList.toggle("in-zoom", voice);
+    if (!voice || !participants || this.live || this.clips) return;
+    this.live = true;
+    this.root.classList.add("has-people");
+    this.youTile.hidden = true;
+    this.hideHint();
+    this.speakers.show(false);
+    this.participants.setup(participants, LIVE_TAG);
+  }
+
+  /**
+   * The backend heard a participant in Zoom (a transcript line, a barge-in, a labelled turn): their tile speaks for
+   * SPOKE_MS. Best effort: the name is what the bot read off Zoom's active-speaker indicator, and it arrives when
+   * the line ends. Nothing without the tiles (no `voice` input, or a plain talk).
+   * @param {string|null} name
+   */
+  participantSpoke(name) {
+    if (!this.live || !name || !this.participants.tiles.has(name)) return;
+    for (const who of this.participants.tiles.keys()) if (who !== name) this.participants.level(who, false, 0);
+    this.participants.playing(name, false);
+    this.participants.level(name, true, SPOKE_RING);
+    clearTimeout(this.spokeTimer);
+    this.spokeTimer = setTimeout(() => {
+      this.participants.playing(null, false);
+      this.participants.level(name, false, 0);
+    }, SPOKE_MS);
+  }
+
+  /**
+   * This page is the observer: the facilitator's shared screen in its Zoom window (`?view=observer`). It renders
+   * everything the deck's feed says and sends nothing, so every control that would is hidden or disabled: the mic
+   * button and Leave give way to a line saying where the page is shared from; the chat box, the speaker picker and
+   * Restart meeting go; the phase button and ◀ ▶ show but do nothing (the More menu stays: its view items work).
+   * The title is fixed: the share picker matches it.
+   */
+  enableObserver() {
+    if (this.observer) return;
+    this.observer = true;
+    this.root.classList.add("observer");
+    this.micButton.hidden = true;
+    this.leaveButton.hidden = true;
+    this.observerNote.hidden = false;
+    this.chatForm.hidden = true;
+    this.speakers.show(false);
+    this.resetItem.hidden = true;
+    this.prevButton.disabled = true;
+    this.nextButton.disabled = true;
+    this.prevButton.title = "The operator moves the slides (the facilitator's Zoom window)";
+    this.nextButton.title = this.prevButton.title;
+    this.agenda.readOnly = true;
+    this.agenda.render();
+    this.hideHint();
+    document.title = OBSERVER_TITLE;
   }
 
   /** The demo strip: the script's state and its next step. @param {import("./panels.js").DemoStripView} view */

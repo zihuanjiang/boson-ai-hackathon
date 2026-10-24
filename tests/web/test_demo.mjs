@@ -43,10 +43,10 @@ eq("fake clips are marked", D.normalizeDemo({ steps: [{ id: "x", speaker: "Bob",
 eq("recorded flag", demo.steps.map((s) => s.recorded), [false, true, false, false, false]);
 eq("an action step: no speaker, no audio", [demo.steps[4].action, demo.steps[4].speaker, demo.steps[4].audio, demo.steps[4].when.after_reply], ["phase", null, null, "decision"]);
 eq("no demo", [D.normalizeDemo(null), D.normalizeDemo([]), D.normalizeDemo("x"), D.normalizeDemo(undefined)], [null, null, null, null]);
-eq("input defaults to clips; mic stays mic", [D.normalizeDemo({}).input, D.normalizeDemo({ input: "mic" }).input, D.normalizeDemo({ input: "x" }).input], ["clips", "mic", "clips"]);
+eq("input defaults to clips; mic stays mic; voice (the Zoom bot) stays voice", [D.normalizeDemo({}).input, D.normalizeDemo({ input: "mic" }).input, D.normalizeDemo({ input: "x" }).input, D.normalizeDemo({ input: "voice" }).input], ["clips", "mic", "clips", "voice"]);
 eq("sparse steps: no id dropped, odd fields defaulted", D.normalizeDemo({ steps: [null, { say: "x" }, { id: "s", when: "x", duration_ms: -3, timeout_ms: 5 }, 3] }).steps.map((s) => [s.id, s.speaker, s.when.timeout_ms, s.duration_ms]), [["s", null, 90000, 0]]);
 eq("timeout_ms given", D.normalizeCue({ timeout_ms: 5000 }).timeout_ms, 5000);
-eq("clipsMode", [D.clipsMode(demo), D.clipsMode(D.normalizeDemo({ input: "mic" })), D.clipsMode(null)], [true, false, false]);
+eq("clipsMode", [D.clipsMode(demo), D.clipsMode(D.normalizeDemo({ input: "mic" })), D.clipsMode(D.normalizeDemo({ input: "voice" })), D.clipsMode(null)], [true, false, false, false]);
 eq("labels", [D.clipLabel("Alice"), D.clipLabel("Alice", true)], ["Alice (recorded)", "Alice (recorded · played by hand)"]);
 
 // ---- the cue in words (the agenda strip)

@@ -33,9 +33,12 @@ NARRATION_MODES = ("live", "rendered")
 # Where the participants' voices come from (contract v3.1, doc/online_meeting_patch.md). clips: an online meeting, the
 # participants are prerecorded clips the deck plays and streams (talks/<id>/demo.yaml), the physical mic is off and a
 # participant who starts talking while the facilitator speaks barges in. mic: the room microphone with tap-to-talk
-# (in-room; the facilitator's voice would reach the mic, so no voice barge-in). Unset: clips for a talk with
+# (in-room; the facilitator's voice would reach the mic, so no voice barge-in). voice: a live participant stream with
+# no acoustic path back to the facilitator — the Zoom bot (scripts/zoom_bot.py: the bot's "ears" are the Zoom web
+# client's audio output, its "mouth" a stream Zoom takes as its microphone), later a headset; real people, no clips,
+# and a participant who starts talking while the facilitator speaks interrupts it. Unset: clips for a talk with
 # demo.yaml, else mic.
-INPUT_MODES = ("clips", "mic")
+INPUT_MODES = ("clips", "mic", "voice")
 # Manual turns by default (On the Same Page): `turn_detection: null` for the whole session, and the backend ends user
 # turns itself (relay/segmenter.py) and decides every response.create. Live 2026-10-23: turn detection cannot be
 # changed after the session starts, and the discussion must be transcribed without replies (a commit with turn

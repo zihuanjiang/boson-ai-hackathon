@@ -75,6 +75,10 @@ class StubController:
     def snapshot(self) -> dict:
         return {"state": "IDLE", "phase": "opening"}
 
+    def greeting(self) -> list[dict]:
+        """An observer's greeting bundle (read-only, no call recorded: observers never reach the controller)."""
+        return [{"type": "hello", "talk": self.talk.id, "snapshot": self.snapshot()}, {"type": "stop"}]
+
     def messages(self) -> list[dict]:
         return [call[1] for call in self.calls if call[0] == "msg"]
 
@@ -316,7 +320,7 @@ def test_healthz_reports_link_and_controller(tmp_path: Path, web: Path) -> None:
     app, controller = build(tmp_path, web)  # no key, not fake: the link reports the missing key at startup
     with TestClient(app) as client:
         assert client.get("/healthz").json() == {"ok": True, "realtime": "error", "state": "IDLE",
-                                                 "detail": "BOSON_API_KEY missing", "deck": False}
+                                                 "detail": "BOSON_API_KEY missing", "deck": False, "observers": 0}
     assert controller.statuses[0] == ("error", "BOSON_API_KEY missing")
     assert controller.statuses[-1] == ("offline", None)  # stopped on shutdown
 
@@ -443,6 +447,45 @@ def test_deck_socket_greets_forwards_messages_and_reports_the_disconnect(tmp_pat
     kinds = [record["kind"] for record in log_records(tmp_path)]
     assert kinds.count("deck_bad_message") == 3
     assert {"server_start", "deck_connected", "deck_in", "deck_out", "deck_disconnected", "server_stop"} <= set(kinds)
+
+
+def test_observers_get_the_decks_feed_and_never_drive_the_show(tmp_path: Path, web: Path) -> None:
+    """`/ws/observe` (contract v5): the page the Zoom bot shares. It gets the greeting bundle, then a copy of every
+    message the deck gets; its input is ignored but `hello`; it never replaces the deck or reaches the controller."""
+    app, controller = build(tmp_path, web)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/observe") as observer:
+            assert observer.receive_json() == {"type": "hello", "talk": "test",
+                                               "snapshot": {"state": "IDLE", "phase": "opening"}}
+            assert observer.receive_json() == {"type": "stop"}
+            assert controller.calls == [] and client.get("/healthz").json() == {
+                **client.get("/healthz").json(), "deck": False, "observers": 1}
+            observer.send_json({"type": "key", "key": "space"})  # ignored: never reaches the controller
+            observer.send_json({"type": "hello", "client": "observer"})  # greeted again
+            assert observer.receive_json()["type"] == "hello"
+            assert observer.receive_json() == {"type": "stop"}
+            with client.websocket_connect("/ws") as deck:
+                assert deck.receive_json()["type"] == "hello"
+                assert controller.calls == [("connected",)]  # the observer did not count as a deck
+                assert observer.receive_json()["type"] == "hello"  # the deck's greeting, copied like everything
+                deck.send_json({"type": "arm"})
+                assert deck.receive_json() == {"type": "echo", "msg": {"type": "arm"}}
+                assert observer.receive_json() == {"type": "echo", "msg": {"type": "arm"}}  # the copy
+                with client.websocket_connect("/ws/observe") as second:
+                    assert second.receive_json()["type"] == "hello" and second.receive_json() == {"type": "stop"}
+                    deck.send_json({"type": "key", "key": "next"})
+                    assert deck.receive_json()["msg"]["key"] == "next"
+                    assert observer.receive_json()["msg"]["key"] == "next"
+                    assert second.receive_json()["msg"]["key"] == "next"
+                    assert client.get("/healthz").json()["observers"] == 2
+                wait_for(lambda: client.get("/healthz").json()["observers"] == 1)
+            wait_for(lambda: controller.calls[-1] == ("disconnected",))  # the deck left; the observer stays
+            client.portal.call(app.state.hub.send, {"type": "state", "state": "IDLE"})  # no deck: observers still get it
+            assert observer.receive_json() == {"type": "state", "state": "IDLE"}
+        wait_for(lambda: client.get("/healthz").json()["observers"] == 0)
+    kinds = [record["kind"] for record in log_records(tmp_path)]
+    assert {"observer_connected", "observer_disconnected"} <= set(kinds)
+    assert [m["type"] for m in controller.messages()] == ["arm", "key"]  # nothing from the observers
 
 
 def test_a_second_deck_replaces_the_first(tmp_path: Path, web: Path) -> None:

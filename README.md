@@ -48,6 +48,42 @@ No key? Everything runs offline with stand-ins: `uv run python -m relay.render t
 A re-render takes effect at the next server restart (the server serves the narration it loaded at startup); an open
 deck then reloads itself, and you click Arm again.
 
+### Run the self-introduction demo (`talks/submission-review`)
+
+The same pipeline, with a presentation the judges can follow without context: the facilitator introduces On the
+Same Page itself (background, the pipeline, live results, limitations) to a team reviewing the project before
+submission. Alice interrupts during the pipeline section ("does this work in a normal meeting room with one
+microphone?"); in the discussion about the limitations Bob proposes to write that it works in person, and the
+facilitator asks for a clarification before the team confirms it.
+
+```bash
+uv run python -m relay.render talks/submission-review   # backup narration (TTS 3)
+uv run python -m relay.clips talks/submission-review    # the participants' clips
+uv run python -m relay serve talks/submission-review    # open http://localhost:8000, Join, then Run demo
+```
+
+### Run it inside a Zoom meeting (the facilitator as a participant)
+
+The facilitator joins your Zoom meeting as its own participant, **Facilitator (AI)**, from your laptop, and real
+people speak: a separate, muted Chrome window joins the Zoom web client; its "microphone" is a stream fed with the
+facilitator's Higgs Realtime audio and its "ears" tap what the Zoom page plays. It never uses the laptop's microphone
+or speakers, and Zoom never plays a participant's audio back to that participant, so anyone who talks while the
+facilitator speaks interrupts it by voice. It shares a second tab — the meeting page in observer mode — as its screen.
+
+```bash
+uv run python -m relay.render talks/submission-review                                   # backup narration, once
+uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --passcode <passcode> --auto-start
+```
+
+The meeting must allow guests (your personal meeting with "Require authentication to join" off); be in it yourself
+first, with your real microphone. The bot starts `relay serve talks/submission-review --input voice` itself, joins,
+opens `http://localhost:8000/?view=observer` in its second tab and shares it. Keys in the bot's terminal: R start,
+Space send now, ← → slides, P pause, H the operator has the floor, N next phase, 0 restart, `t <text>` type a line,
+q leave. Rehearse without Zoom: `uv run python scripts/zoom_bot.py --dry-run` (a fake Zoom page plays the demo clips
+as the participants, over the fake Realtime). The lines your participants speak and every fallback are in
+[`talks/submission-review/run_of_show_zoom.md`](talks/submission-review/run_of_show_zoom.md); the proven spike behind it
+is [`doc/zoom_bot_spike.md`](doc/zoom_bot_spike.md).
+
 ### Run the meeting demo (On the Same Page, `talks/rollout-review`)
 
 The facilitator presents the rollout plan live, is interrupted by a participant's question, answers from the
@@ -147,7 +183,9 @@ key has access).
 _TBD_ — English only; narration must be pre-rendered (live narration falls back to it); Relay's talks use
 tap-to-talk floor control in the room (no speaker identification).
 
-The meeting demo is an online meeting, simulated: the participants are prerecorded clips with prepared speaker
-labels, and the script is fixed. In-person or hybrid meetings, where one room microphone also hears the facilitator's
-speakers, would need echo handling and possibly single-microphone diarization: future work, and an integration
-question for Boson rather than a known Higgs limitation.
+The meeting demos are online meetings: either simulated (the participants are prerecorded clips with prepared speaker
+labels, and the script is fixed) or a real Zoom call the facilitator joins as its own participant (`scripts/zoom_bot.py`;
+real people speak; speaker names come best-effort from Zoom's active-speaker display, never from the audio; one bot
+per meeting; it can't react to chat or raised hands). In-person or hybrid meetings, where one room microphone also
+hears the facilitator's speakers, would need echo handling and possibly single-microphone diarization: future work,
+and an integration question for Boson rather than a known Higgs limitation.

@@ -58,7 +58,11 @@ steps:
     when: {{after_reply: decision, gap_ms: 300}}
 """
 
-DEMO_DIR = ROOT / "talks" / "rollout-review"
+# The demo packages with a demo.yaml, each with the cue timeout scale its run needs at the fake's pace (3 s per talking
+# point). The facilitator's self-introduction (submission review) presents six points after the interruption, so its
+# demo.yaml gives Bob's cue (counted from Alice's clip) its own 3 min timeout; at scale 0.25 that is 45 s against the
+# ~23 s the fake takes, the same scale the rollout review needs for its default 90 s cues (22.5 s).
+DEMO_PACKAGES = [(ROOT / "talks" / "rollout-review", 0.25), (ROOT / "talks" / "submission-review", 0.25)]
 
 
 def speech_like(say: str, voice: str) -> TTSResult:
@@ -78,8 +82,10 @@ def write_demo_meeting(root: Path) -> Path:
     return root
 
 
-async def run_demo(tmp_path: Path, talk_dir: Path, *, narration_s: float) -> tuple[DemoDeck, FakeConnector]:
-    """Fake clips into tmp_path, the server on them, and the whole demo script through the scripted page."""
+async def run_demo(tmp_path: Path, talk_dir: Path, *, narration_s: float,
+                   timeout_scale: float = 0.25) -> tuple[DemoDeck, FakeConnector]:
+    """Fake clips into tmp_path, the server on them, and the whole demo script through the scripted page.
+    `timeout_scale` shortens every cue's timeout_ms (90 s by default) for the fake's pace."""
     talk = load_talk(talk_dir)
     demo = load_demo(talk)
     report = clip_store.generate_clips(talk, demo, Settings(), out_root=tmp_path, synth=lambda s, v: speech_like(s, v).wav)
@@ -100,7 +106,7 @@ async def run_demo(tmp_path: Path, talk_dir: Path, *, narration_s: float) -> tup
                 return response.content
 
             async with websockets.connect(f"ws://127.0.0.1:{port}/ws", max_size=None) as ws:
-                deck = DemoDeck(ws, payload["demo"], {}, talk=payload, strict=True, timeout_scale=0.25)
+                deck = DemoDeck(ws, payload["demo"], {}, talk=payload, strict=True, timeout_scale=timeout_scale)
                 hello = await deck.handshake()
                 assert hello["demo"] == payload["demo"] and hello["input"] == "clips"
                 deck.clips = await fetch_clips(f"http://127.0.0.1:{port}", hello["demo"], get)
@@ -180,14 +186,16 @@ async def test_the_online_meeting_demo_end_to_end_with_prerecorded_participants(
     assert not any(e["kind"] in ("controller_error", "narration_failed", "clip_unheard") for e in entries)
 
 
-@pytest.mark.skipif(not (DEMO_DIR / "demo.yaml").is_file(), reason="the demo meeting has no demo.yaml")
-async def test_the_rollout_review_demo_end_to_end(tmp_path):
-    """talks/rollout-review/demo.yaml as written (its own cues), over the same stack with fake clips."""
-    deck, _ = await run_demo(tmp_path, DEMO_DIR, narration_s=3.0)
+@pytest.mark.parametrize("talk_dir, timeout_scale", DEMO_PACKAGES, ids=[path.name for path, _ in DEMO_PACKAGES])
+async def test_the_demo_packages_end_to_end(tmp_path, talk_dir, timeout_scale):
+    """talks/<id>/demo.yaml as written (its own cues), over the same stack with fake clips."""
+    if not (talk_dir / "demo.yaml").is_file():
+        pytest.skip(f"{talk_dir.name} has no demo.yaml")
+    deck, _ = await run_demo(tmp_path, talk_dir, narration_s=3.0, timeout_scale=timeout_scale)
     checks = deck.assess(owner="Bob")
     assert all(ok for ok, _ in checks.values()), checks
     assert not any(result.timed_out or result.unavailable for result in deck.results)
-    entries = log_entries(tmp_path, "rollout-review")
+    entries = log_entries(tmp_path, talk_dir.name)
     barges = [e for e in entries if e["kind"] == "barge_in"]
     assert [e["clip"] for e in barges] == ["alice-question"]
     heard_ms = next(s for s in deck.demo["steps"] if s["id"] == "alice-question")["when"].get("heard_ms", 0)

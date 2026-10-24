@@ -12,6 +12,12 @@
  * participants are prerecorded clips, preloaded at join, played on their own buses and streamed as `mic` frames
  * (source "clip") by the Demo Audio Controller (demo.js), whose script this page runs on its own events (Run demo,
  * Play next); a `barge_in` from the backend shows on the facilitator's tile.
+ * The facilitator in Zoom (contract v5): the Zoom bot (scripts/zoom_bot.py) is the deck, with input `voice` (real
+ * people in the meeting it joined), and shares this page as its screen in OBSERVER mode (`?view=observer`): a
+ * read-only copy of the deck's feed on `/ws/observe`. The observer renders everything as a joined deck does (slides,
+ * captions on the wall clock, tiles, evidence, notes, transcript) but creates no AudioContext, asks for no
+ * microphone, shows no join dialog, handles no key and never sends anything but `hello` (observer.js has the
+ * wall-clock reply player; the backup narration runs on the NarrationPlayer's silent timer).
  */
 import { AudioEngine, Microphone, NarrationPlayer, ReplyPlayer, STOP_FADE_S } from "./audio.js";
 import { Captions } from "./captions.js";
@@ -30,7 +36,8 @@ import {
 } from "./facilitator.js";
 import { installKeys } from "./keys.js";
 import { Meeting } from "./meeting.js";
-import { DeckSocket, deckSocketUrl } from "./socket.js";
+import { ObserverReplyPlayer } from "./observer.js";
+import { DeckSocket, deckSocketUrl, isObserverView, observerSocketUrl } from "./socket.js";
 import { Banner, Checklist, StatusStrip, Toasts } from "./status.js";
 import {
   chunkKey,
@@ -65,6 +72,8 @@ const ROOM_HINT = "Space asks the facilitator directly";
 const JOIN_CLOSE_MS = 600; // a join with every check passed closes the dialog by itself, this long after
 const AUDIBLE_LEVEL = 0.1; // without an analyser, Relay's level while narration or a reply is playing
 const JOIN_FIRST = "Click Join with Computer Audio first: it turns on the speaker and the microphone";
+/** This page is the observer: the facilitator's shared screen in Zoom (contract v5 §3). It shows and never sends. */
+const OBSERVER = typeof location !== "undefined" && isObserverView(location);
 
 const S = {
   /** @type {Talk|null} */
@@ -103,6 +112,8 @@ const S = {
   checkpoint: null,
   /** the Realtime link's status (`connection`): offline, connecting, ready, reconnecting, error */
   realtime: "offline",
+  /** @type {string|null} the backend's input (`hello.input`): clips | mic | voice (the Zoom bot's participants) */
+  input: null,
 };
 
 /** @type {DeckSocket} */ let socket;
@@ -157,8 +168,9 @@ function el(selector) {
   return /** @type {T} */ (found);
 }
 
-/** @param {Msg} msg */
+/** Send to the backend; an observer never does (false, like a closed socket). @param {Msg} msg */
 function send(msg) {
+  if (OBSERVER) return false;
   return socket.send(msg);
 }
 
@@ -178,7 +190,7 @@ function report(level, text) {
   const message = String(text).slice(0, 800);
   if (level === "error") console.error("[relay]", message);
   else console.warn("[relay]", message);
-  if (logBudget > 0 && socket && socket.open) {
+  if (!OBSERVER && logBudget > 0 && socket && socket.open) {
     logBudget -= 1;
     socket.send({ type: "log", level, message });
   }
@@ -224,15 +236,39 @@ function onTalk(talk) {
   );
   if (!S.armed && !S.arming) checklist.set("narration", "pending", `${chunks} chunks, loaded when you join`);
   if (clipsOn()) setupDemo(talk);
+  syncInput();
   updateWhere();
   socket.connect();
 }
 
 // ---------------------------------------------------------------- the simulated online meeting (demo.js)
 
-/** A meeting whose participants are prerecorded clips (the backend's input is `clips`): the mic stays off. */
+/**
+ * A meeting whose participants are prerecorded clips (the backend's input is `clips`), played by this page: the mic
+ * stays off. Never the observer: the deck (the bot, or another page) plays them; the observer only shows them.
+ */
 function clipsOn() {
+  return !OBSERVER && recordedOn();
+}
+
+/** The participants are prerecorded clips (whoever plays them): their lines are labelled "(recorded)". */
+function recordedOn() {
   return Boolean(S.talk?.meeting) && clipsMode(S.talk?.demo);
+}
+
+/** The backend's input, as the hello says it (before the hello: as the demo payload does). */
+function inputMode() {
+  return S.input ?? S.talk?.demo?.input ?? null;
+}
+
+/** The participants are real people in the Zoom meeting the facilitator joined (contract v5: input `voice`). */
+function voiceOn() {
+  return inputMode() === "voice";
+}
+
+/** The window follows the backend's input: the "Live in Zoom" badge, the participants' tiles (a meeting talk). */
+function syncInput() {
+  meeting.inputMode(inputMode(), S.talk?.meeting ? S.talk.meeting.participants : null);
 }
 
 /**
@@ -422,6 +458,7 @@ function stopClip(tail) {
 
 /** Run demo / Stop demo. Run in the opening also starts the presentation (unless the script's first step does). */
 function onDemoRun() {
+  if (OBSERVER) return;
   if (!S.armed) {
     showOverlay();
     return;
@@ -444,6 +481,7 @@ function onDemoRun() {
 
 /** Play next: the next step now, by hand (disclosed). */
 function onDemoPlay() {
+  if (OBSERVER) return;
   if (!S.armed) {
     showOverlay();
     return;
@@ -487,7 +525,7 @@ function updateWhere() {
 // ---------------------------------------------------------------- joining (Arm: the pre-show checklist)
 
 function onArmClick() {
-  if (S.arming || S.armed) return;
+  if (S.arming || S.armed || OBSERVER) return;
   S.arming = true;
   ui.arm.disabled = true;
   // Inside the click, before any await: the AudioContext (autoplay policy) and the mic prompt.
@@ -629,6 +667,7 @@ function hideOverlay() {
  */
 function showOverlay() {
   clearTimeout(joinClose);
+  if (OBSERVER) return false; // the observer has nothing to join: no dialog, ever
   if (S.armed && (S.state !== "IDLE" || banner.counting)) return false;
   ui.overlay.hidden = false;
   return true;
@@ -636,6 +675,7 @@ function showOverlay() {
 
 /** More → the audio and connection check; says why when it can't open now. */
 function openChecklist() {
+  if (OBSERVER) return;
   if (!showOverlay()) toasts.show(`The audio and connection check opens while ${meeting.names.ai} is waiting`, "info");
 }
 
@@ -692,6 +732,7 @@ function logSilence(action, t0) {
  * @param {KeyboardEvent|null} event
  */
 function onKeyAction(action, event) {
+  if (OBSERVER) return; // (no keys are installed; the controls that stand for them are disabled too)
   if (S.reloading) {
     toasts.show("Reloading this page: the server has a new version of the talk", "info");
     return;
@@ -784,6 +825,7 @@ function flushSpaceUp() {
 }
 
 function focusTyped() {
+  if (OBSERVER) return;
   hideOverlay();
   meeting.closeMenus();
   ui.typedForm.hidden = false;
@@ -811,6 +853,7 @@ function inDiscussion() {
  * @param {string} text
  */
 function sendTyped(text) {
+  if (OBSERVER) return;
   if (!S.armed || S.reloading) {
     toasts.show(S.reloading ? "Reloading this page: ask again in a moment" : JOIN_FIRST, "info");
     return;
@@ -844,6 +887,7 @@ function sendTyped(text) {
  * @param {"tap"|"down"|"up"|"room"} phase
  */
 function onMicButton(phase) {
+  if (OBSERVER) return;
   if (!S.armed) {
     showOverlay();
     return;
@@ -858,6 +902,7 @@ function onMicButton(phase) {
 
 /** The agenda strip's phase button: the next phase (presentation → discussion → wrap-up). */
 function onPhaseButton() {
+  if (OBSERVER) return;
   if (!S.armed) {
     showOverlay();
     return;
@@ -867,6 +912,7 @@ function onPhaseButton() {
 
 /** More → Restart meeting, confirmed: the backend starts over; this page's lists go with it. */
 function onResetMeeting() {
+  if (OBSERVER) return;
   if (!S.armed) {
     showOverlay();
     return;
@@ -891,6 +937,7 @@ function resetDemo() {
  * @param {string|null} name  null: the room, no one in particular
  */
 function onSpeaker(name) {
+  if (OBSERVER) return;
   S.speaker = name;
   meeting.speaker(name);
   captions.labels(null, name || "Room");
@@ -903,12 +950,12 @@ function onSpeaker(name) {
  * turn (LISTENING) saying how it ends. A plain talk never gets here with anything to do.
  */
 function syncMicUi() {
-  // a simulated online meeting has no room mic: the facilitator hears the participants' clips
-  const room = S.micOpen && ROOM_STATES.has(S.state) && !clipsOn();
+  // a simulated online meeting has no room mic: the facilitator hears the participants' clips; nor has the observer
+  const room = S.micOpen && ROOM_STATES.has(S.state) && !clipsOn() && !OBSERVER;
   if (!room && !inDiscussion()) S.roomMuted = false;
   meeting.roomMic(room ? { muted: S.roomMuted } : null);
   if (!S.talk?.meeting || !S.micOpen) return;
-  if (clipsOn() && ROOM_STATES.has(S.state)) {
+  if ((clipsOn() || OBSERVER) && ROOM_STATES.has(S.state)) {
     captions.setFlag("listening", S.state === "ROOM");
     captions.hint("");
   } else if (room) {
@@ -923,7 +970,7 @@ function syncMicUi() {
 
 /** How an open turn ends, under "Listening…": Space (tap / hold). A participant's clip turn ends with the clip. */
 function listenHint() {
-  if (clipsOn()) return "";
+  if (clipsOn() || OBSERVER) return ""; // (the observer has no Space either)
   return S.micMode === "hold" ? LISTEN_HINTS.hold : LISTEN_HINTS.tap;
 }
 
@@ -934,6 +981,7 @@ function roomMutedNow() {
 
 /** ◀ / ▶ and the More menu's presenter actions. @param {ControlAction} action */
 function onControl(action) {
+  if (OBSERVER) return;
   if (!S.armed) {
     showOverlay();
     return;
@@ -944,6 +992,7 @@ function onControl(action) {
 
 /** Leave: Relay stops and the presenter has the floor (the H key), behind a "you left" card. */
 function onLeave() {
+  if (OBSERVER) return;
   if (!S.armed) {
     showOverlay();
     return;
@@ -1011,6 +1060,7 @@ function onChunkEnded(playId) {
  * @param {string} why
  */
 function onSilentChunk(req, why) {
+  if (OBSERVER) return; // the observer plays no audio: the silent timer is its clock (the bot plays the chunk)
   report("warning", `narration ${req.key} plays without audio: ${why}`);
   toasts.show(`Narration ${req.key} has no audio (${why}): captions only`);
 }
@@ -1096,6 +1146,7 @@ function onSocketOpen() {
   status.server(true);
   meeting.server(true);
   checklist.set("server", "ok", location.host);
+  if (OBSERVER) return; // the socket said hello; an observer says nothing else
   if (S.armed) send({ type: "arm" }); // a restarted server needs to hear it again
   if (S.speaker !== null) send({ type: "speaker", name: S.speaker }); // …and who is speaking
 }
@@ -1159,9 +1210,17 @@ const HANDLERS = new Map([
   ["evidence", (m) => meeting.evidence(normalizeLookup(m))],
   ["transcript", onTranscript],
   ["alignment", (m) => meeting.alignment(normalizeEvent(m))],
-  // a simulated online meeting: the backend heard a participant's clip start while the facilitator spoke
-  ["barge_in", (m) => meeting.bargeIn(typeof m.speaker === "string" ? m.speaker : "", /** @type {number|null} */ (toInt(m.played_ms, null)))],
+  // a simulated online meeting (or a participant in Zoom): the backend heard a participant start while the
+  // facilitator spoke
+  ["barge_in", onBargeIn],
 ]);
+
+/** @param {Msg} m */
+function onBargeIn(m) {
+  const who = typeof m.speaker === "string" ? m.speaker : "";
+  meeting.bargeIn(who, /** @type {number|null} */ (toInt(m.played_ms, null)));
+  meeting.participantSpoke(who || null); // (a participant in Zoom: their tile speaks for a moment)
+}
 
 /** @param {Msg} msg */
 function dispatch(msg) {
@@ -1256,6 +1315,8 @@ function onHello(m) {
     }
     meeting.meetingInfo(info);
   }
+  if (typeof m.input === "string" && m.input) S.input = m.input; // clips | mic | voice (the Zoom bot's participants)
+  syncInput();
   // The demo script, if /api/talk didn't have it. Only before joining: a page that joined with the mic stays so.
   const demoInfo = normalizeDemo(m.demo);
   if (S.talk && !S.armed && !S.arming) {
@@ -1329,6 +1390,7 @@ function onTranscript(m) {
   const u = normalizeUtterance(m);
   meeting.transcript(u);
   if (S.talk?.meeting && u.text) captions.user(u.text, u.source === "clip" && u.speaker ? clipLabel(u.speaker) : u.speaker || "Room");
+  meeting.participantSpoke(u.speaker); // (a participant in Zoom: their tile speaks for a moment)
 }
 
 /** @param {Msg} m */
@@ -1474,11 +1536,13 @@ function onCaption(m) {
   const text = typeof m.text === "string" ? m.text : "";
   if (m.role === "user") {
     // a simulated online meeting: a turn a prerecorded participant's clip started carries their name (the backend
-    // labels it); any other line (a typed question) is live, never "(recorded)", and keeps the label it has
+    // labels it); any other line (a typed question) is live, never "(recorded)", and keeps the label it has. In
+    // Zoom (input voice) the name is the participant Zoom heard (best effort); an unlabelled line is the room's.
     const who = typeof m.speaker === "string" && m.speaker ? m.speaker : null;
-    const label = clipsOn() && who ? clipLabel(who) : null;
+    const label = who && recordedOn() ? clipLabel(who) : who && voiceOn() ? who : null;
     captions.user(text, label);
-    meeting.caption(m, null, label ?? "You");
+    meeting.caption(m, null, label ?? (voiceOn() && S.talk?.meeting ? "Room" : "You"));
+    if (voiceOn()) meeting.participantSpoke(who);
     return;
   }
   if (m.role !== "assistant") return;
@@ -1545,14 +1609,16 @@ function boot() {
   engine = new AudioEngine();
   engine.onStateChange = onAudioState;
   narration = new NarrationPlayer(engine, { onEnded: onChunkEnded, onSilent: onSilentChunk });
-  replies = new ReplyPlayer(engine, {
-    onStart: (reply) => captions.replyStart(reply),
+  const replyHandlers = {
+    onStart: (/** @type {number} */ reply) => captions.replyStart(reply),
     onProgress: () => {
       captions.replyProgress(liveAudio());
       syncDemo(); // a talking-point cue waits for this much of the facilitator heard
     },
     onDrained: onReplyDrained,
-  });
+  };
+  // the observer plays nothing: its reply "player" paces what the bot plays in Zoom on the wall clock
+  replies = OBSERVER ? new ObserverReplyPlayer(replyHandlers) : new ReplyPlayer(engine, replyHandlers);
   clips = new ClipPlayer(engine);
   clipStream = new ClipStream({ now: () => engine.now(), send: sendClipFrame, onAudioEnd: onClipAudioEnd, onIdle: onClipStreamIdle });
   mic = new Microphone(engine, {
@@ -1563,19 +1629,33 @@ function boot() {
     },
   });
   deck = new Deck();
-  socket = new DeckSocket(deckSocketUrl(location), { onMessage: dispatch, onOpen: onSocketOpen, onClose: onSocketClose });
+  socket = new DeckSocket(
+    OBSERVER ? observerSocketUrl(location) : deckSocketUrl(location),
+    { onMessage: dispatch, onOpen: onSocketOpen, onClose: onSocketClose },
+    { client: OBSERVER ? "observer" : "deck" },
+  );
 
   installErrorReporting();
-  installKeys({
-    micMode: () => S.micMode,
-    armed: () => S.armed,
-    onAction: onKeyAction,
-    onFocusTyped: focusTyped,
-    onNotArmed: () => {
-      if (document.activeElement !== ui.arm) toasts.show(JOIN_FIRST, "info");
-    },
-    onInfo: () => meeting.toggleInfo(),
-  });
+  if (OBSERVER) {
+    // The facilitator's shared screen in Zoom: joined from the start (the handlers run as on a joined deck; `send`
+    // drops everything), no join dialog, no keys, no audio, no microphone; the clock and the speaking ring run.
+    S.armed = true;
+    ui.overlay.hidden = true;
+    meeting.enableObserver();
+    meeting.join(performance.now());
+    startLevelLoop();
+  } else {
+    installKeys({
+      micMode: () => S.micMode,
+      armed: () => S.armed,
+      onAction: onKeyAction,
+      onFocusTyped: focusTyped,
+      onNotArmed: () => {
+        if (document.activeElement !== ui.arm) toasts.show(JOIN_FIRST, "info");
+      },
+      onInfo: () => meeting.toggleInfo(),
+    });
+  }
   ui.arm.addEventListener("click", onArmClick);
   ui.done.addEventListener("click", hideOverlay);
   ui.overlay.addEventListener("click", (e) => {
