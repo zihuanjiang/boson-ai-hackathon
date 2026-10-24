@@ -519,3 +519,87 @@ def test_the_session_is_the_same_for_both_inputs(mk):
     clips, mic = mk(), mk(settings=Settings(narration="live", input="mic"))
     assert clips.c.session_config() == mic.c.session_config()
     assert clips.c.session_config()["audio"]["input"]["turn_detection"] is None
+
+
+# --- --input voice: a live participant stream (the Zoom bot, contract v5) ------------------------------------------
+
+
+async def voice(h: Harness, pcm: str = TONE, *, speaker: str | None = "Alice", reply: int | None = None,
+                played: int | None = None, at: dict | None = None) -> None:
+    """One 100 ms frame of the Zoom bot's ears: no clip id, no tail flag, the speaker when Zoom's UI shows one."""
+    msg = {"type": "mic", "source": "voice", "pcm": pcm, "speaker": speaker, "reply": reply, "played_ms": played}
+    if at is not None:
+        msg["at"] = at
+    await h.send(msg)
+
+
+async def test_input_voice_listens_in_every_state_and_barges_in_like_a_clip(mk):
+    """Real people in Zoom: their audio reaches the backend as `source: "voice"` frames (no clip id, no tail), and a
+    participant who starts talking while the facilitator presents interrupts it exactly as a clip does; the line ends
+    on the room segmenter's own silence (0.7 s), since nobody flags a clip's end."""
+    h = mk(settings=Settings(narration="live", input="voice"))
+    assert h.c.input_mode == "voice" and h.c._clip_seg is not None
+    assert h.c._clip_seg.end_frames == 70  # Segmenter() defaults: 700 ms (10 ms frames), not the clips' 1100 ms
+    await h.c.on_browser_connected()
+    hello = h.b("hello")[0]
+    assert hello["input"] == "voice" and hello["snapshot"]["input"] == "voice"
+    await present_first_point(h)
+    h.reset()
+    for _ in range(3):
+        await voice(h, reply=1, played=700)
+    barge = h.b("barge_in")[-1]
+    assert (barge["speaker"], barge["clip"], barge["played_ms"], barge["reply"]) == ("Alice", None, 700, 1)
+    assert h.c.state == LISTENING and h.c.turn.source == "clip" and h.c.turn.speaker == "Alice"
+    assert h.r("conversation.item.truncate")[0]["audio_end_ms"] == 700  # what the bot had played of it
+    assert (h.c.cursor.slide, h.c.cursor.live, h.c.cursor.heard_ms) == ("plan", True, 700)
+    assert h.c.cursor.heard.startswith("Release four point three")  # the words the bot had played, to resume after
+    assert h.b("mic") == []  # no local microphone to open: the bot streams by itself
+    for _ in range(7):  # the segmenter's 700 ms of silence ends the question
+        await voice(h, SILENCE, reply=None, played=None)
+    assert h.c.state == REPLYING and h.realtime.types()[-2:] == ["input_audio_buffer.commit", "response.create"]
+
+
+async def test_input_voice_labels_a_room_line_by_the_frames_speaker_or_the_current_one(mk):
+    h = mk(settings=Settings(narration="live", input="voice"))
+    await to_discussion(h)
+    assert h.c.state == ROOM
+    h.reset()
+    for _ in range(3):
+        await voice(h, speaker="Bob")
+    for _ in range(7):
+        await voice(h, SILENCE, speaker="Bob")  # the segmenter's silence commits the line, never answered
+    assert h.realtime.types()[-1] == "input_audio_buffer.commit" and "response.create" not in h.realtime.types()
+    await h.ev("input_audio_buffer.committed", item_id="item_bob")
+    await h.ev("conversation.item.input_audio_transcription.completed", item_id="item_bob", transcript=BOB_LINE)
+    utterance = h.b("transcript")[0]["utterance"]
+    assert (utterance["speaker"], utterance["text"], utterance["source"]) == ("Bob", BOB_LINE, "clip")
+    assert h.c.state == ROOM
+    await h.send({"type": "speaker", "name": "Carol"})  # the bot read Zoom's active-speaker UI
+    for _ in range(3):
+        await voice(h, speaker=None)  # a frame without a name: the current speaker labels it
+    assert h.c._clip_frame["speaker"] == "Carol"
+
+
+async def test_input_voice_ignores_clip_frames_and_clips_mode_ignores_voice_frames(mk):
+    voice_mode = mk(settings=Settings(narration="live", input="voice"))
+    await present_first_point(voice_mode)
+    voice_mode.reset()
+    await speak(voice_mode, 5, reply=1, played=500)  # `source: "clip"` frames: not this mode's stream
+    await stop(voice_mode)
+    assert voice_mode.c.state == NARRATING and voice_mode.b("barge_in") == []
+    assert [kind for kind, _ in voice_mode.logs].count("clip_frame_ignored") == 1
+    clips_mode = mk()
+    await present_first_point(clips_mode)
+    clips_mode.reset()
+    for _ in range(5):
+        await voice(clips_mode, reply=1, played=500)
+    assert clips_mode.c.state == NARRATING and clips_mode.b("barge_in") == []
+    assert [kind for kind, _ in clips_mode.logs].count("clip_frame_ignored") == 1
+
+
+def test_input_voice_needs_no_demo_script(tmp_path: Path):
+    from tests.test_meeting_flow import write_meeting
+
+    talk = load_talk(write_meeting(tmp_path / "plain"))
+    h = Harness(talk, synthetic_chunks(talk), Settings(narration="live", input="voice"))
+    assert (h.c.input_mode, h.c.demo, h.c._clip_seg is not None) == ("voice", None, True)

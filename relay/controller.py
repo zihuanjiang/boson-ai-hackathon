@@ -154,7 +154,8 @@ ERR_OFFLINE_TYPED = "Realtime offline — the typed question was not sent"
 ERR_OFFLINE_ROOM = "Realtime offline — the facilitator can't answer; typed lines still reach the alignment check"
 ERR_OFFLINE_CLIP = "Realtime offline — the facilitator can't hear the participants (typed lines still work)"
 ERROR_MAX_CHARS = 200
-INPUT_CLIPS, INPUT_MIC = "clips", "mic"  # config.INPUT_MODES (contract v3.1)
+INPUT_CLIPS, INPUT_MIC, INPUT_VOICE = "clips", "mic", "voice"  # config.INPUT_MODES (contracts v3.1, v5)
+PARTICIPANT_SOURCES = {INPUT_CLIPS: "clip", INPUT_VOICE: "voice"}  # the `source` of the frames each mode listens to
 CLIP_ID_MAX_CHARS = 40
 # A participant's line ends where the clip ends (the deck flags the silence it streams after a clip: `tail`). The
 # segmenter's own end is only the fallback for frames without the flag: longer than the room mic's 700 ms, so a pause
@@ -438,7 +439,10 @@ class Controller:
         self.demo = self._load_demo(talk)
         self.input_mode = input_mode(settings, self.demo)
         self.demo_payload: dict | None = self._default_demo_payload()  # the server sets the one with its clips
-        self._clip_seg: Segmenter | None = Segmenter(end_ms=CLIP_END_MS) if self.input_mode == INPUT_CLIPS else None
+        # clips: a line ends where its clip ends (the deck flags the tail), the segmenter is only the fallback. voice
+        # (the Zoom bot, contract v5): nobody flags anything, so a line ends after the room segmenter's own silence.
+        self._clip_seg: Segmenter | None = (Segmenter(end_ms=CLIP_END_MS) if self.input_mode == INPUT_CLIPS
+                                            else Segmenter() if self.input_mode == INPUT_VOICE else None)
         self._clip_on: str | None = None  # the clip id of the latest clip frame…
         self._clip_tail = False  # …and whether it was the silence after the clip (`tail`)
         self._clip_target: tuple | None = None  # the utterance being streamed: ("turn", Turn) · ("room", speaker,
@@ -774,12 +778,15 @@ class Controller:
         notes once the meeting is wrapped up."""
         if self.mstate is None:
             return
+        await self._send(self._meeting_message())
+
+    def _meeting_message(self) -> dict:
         self.mstate.checkpoint = self.checkpoint()
         body = self.mstate.to_json()
         msg = {**(body if isinstance(body, dict) else {}), "type": "meeting", "checkpoint": self.checkpoint()}
         if self.mstate.phase == WRAPUP and "notes" not in msg:
             msg["notes"] = self.mstate.notes()
-        await self._send(msg)
+        return msg
 
     async def _sync_state(self, *, force: bool = False) -> None:
         msg = self._state_message()
@@ -903,18 +910,31 @@ class Controller:
                 await self._resume_room(run_flows=False)
             else:
                 self._set_state(IDLE, BANNER_PAUSED_R)
-        await self._send({"type": "hello", "talk": self.talk.id, "version": self._version(),
-                          "mic_mode": self.settings.mic_mode, "narration_mode": self.settings.narration,
-                          "meeting": meeting_info(self.meeting), "input": self.input_mode, "demo": self.demo_payload,
-                          "snapshot": self.snapshot()})
+        for msg in self._greeting_bundle():
+            await self._send(msg)
+        self._last_state = self._state_message()  # the bundle carried the state (as _sync_state(force=True) would)
+
+    def greeting(self) -> list[dict]:
+        """The greeting bundle for an observer (`/ws/observe`, contract v5): the same messages a connecting deck
+        gets, without the side effects (nothing is halted, no state is sent to the deck). Read-only."""
+        return self._greeting_bundle()
+
+    def _greeting_bundle(self) -> list[dict]:
+        hello = {"type": "hello", "talk": self.talk.id, "version": self._version(),
+                 "mic_mode": self.settings.mic_mode, "narration_mode": self.settings.narration,
+                 "meeting": meeting_info(self.meeting), "input": self.input_mode, "demo": self.demo_payload,
+                 "snapshot": self.snapshot()}
+        bundle: list[dict] = [hello]
         if self.state != NARRATING:
-            await self._send({"type": "stop"})
-        await self._send({"type": "mic", "open": self._mic_open})  # open only while listening to the room
-        await self._send({"type": "slide", "slide": self.current_slide.id, "fragment": self.fragment})
-        await self._sync_state(force=True)
+            bundle.append({"type": "stop"})
+        bundle.append({"type": "mic", "open": self._mic_open})  # open only while listening to the room
+        bundle.append({"type": "slide", "slide": self.current_slide.id, "fragment": self.fragment})
+        bundle.append(self._state_message())
         status, detail = self._connection
-        await self._send({"type": "connection", "status": status, "detail": detail})
-        await self._send_meeting()
+        bundle.append({"type": "connection", "status": status, "detail": detail})
+        if self.meeting is not None:
+            bundle.append(self._meeting_message())
+        return bundle
 
     def _version(self) -> str | None:
         """Identity of what this server run presents (`/api/talk` carries the same value): a deck that sees another
@@ -935,7 +955,7 @@ class Controller:
         self._set_state(IDLE, self._idle_banner())
 
     async def _on_mic(self, msg: dict) -> None:
-        if msg.get("source") == "clip":
+        if msg.get("source") in PARTICIPANT_SOURCES.values():
             await self._on_clip_frame(msg)
             return
         turn = self.turn
@@ -985,14 +1005,17 @@ class Controller:
     # --- the participants' clips (an online meeting, contract v3.1 §3) -------------------------------------------
 
     async def _on_clip_frame(self, msg: dict) -> None:
-        """A 100 ms frame of a prerecorded participant's clip, streamed by the deck while it plays the clip (then 1.2 s
-        of silence). The facilitator's own audio is never in this stream, so it is listened to in every state: one
-        participant segmenter buffers it locally and, at an utterance's start, decides what the participant's words
-        are — a barge-in on the facilitator, a question in a pause, or a line of the discussion."""
-        if self.input_mode != INPUT_CLIPS or self._clip_seg is None:
+        """A 100 ms frame of a participant's audio: a prerecorded clip the deck plays and streams (`source: "clip"`,
+        then 1.2 s of flagged silence), or a live participant stream with no acoustic path back to the facilitator
+        (`source: "voice"`: the Zoom bot's ears, contract v5). The facilitator's own audio is never in this stream, so
+        it is listened to in every state: one participant segmenter buffers it locally and, at an utterance's start,
+        decides what the participant's words are — a barge-in on the facilitator, a question in a pause, or a line of
+        the discussion. A frame of the other source (or any in mic mode) is ignored, logged once."""
+        if self._clip_seg is None or msg.get("source") != PARTICIPANT_SOURCES.get(self.input_mode):
             if not self._clip_ignored:
                 self._clip_ignored = True
-                self._note("clip_frame_ignored", {"input": self.input_mode, "clip": msg.get("clip")})
+                self._note("clip_frame_ignored", {"input": self.input_mode, "source": msg.get("source"),
+                                                  "clip": msg.get("clip")})
             return
         pcm = msg.get("pcm")
         audio = _pcm(pcm) if isinstance(pcm, str) and pcm else None

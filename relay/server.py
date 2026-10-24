@@ -242,17 +242,27 @@ class DeckHub:
         self._tasks: set[asyncio.Task] = set()
         self._audio_out: dict[Any, list[int]] = {}
         self._mic_in = [0, 0]
+        # Observers (contract v5): read-only copies of the deck's feed (`/ws/observe`), e.g. the page the Zoom bot
+        # shares as its screen while the bot itself is the deck. They never drive the show and never count as it.
+        self._observers: list[_Deck] = []
+        self._observer_count = 0
 
     @property
     def connected(self) -> bool:
         return self._deck is not None
 
+    @property
+    def observers(self) -> int:
+        return len(self._observers)
+
     async def send(self, msg: dict) -> None:
-        deck = self._deck
-        if deck is None:
-            return
         text = self._encode(msg)
         if text is None:
+            return
+        if self._observers:
+            self._spawn(self._fan_out(text, _kind(msg)))
+        deck = self._deck
+        if deck is None:
             return
         async with deck.lock:
             if self._deck is not deck:
@@ -303,6 +313,71 @@ class DeckHub:
                     self._flush_logs()
                     self._log("deck_disconnected", {"deck": deck.number})
                     await _call(self._log, controller, "on_browser_disconnected")
+
+    # --- observers (read-only copies of the deck's feed) --------------------------------------------------------
+
+    async def observe(self, ws: WebSocket, controller: Any) -> None:
+        """The whole life of one observer connection (the `/ws/observe` handler): it gets the deck's greeting bundle
+        and then a copy of everything sent to the deck; its own input is ignored except `hello` (greeted again). It
+        never replaces the deck, never reaches the controller, and a hung observer is dropped, not waited for."""
+        try:
+            await ws.accept()
+        except Exception as exc:  # noqa: BLE001
+            self._log("observer_accept_failed", {"error": repr(exc)})
+            return
+        self._observer_count += 1
+        observer = _Deck(ws, self._observer_count)
+        self._observers.append(observer)
+        self._log("observer_connected", {"observer": observer.number})
+        try:
+            await self._greet_observer(observer, controller)
+            while True:
+                try:
+                    message = await ws.receive()
+                except Exception as exc:  # noqa: BLE001
+                    self._log("observer_receive_failed", {"observer": observer.number, "error": repr(exc)})
+                    return
+                if message.get("type") == "websocket.disconnect":
+                    return
+                msg = self._parse(message)
+                if isinstance(msg, dict) and msg.get("type") == "hello":
+                    await self._greet_observer(observer, controller)
+        finally:
+            if observer in self._observers:
+                self._observers.remove(observer)
+            self._log("observer_disconnected", {"observer": observer.number})
+
+    async def _greet_observer(self, observer: _Deck, controller: Any) -> None:
+        """The deck's greeting bundle (`Controller.greeting()`), sent to one observer only."""
+        try:
+            bundle = controller.greeting()
+        except Exception as exc:  # noqa: BLE001
+            self._log("server_error", {"where": "greeting", "error": repr(exc)})
+            return
+        for msg in bundle:
+            text = self._encode(msg)
+            if text is not None and not await self._send_observer(observer, text, _kind(msg)):
+                return
+
+    async def _fan_out(self, text: str, kind: Any) -> None:
+        for observer in list(self._observers):
+            await self._send_observer(observer, text, kind)
+
+    async def _send_observer(self, observer: _Deck, text: str, kind: Any) -> bool:
+        """One frame to one observer; a stalled or dead observer is dropped (closed in the background)."""
+        if observer not in self._observers:
+            return False
+        try:
+            async with observer.lock:
+                async with asyncio.timeout(self._send_timeout):
+                    await observer.ws.send_text(text)
+            return True
+        except Exception as exc:  # noqa: BLE001 - stopped reading, or gone
+            if observer in self._observers:
+                self._observers.remove(observer)
+                self._log("observer_dropped", {"observer": observer.number, "type": kind, "error": repr(exc)})
+                self._spawn(self._close_detached(observer, STALLED_CLOSE_CODE, STALLED_REASON))
+            return False
 
     async def _read(self, deck: _Deck, controller: Any) -> None:
         while True:
@@ -367,6 +442,9 @@ class DeckHub:
         deck, self._deck = self._deck, None
         if deck is not None:
             await self._close(deck, code, reason, timeout=self._close_timeout)
+        observers, self._observers = list(self._observers), []
+        for observer in observers:
+            await self._close(observer, code, reason, timeout=self._close_timeout)
         tasks = list(self._tasks)
         for task in tasks:
             task.cancel()
@@ -629,11 +707,17 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
             state = controller.snapshot().get("state")
         except Exception:  # noqa: BLE001
             state = "unknown"
-        return {"ok": True, "realtime": link.status, "state": state, "detail": link.detail, "deck": hub.connected}
+        return {"ok": True, "realtime": link.status, "state": state, "detail": link.detail, "deck": hub.connected,
+                "observers": hub.observers}
 
     @app.websocket("/ws")
     async def deck_socket(ws: WebSocket) -> None:
         await hub.serve(ws, controller)
+
+    @app.websocket("/ws/observe")
+    async def observer_socket(ws: WebSocket) -> None:
+        """A read-only copy of the deck's feed (contract v5): the page the Zoom bot shares as its screen."""
+        await hub.observe(ws, controller)
 
     app.mount("/web", StaticFiles(directory=web_dir, check_dir=False), name="web")
     app.mount("/talk", StaticFiles(directory=talk.root, check_dir=False), name="talk")
