@@ -263,3 +263,21 @@ Add our own findings here as we hit them (date them).
     read as plain sentences once asked for ("Friday's release is beta and the announcement goes to beta users
     only."). Facilitator silent on Bob's conflicting line alone; the question 0.3–0.5 s after Carol's "Great, let's
     finalize that." End of speech → first audio ~1.0 s.
+- **Claude alignment analysis, live 2026-10-24 (Anthropic API, separate billing; `scripts/alignment_eval.py`,
+  `scripts/live_check.py --alignment claude`):**
+  - Structured outputs refuse a schema whose compiled grammar is too large (HTTP 400 "The compiled grammar is too
+    large", every model): the full result schema (52 fields) failed; ≈ 41 fields in 6 object types compile, 43
+    don't. Hence the compact wire schema (D85; a test pins the budget). The first request with a new schema pays a
+    one-time compile.
+  - Eval, 14 scenarios / 53 labelled lines, effort low, one run each (after the commitment definitions were added to
+    the instruction): Opus 5.5 47/53 lines as labelled, Sonnet 5.5 48/53, Haiku 5.5 43/53 (3 unnecessary questions).
+    Opus p50 3.7 s / p95 5.9 s per analysis, $0.64 for the 53 lines with the documents cached; Sonnet 2.7 / 5.3 s,
+    $0.35; Haiku 2.6 / 8.2 s, $0.02. Before the definitions, Opus rated "go with that" as `nearing` (no question)
+    and Sonnet rated a single "I'll announce…" as `committed` (a question too early). **Ken: just use Opus.**
+  - Misses left (all models): the rollback owner nobody holds is recorded as decided instead of asked; Sonnet once
+    read "let's lock in fifty thousand" as partly resolving the $30k conflict (instruction tightened since, not yet
+    re-measured); one label set (`budget-hidden-disagreement`) expects the question a line later than the model asks.
+  - End to end (`talks/submission-review`, Opus): all 8 checks; the question 7.6 s after Carol's confirmation = 2.3 s
+    waiting for the analysis of Bob's line + 4.9 s for Carol's + 0.4 s to first audio (pattern check: 0.3 s). The
+    analysis cited LIM-2 and the earlier answer (CL-1); the decision with owner Bob landed in the notes. Opus writes
+    360–620 output tokens per analysis: that, not input, is the latency.

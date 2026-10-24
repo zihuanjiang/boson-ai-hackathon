@@ -103,9 +103,11 @@ presentation runs between Alice's clip and the discussion.
 
 ## The run (about 2:55 projected; re-time from the rehearsal)
 
-Measured live on 2026-10-24 (`scripts/live_check.py`, 1.5-preview, 190 words of notes): Alice's clip at 0:36, the
-discussion opens at 2:20, Carol confirms at 2:25, the clarification question follows 0.3 s later, Carol corrects at
-2:39, the decision is confirmed, Wrap up at 2:54 and the summary ends near 3:05. The first run with 211 words of
+Measured live on 2026-10-24 with the model-based check (`scripts/live_check.py --alignment claude`, 1.5-preview,
+Claude Opus 5.5, all 8 checks): Alice's clip at 0:31, the discussion opens at 2:17, Carol confirms at 2:23, the
+clarification question follows 7.6 s later (the analysis of Bob's line still running, then Carol's own), Carol
+corrects at 2:45, the decision is confirmed, Wrap up at 3:07 and the summary ends near 3:18. (Earlier, with the
+pattern check: the question 0.3 s after Carol, summary near 3:05.) The first run with 211 words of
 notes opened the discussion at 2:50; if the next rehearsal runs long, trim `listen-check` and `limits-scope` first.
 
 Times are video time. The projection (`.scratch/same-page/intro/apply/timing.py`) scales the rollout-review live run

@@ -224,5 +224,6 @@ and an integration question for Boson rather than a known Higgs limitation.
 The alignment check is a model's judgement, validated but not calibrated: it can miss a conflict or raise one that a
 participant would have corrected a sentence later (the controller waits for an analysis in flight before speaking,
 but not forever), and each check is a model round trip, so a question comes a few seconds after the confirming line
-rather than instantly. It needs an Anthropic key and the network; without them the meeting runs without the check.
-(The model-based check is still being integrated: until it is, run the demo from `claude/demo-stable`.)
+rather than instantly (measured live on 24 October with Claude Opus 5.5: 4–6 s per analysis, the question 7.6 s
+after the confirming line). It needs an Anthropic key and the network; without them the meeting runs without the
+check (`--alignment legacy` runs the old patterns instead).

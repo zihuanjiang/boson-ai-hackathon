@@ -4,12 +4,12 @@ Spec: `doc/brief.md`. Build contract (interfaces, protocol, state machine): `doc
 
 ## Status
 
-2026-10-24 (Sat) — **Model-based alignment in progress** (D76–D82, branch `claude/semantic-alignment`, worktree
-`.scratch/worktrees/alignment-worker`): `relay/semantic.py` (snapshot, typed result, reconcile, policy, Claude
-adapter, fake, runner) and the meeting-state additions are built and tested; the controller integration, the issue
-cards and the second corpus + live evaluation are being built from `.scratch/semantic-alignment/contract.md`. Live
-verification (`scripts/alignment_eval.py`, `scripts/live_check.py` with the Claude analyzer) still to run once
-`ANTHROPIC_API_KEY` is in the worktree's `.env`.
+2026-10-24 (Sat) — **Model-based alignment works live** (D78–D87, branch `claude/semantic-alignment`): Claude Opus 5.5
+reads the discussion (compact wire schema), the controller verifies and gates, the Zoom bot defaults to it.
+`scripts/live_check.py --talk talks/submission-review --alignment claude`: all 8 checks, the question 7.6 s after the
+confirmation (pattern check: 0.3 s). Eval (53 labelled lines): Opus 47/53. An independent review's 10 findings are
+fixed. Offline: 1794 tests + web suite. Open: the rollback-owner case is missed by the model; the runner can restart
+an analysis on a new line (`preempt_within_s`, off) to cut ~2 s — not enabled or measured yet.
 
 2026-10-24 (Sat) ~00:45 — **The online-meeting demo passes its definition of done live** (patch §8, all 8 checks of
 `scripts/live_check.py --talk talks/rollout-review`, twice in a row): voice barge-in by Alice's clip, a lookup-grounded
@@ -128,7 +128,7 @@ start of its sentence for the resume. Details: `doc/design.md`.
 | D78 | **Alignment is model-based** (Ken's guide `doc/alignment_replacement_prompt.md`, 2026-10-24, branch `claude/semantic-alignment`): the **Claude API** (Anthropic SDK, `ANTHROPIC_API_KEY`, separate billing) reads every source passage, the discussion, the clarifications and the decisions and returns a typed result (`relay/semantic.py`: claims, assumptions, issues of three kinds — evidence conflict, hidden disagreement, ambiguous decision — updates, decision proposals); Higgs Realtime keeps transcription and speech. The regex engine (`relay/alignment.py`, `checks.yaml`) survives only as the explicit `--alignment legacy` mode | the facilitator was "not clever in responding and deciding when and what to interrupt": the patterns caught only the prepared contradiction; the guide authorizes Claude for the analysis |
 | D79 | The analysis runs **outside the controller lock** (`AnalysisRunner`: one request in flight, a newer snapshot replaces the waiting one, results applied under the lock and discarded when the meeting generation changed) | a network call must never hold the lock that handles audio and interruptions; coalescing keeps every intervening utterance (the newest snapshot has them all) |
 | D80 | **Deterministic gate** over the model's recommendation (`decide_policy`): a spoken clarification needs `clarify` with at least medium confidence, commitment `confirming`/`committed`, evidence the snapshot vouches for (a passage/clarification/decision for an evidence conflict; two participants' own words for a hidden disagreement; a named missing detail for an ambiguous decision) and a question; otherwise a silent suggestion; nothing without verified evidence. Every cited id and quote is checked against the snapshot (`reconcile`); owners must be participants | the guide: the model interprets, the application decides and writes; a confident accusation without support is worse than silence |
-| D81 | Default analysis model `claude-opus-5-5` at effort `low` (`RELAY_ALIGNMENT_MODEL`, `RELAY_ALIGNMENT_EFFORT`); the documents block is cached across the meeting's requests; latency and quality measured against `claude-sonnet-5-5` / `claude-haiku-5-5` by `scripts/alignment_eval.py` and recorded in `doc/gotchas.md` | the current Opus is the default for the analysis; the eval decides whether a faster model keeps the quality |
+| D81 | Default analysis model `claude-opus-5-5` at effort `low` (`RELAY_ALIGNMENT_MODEL`, `RELAY_ALIGNMENT_EFFORT`); the documents block is cached across the meeting's requests; latency and quality measured against `claude-sonnet-5-5` / `claude-haiku-5-5` by `scripts/alignment_eval.py` and recorded in `doc/gotchas.md` | the current Opus is the default for the analysis; measured 2026-10-24 against Sonnet/Haiku (doc/gotchas.md), and **Ken: "just use opus"** |
 | D82 | **No fallback**: `claude` mode without a key, or with the API down, shows `unavailable` and keeps transcribing and recording; it never runs the legacy patterns on its own | the guide: never present rules as a semantic success; a meeting without the check is still a meeting |
 | D83 | Sources may be a plain fact sheet: a `sources/*.md` file without `- [ID]` lines gets stable auto ids (`FACTS-1 …`, file order, located by line); `checks.yaml` is optional and only for the legacy mode | users supply documents, not extraction rules |
 | D84 | A validated decision proposal (confirmed, with an agreement utterance, owner a participant or unknown) is saved `by="analysis"`: spoken when it answers an intervention, silently into the notes otherwise; the facilitator's own `save_decision` is accepted only when it matches that proposal, never on transcript word overlap | the guide: capture agreed decisions without a conflict, but never an unconfirmed guess; content-word overlap is not proof |

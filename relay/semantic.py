@@ -910,7 +910,9 @@ class AnalysisRunner:
     every intervening utterance, so nothing is lost by coalescing). Results are delivered to `on_result` outside any
     lock; the controller discards stale ones by generation."""
 
-    def __init__(self, analyzer: Analyzer, on_result: OnResult, *, log: LogFn = null_log) -> None:
+    def __init__(self, analyzer: Analyzer, on_result: OnResult, *, log: LogFn = null_log,
+                 preempt_within_s: float = 0.0, max_preempts: int = 2,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self._analyzer = analyzer
         self._on_result = on_result
         self._log = log
@@ -918,6 +920,15 @@ class AnalysisRunner:
         self._waiting: Snapshot | None = None
         self._idle = asyncio.Event()
         self._idle.set()
+        # speed: a request arriving within `preempt_within_s` of the running analysis's start restarts it with the
+        # newer snapshot (the old answer would be stale soon after it lands, and waiting for it costs seconds);
+        # at most `max_preempts` restarts in a row, so constant talk can't starve the analysis
+        self.preempt_within_s = preempt_within_s
+        self.max_preempts = max_preempts
+        self._clock = clock
+        self._started_at = 0.0
+        self._preempts = 0
+        self.preempted = 0
         self.analyses = 0
         self.last_latency_ms: int | None = None
         self.last_error: str | None = None
@@ -944,8 +955,21 @@ class AnalysisRunner:
 
     def request(self, snapshot: Snapshot) -> None:
         if self.in_flight:
+            young = self._clock() - self._started_at < self.preempt_within_s
+            if young and self._preempts < self.max_preempts:
+                old = self._task
+                self._task = None
+                old.cancel()  # its answer never arrives (_run returns on the cancellation)
+                self._preempts += 1
+                self.preempted += 1
+                self._waiting = None
+                self._log("analysis_preempted", {"revision": getattr(old, "snapshot", snapshot).revision,
+                                                 "by": snapshot.revision})
+                self._start(snapshot)
+                return
             self._waiting = snapshot
             return
+        self._preempts = 0
         self._start(snapshot)
 
     def refresh(self, snapshot: Snapshot) -> bool:
@@ -959,6 +983,7 @@ class AnalysisRunner:
 
     def _start(self, snapshot: Snapshot) -> None:
         self._idle.clear()
+        self._started_at = self._clock()
         task = asyncio.get_running_loop().create_task(self._run(snapshot))
         task.snapshot = snapshot  # type: ignore[attr-defined]
         self._task = task
@@ -966,9 +991,13 @@ class AnalysisRunner:
     async def _run(self, snapshot: Snapshot) -> None:
         try:
             outcome = await self._analyzer.analyze(snapshot)
+        except asyncio.CancelledError:
+            return  # preempted by a newer snapshot: the newer task owns the runner now
         except Exception as exc:  # noqa: BLE001 - an analyzer must not raise, but the meeting goes on if it does
             outcome = AnalysisOutcome(None, f"analyzer raised {type(exc).__name__}: {_clip(exc, 200)}", 0,
                                       getattr(self._analyzer, "model", "?"))
+        if self._task is not asyncio.current_task():
+            return  # (preempted just as it finished)
         self.analyses += 1
         self.last_latency_ms = outcome.latency_ms
         self.last_error = outcome.error
@@ -979,6 +1008,7 @@ class AnalysisRunner:
         finally:
             following, self._waiting = self._waiting, None
             if following is not None:
+                self._preempts = 0
                 self._start(following)
             else:
                 self._task = None

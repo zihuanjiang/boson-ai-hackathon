@@ -38,7 +38,7 @@
 <!-- .slide: id="results" -->
 ## Results
 
-**Measured live** · stops 0.2 s into a question · answers 1 s after it · clarifies 0.3–0.5 s after a confirmation · 8/8 checks (first demo) · 1,600 tests <!-- .element: class="fragment" -->
+**Measured live** · stops 0.2 s into a question · answers 1 s after it · asks ~7 s after a confirmation · 8/8 checks (first demo) · 1,600 tests <!-- .element: class="fragment" -->
 
 **Live here** · lookups, checks, decisions, notes · **Prerecorded** · participants, slides, documents <!-- .element: class="fragment" -->
 
