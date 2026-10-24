@@ -13,7 +13,10 @@
 #    picker, the room mic, Restart meeting), and the simulated online meeting (contract v3.1: demo.js's cues, WAV
 #    parsing and frame pacing on a fake audio clock; the page in clips mode: no getUserMedia, the participants'
 #    tiles and rings, the badge, the demo strip, the clips streamed as `mic` frames, the whole script, the barge-in
-#    cue, Play next, Stop / Restart; with `--input mic` everything as before)
+#    cue, Play next, Stop / Restart; with `--input mic` everything as before), and the observer page the Zoom bot
+#    shares as its screen (contract v5: `?view=observer` on `/ws/observe`: hello and nothing else, no AudioContext or
+#    microphone, no join dialog or keys, the whole feed rendered, karaoke and live captions on the wall clock, the
+#    "In Zoom" tiles and badge)
 # 4. static checks (offline assets, CSS variables and braces, selectors, script order, the meeting's DOM and click
 #    rules)
 # The layout itself, without the server: open tests/web/mock/meeting.html in Chrome. It checks itself (Relay's window
@@ -39,7 +42,7 @@ run() {
   fi
 }
 
-for m in util demo facilitator talk socket deck audio captions status keys panels meeting main; do
+for m in util demo facilitator talk socket deck audio observer captions status keys panels meeting main; do
   run "syntax js/$m.js" "$JSC" -m "web/js/$m.js"
 done
 for w in pcm-player mic-capture; do
@@ -63,6 +66,7 @@ run "demo.js" "$JSC" -m tests/web/test_demo.mjs
 run "demo view (clips)" "$JSC" -m tests/web/test_demo_view.mjs
 run "demo, backup narration" "$JSC" -m tests/web/test_demo_backup.mjs
 run "demo, input mic" "$JSC" -m tests/web/test_demo_mic.mjs
+run "observer (Zoom share)" "$JSC" -m tests/web/test_observer.mjs
 run "static" "$JSC" -m tests/web/test_static.mjs
 
 if [ "$fail" -ne 0 ]; then

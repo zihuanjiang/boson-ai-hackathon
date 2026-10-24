@@ -11,7 +11,9 @@
          "facilitator" states are On the Same Page (the agenda strip, the evidence callout, the tabbed side panel with
          the alignment card and the notes, the speaker picker); the "demo" states are the simulated online meeting
          (prerecorded participants' tiles, the disclosure badge, the demo script's controls in the agenda strip, the
-         routing line in Meeting info, the join dialog with the mic off). The verdict in the corner must say PASS.
+         routing line in Meeting info, the join dialog with the mic off); the "zoom" states are the observer page the
+         Zoom bot shares as its screen (contract v5: "In Zoom" tiles, the Live in Zoom badge, no mic, Leave or chat
+         box, the note in the mic button's place). The verdict in the corner must say PASS.
          tests/web/test_static.mjs checks that this copy still has every class of the real window. -->
     <link rel="stylesheet" href="../../../web/vendor/reveal/reset.css" />
     <link rel="stylesheet" href="../../../web/vendor/reveal/reveal.css" />
@@ -62,6 +64,7 @@
             ><i class="dot" aria-hidden="true"></i><span class="live-text">Higgs Realtime</span></span
           >
           <span class="pill demo-pill" hidden>Simulated participants · prerecorded audio</span>
+          <span class="pill zoom-pill" hidden>Live in Zoom · participants are real people</span>
           <span class="pill backup-badge">Backup audio</span>
           <span class="pill fake-pill">Fake</span>
           <span class="pill server-pill">Server offline</span>
@@ -509,6 +512,7 @@
               ><button type="button" class="speaker" role="radio" aria-checked="false">Room</button></span
             >
           </div>
+          <span class="observer-note" hidden>Shared from the facilitator's Zoom window</span>
         </div>
         <div class="toolbar-center">
           <button type="button" class="tb people-button" aria-pressed="true">
@@ -652,23 +656,47 @@
           ".people", ".chat", ".strip", ".more-menu", ".left-card", ".overlay", ".tile-hint", ".banner", ".agenda", ".callout",
           ".chat-title", ".tabs", ".evidence-pane", ".notes-pane", ".transcript-pane", ".chat-log", ".speakers",
           ".tile-you", ".demo-pill", ".demo", ".strip-routing", ".panel-demo", '[data-item="clips"]',
+          ".zoom-pill", ".observer-note", ".mic-button", ".leave-button", ".chat-compose",
         ].map($),
         ...document.querySelectorAll(".tile-participant"),
       ];
       const initial = touched.map((el) => el.hidden);
+      const tags = [...document.querySelectorAll(".tile-tag")];
       function reset() {
         touched.forEach((el, i) => (el.hidden = initial[i]));
-        meeting.classList.remove("side-off", "captions-off", "has-demo");
+        meeting.classList.remove("side-off", "captions-off", "has-demo", "has-people", "in-zoom", "observer");
         meeting.classList.add("has-agenda");
         captions.dataset.mode = "live";
         $(".callout").dataset.kind = "intervention";
+        for (const tag of tags) {
+          tag.textContent = "Recorded";
+          delete tag.dataset.kind;
+          delete tag.closest(".tile").dataset.kind;
+        }
+        for (const b of document.querySelectorAll(".prev-button, .next-button, .phase-button")) b.disabled = false;
       }
       /** A simulated online meeting: the prerecorded participants' tiles, the badge, the demo controls, the routing. */
       function demo() {
-        meeting.classList.add("has-demo");
+        meeting.classList.add("has-demo", "has-people");
         $(".tile-you").hidden = true;
         for (const tile of document.querySelectorAll(".tile-participant")) tile.hidden = false;
         for (const sel of [".demo-pill", ".demo", ".strip-routing", ".panel-demo", '[data-item="clips"]']) $(sel).hidden = false;
+      }
+      /** The observer page in the Zoom setting: real participants' tiles ("In Zoom"), the badge, no control that sends. */
+      function zoom() {
+        meeting.classList.add("in-zoom", "has-people", "observer");
+        $(".tile-you").hidden = true;
+        for (const tile of document.querySelectorAll(".tile-participant")) {
+          tile.hidden = false;
+          tile.dataset.kind = "live";
+          const tag = tile.querySelector(".tile-tag");
+          tag.textContent = "In Zoom";
+          tag.dataset.kind = "live";
+        }
+        $(".tile-participant .tile-status").textContent = "Speaking";
+        for (const sel of [".zoom-pill", ".observer-note"]) $(sel).hidden = false;
+        for (const sel of [".mic-button", ".leave-button", ".chat-compose", ".speakers"]) $(sel).hidden = true;
+        for (const b of document.querySelectorAll(".prev-button, .next-button, .phase-button")) b.disabled = true;
       }
       /** A talk without a meeting: exactly Relay's window (the meeting additions off, the chat panel as the chat). */
       function plain() {
@@ -711,6 +739,11 @@
         { name: "demo: participants and panel hidden", apply: () => (demo(), ($(".chat").hidden = true), ($(".people").hidden = true), meeting.classList.add("side-off")) },
         { name: "demo: captions off", apply: () => (demo(), meeting.classList.add("captions-off")) },
         { name: "demo: join dialog (mic off, participant clips, disclosure)", apply: () => (demo(), ($(".overlay").hidden = false)) },
+        { name: "zoom: observer page, discussion, In Zoom participants, intervention callout", apply: zoom },
+        { name: "zoom: observer page, presenting, evidence callout, Evidence tab", apply: () => (zoom(), pane("evidence"), ($(".callout").dataset.kind = "evidence")) },
+        { name: "zoom: observer page, wrap-up notes", apply: () => (zoom(), pane("notes"), ($(".callout").dataset.kind = "decision")) },
+        { name: "zoom: observer page, panel closed", apply: () => (zoom(), ($(".chat").hidden = true)) },
+        { name: "zoom: observer page, captions off", apply: () => (zoom(), meeting.classList.add("captions-off")) },
       ];
 
       const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -773,8 +806,8 @@
         // the toolbar, every button in it; the speaker picker clear of the centre buttons
         const bar = box($(".toolbar"));
         if (!within(bar, view())) p.push(`toolbar not fully visible (${fmt(bar)})`);
-        for (const b of document.querySelectorAll(".toolbar .tb, .toolbar .leave-button")) {
-          if (!within(box(b), bar)) p.push(`toolbar button ${b.className} outside the toolbar`);
+        for (const b of document.querySelectorAll(".toolbar .tb, .toolbar .leave-button, .toolbar .observer-note")) {
+          if (shown(b) && !within(box(b), bar)) p.push(`toolbar item ${b.className} outside the toolbar`);
         }
         if (shown($(".speakers"))) {
           const picker = box($(".speakers"));

@@ -118,6 +118,7 @@ Writes, atomically, `out/talks/<id>/<slide>/<n>.wav` (as returned) and `<n>.json
 | `GET /clips/{step}.wav` | a prerecorded participant clip of the demo script (`audio/wav`, 24 kHz mono PCM16) from the in-memory snapshot taken at startup: the recording at `talks/<id>/clips/<step>.wav` if there is one, else the clip `relay.clips` generated in `out/talks/<id>/clips/`; 404 if neither exists (the server still starts, warns, and the step's `audio` is null) |
 | `GET /talk/{path}` | static files from the talk folder (images) |
 | `GET /healthz` | `{"ok": true, "realtime": "<status>", "state": "<state>", "detail": "<link detail>\|null", "deck": bool}` |
+| `WS /ws/observe` | a **read-only copy of the deck's feed** (contract v5: the page the Zoom bot shares as its screen, `/?view=observer`). Any number of observers; each gets the deck's greeting bundle (`Controller.greeting()`, no side effects) and then every message the backend sends the deck; its own input is ignored except `hello` (greeted again). Observers never replace the deck, never reach the controller, and one that stops reading for 5 s is dropped (4001). `/healthz` counts them (`observers`) |
 | `WS /ws` | the deck control socket (§4); one deck at a time. Close 4000 = replaced by a newer deck (the client doesn't reconnect; the replaced deck's input is ignored). 4001 = the deck stopped reading for 5 s and was dropped: the controller hears at once, and the 4001 goes out whenever the tab reads again (the close is never abandoned: uvicorn writes it only once the tab reads), so the tab reconnects. A dropped deck that sends input after its close failed has its connection ended (it reconnects) |
 
 `create_app(talk_dir, settings=None, *, out_root=OUT, connect=None, controller_factory=None, chunks=None,
@@ -158,8 +159,10 @@ the simulated online meeting of `doc/online_meeting_patch.md`) = `{input, voices
 clip), `when` is the step's cue as written plus `timeout_ms` (always present, default 90 000), `audio` is
 `/clips/<id>.wav` or null when the clip is missing, `recorded` = a recording rather than a generated clip, `fake` = a
 `relay.clips --fake` tone burst. `input` = `clips` (the participants are the demo's prerecorded clips, streamed by the
-deck; the microphone stays off) or `mic` (the room microphone and tap-to-talk, as before): `--input` / `RELAY_INPUT`,
-default `clips` for a talk with `demo.yaml`, else `mic`.
+deck; the microphone stays off), `mic` (the room microphone and tap-to-talk, as before) or `voice` (a live participant
+stream with no acoustic path back to the facilitator: the Zoom bot, `scripts/zoom_bot.py`, is the deck and streams
+what it hears in the meeting as `source: "voice"` frames; real people, no clips, no local microphone; contract v5):
+`--input` / `RELAY_INPUT`, default `clips` for a talk with `demo.yaml`, else `mic`.
 
 ## 4. Deck socket protocol (`/ws`, JSON text frames)
 
@@ -171,12 +174,12 @@ default `clips` for a talk with `demo.yaml`, else `mic`.
 
 | `type` | Fields | When |
 | --- | --- | --- |
-| `hello` | `client: "deck"` | on (re)connect |
+| `hello` | `client: "deck"` (`"observer"` on `/ws/observe`: the page in `?view=observer`, which sends nothing else) | on (re)connect |
 | `arm` | — | after the Arm click, once unlocking audio (AudioContext at 24 kHz), the mic request and the narration preload have all settled, failures included (the checklist shows them); again after every reconnect |
 | `key` | `key`, `at: Position\|null`, `reply: int\|null`, `reply_played_ms: int\|null` | presenter key. `key` ∈ `space`, `space_up`, `esc`, `next`, `prev`, `pause`, `human`, `relay`. `at`/`reply`/`reply_played_ms` go with **every** key (null when nothing plays); `reply_played_ms` is the listener estimate, `reply_drained.played_ms` the exact count |
 | `chunk_ended` | `play_id` | a narration chunk played to its natural end (never sent for a stopped chunk) |
 | `reply_drained` | `reply`, `played_ms` | the reply player is empty **after** `reply_end` for that reply |
-| `mic` | `pcm` (base64 PCM16 24 kHz mono, ~100 ms) | only while the backend has the mic open |
+| `mic` | `pcm` (base64 PCM16 24 kHz mono, ~100 ms) | only while the backend has the mic open. **Participant frames** carry `source`: `"clip"` (a prerecorded clip the deck plays and streams, with `speaker`, `clip`, `tail: bool`, `reply`, `played_ms`, `at`; contract v3.1) or `"voice"` (a live participant stream with no acoustic path back to the facilitator — the Zoom bot's ears; `speaker` best effort or null, no `clip`, no `tail`; contract v5). Both are accepted in every state when the server runs the matching `--input`; the other source is ignored (logged once). A line in the `voice` stream ends after the segmenter's own 0.7 s of silence |
 | `typed` | `text`, `at`, `reply`, `reply_played_ms` | typed-question fallback (Enter in the box) |
 | `log` | `level`, `message` | client errors worth keeping in the server log |
 
@@ -488,6 +491,19 @@ and `VERSION` with sha256s, by `scripts/vendor_reveal.sh` from raw.githubusercon
 | `js/captions.js` | karaoke for narration (words past/current/next), cut word marked, jump-back animation to `resume_word`; live user/assistant captions |
 | `js/status.js` | status strip: state, phase, slide, mic meter, Realtime dot, last latency, tool ticker, mic mode, fake-audio badge; banner; countdown |
 | `js/keys.js` | presenter keys (§4) |
+| `js/observer.js` | observer mode (`?view=observer`, contract v5): `ObserverReplyPlayer`, a wall-clock stand-in for the reply player (24 kHz pacing from the first `reply_audio`, `drained` after `reply_end`), so live captions and the facilitator's speaking ring follow the audio the bot is playing into Zoom without any audio here |
+
+**Observer mode** (`?view=observer`, also `?view=zoom` or `#observer`): the page the Zoom bot shares as its screen.
+It connects to `/ws/observe` (socket.js `observerSocketUrl`), sends `hello {client: "observer"}` on every (re)connect
+and nothing else (main.js's `send()` returns false; `DeckSocket` with `client: "observer"` drops every other message).
+No AudioContext, no `getUserMedia`, no worklets, no join dialog (it arms itself logically), no key listeners; the
+mic button, Leave, the chat box, the speaker picker and Restart are hidden, the phase button and ◀ ▶ are disabled, a
+note says "Shared from the facilitator's Zoom window", and `document.title` is exactly "On the Same Page" (the bot's
+`--auto-select-tab-capture-source-by-title` picks the tab by it). Everything else renders from the messages as
+usual; a backup narration's karaoke runs on `performance.now()` (the NarrationPlayer's silent path). With
+`hello.input == "voice"` (observer or not) the topbar shows "Live in Zoom · participants are real people" and the
+agenda's participants get one tile each, tagged "In Zoom", lit for 2.5 s by `transcript`, `barge_in` or a labelled
+user `caption`; user captions carry the speaker Zoom heard, or "Room".
 
 Arm overlay = the pre-show checklist: server connected · talk loaded (N slides, M chunks, fake audio?) · audio
 unlocked (state, sample rate) · mic granted + live meter · narration preloaded (M/M) · Realtime ready. The Arm
@@ -571,6 +587,11 @@ uv run python -m relay serve talks/test                         # live → open 
 uv run python -m relay.clips talks/rollout-review [--fake]      # the meeting demo's participant clips (TTS 3)
 uv run python -m relay serve talks/rollout-review [--input mic] # the online meeting (input clips: mic off);
                                                                 #   --input mic / RELAY_INPUT=mic: the room mic
+uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --talk talks/submission-review
+                                                                # the facilitator in a Zoom meeting (contract v5):
+                                                                #   starts `serve --input voice`, joins as a guest,
+                                                                #   shares the observer page (/?view=observer);
+                                                                #   --dry-run: a fake Zoom page + fake Realtime
 uv run python scripts/smoke/realtime.py --tool                  # live smoke tests (also tts.py, avatar.py)
 uv run python -m relay.verify voices|tags|latency|tools|session|idle|all   # Appendix F (live API); all = not idle
 uv run python scripts/live_check.py                             # live run without a browser: real server + Higgs,

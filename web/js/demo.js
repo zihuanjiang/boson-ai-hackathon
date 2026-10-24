@@ -45,8 +45,9 @@ import { MIC_FRAME_SAMPLES, RATE, int16ToFloat, floatToInt16, rms } from "./util
  */
 /**
  * `/api/talk.demo` / `hello.demo`: the demo script and the backend's input (`clips`: the participants are the
- * clips, the mic stays off; `mic`: the room mic as before, and the page ignores the script).
- * @typedef {{steps: DemoStep[], input: "clips"|"mic"}} DemoInfo
+ * clips, the mic stays off; `mic`: the room mic as before, and the page ignores the script; `voice`: a live
+ * participant stream, the Zoom bot's (contract v5), and the page ignores the script too).
+ * @typedef {{steps: DemoStep[], input: "clips"|"mic"|"voice"}} DemoInfo
  */
 /**
  * What the page knows when a cue is evaluated.
@@ -151,7 +152,7 @@ export function normalizeDemo(raw) {
     .filter((/** @type {unknown} */ s) => s && typeof s === "object")
     .map(normalizeStep)
     .filter((/** @type {DemoStep} */ s) => s.id);
-  return { steps, input: d.input === "mic" ? "mic" : "clips" };
+  return { steps, input: d.input === "mic" || d.input === "voice" ? d.input : "clips" };
 }
 
 /** The participants are the clips (and the physical mic stays off). @param {DemoInfo|null|undefined} demo */

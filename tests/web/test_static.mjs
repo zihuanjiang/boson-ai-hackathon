@@ -19,7 +19,7 @@ function exists(path) {
   }
 }
 
-const JS = ["util", "demo", "facilitator", "talk", "socket", "deck", "audio", "captions", "status", "keys", "panels", "meeting", "main"].map(
+const JS = ["util", "demo", "facilitator", "talk", "socket", "deck", "audio", "observer", "captions", "status", "keys", "panels", "meeting", "main"].map(
   (n) => `web/js/${n}.js`,
 );
 const WORKLETS = ["web/worklets/pcm-player.js", "web/worklets/mic-capture.js"];
@@ -102,6 +102,10 @@ check("the disclosure badge sits in the topbar, hidden", inside('<div class="top
 check("the demo script's controls sit in the agenda strip before the phase button, hidden", inside('<nav class="agenda"', '<div class="demo"', '<button type="button" class="phase-button"') && /<div class="demo"[^>]* hidden>/.test(html));
 check("Run demo and Play next are buttons named exactly so", />Run demo<\/button>/.test(html) && />Play next<\/button>/.test(html));
 check("the routing line sits in Meeting info, hidden", inside('<section class="strip"', '<p class="strip-routing" hidden>', "</section>") && html.includes("participant clips only (facilitator audio is not sent)"));
+// the facilitator in Zoom (contract v5): the disclosure badge and the observer page's note, hidden until the hello says so
+check("the Live in Zoom badge sits in the topbar, hidden", inside('<div class="topbar-center">', 'class="pill zoom-pill"', '<div class="topbar-right">') && /class="pill zoom-pill"[^>]*\shidden\s*>Live in Zoom · participants are real people</.test(html));
+check("the observer's note sits by the mic button, hidden", inside('<div class="toolbar-left">', '<span class="observer-note"', "</footer>") && /<span class="observer-note"[^>]*\shidden\s*>Shared from the facilitator's Zoom window</.test(html));
+check("the page title is the product's (the share picker matches it)", /<title>Relay<\/title>/.test(html) && /OBSERVER_TITLE = "On the Same Page"/.test(read(`${ROOT}/web/js/meeting.js`)));
 
 // ---- assets referenced from JS
 for (const file of JS) {
@@ -164,8 +168,10 @@ check("the callout sits above the captions", /var\(--cap-h\)/.test(rule(".callou
 check("plain talks keep the old toolbar-left (the meeting's flex row is scoped)", rule(".toolbar-left").trim() === "justify-self: start;");
 check("ticker: newest chip ellipsises", /min-width:\s*0/.test(rule(".tool:first-child")) && /text-overflow:\s*ellipsis/.test(rule(".tool .tool-name")));
 // a simulated online meeting: the tiles in a 2 × 2 grid, the badge in the viewing badge's room, the strip folds
-check("demo: the tiles share a 2 × 2 grid", /display:\s*grid/.test(rule(".meeting.has-demo .people")) && /repeat\(2,/.test(rule(".meeting.has-demo .people")));
+check("participants (demo or Zoom): the tiles share a 2 × 2 grid", /display:\s*grid/.test(rule(".meeting.has-people .people")) && /repeat\(2,/.test(rule(".meeting.has-people .people")));
 check("demo: the disclosure badge takes the viewing badge's room", /display:\s*none/.test(rule(".meeting.has-demo .viewing")));
+check("Zoom: the Live in Zoom badge takes the viewing badge's room", /display:\s*none/.test(rule(".meeting.in-zoom .viewing")));
+check("Zoom: the observer's note ellipsises", /text-overflow:\s*ellipsis/.test(rule(".observer-note")) && /min-width:\s*0/.test(rule(".observer-note")));
 check("demo: the next step's text ellipsises", /text-overflow:\s*ellipsis/.test(rule(".demo-next")) && /min-width:\s*0/.test(rule(".demo-next")));
 check("demo: the other steps' titles fold", /display:\s*none/.test(rule('.meeting.has-demo .agenda-step:not([data-state=""]) .step-title, .meeting.has-demo .agenda-prompt'))); // strings are "" in `bare`
 check("icons never take a click from their button", /pointer-events:\s*none/.test(rule(".ico")));

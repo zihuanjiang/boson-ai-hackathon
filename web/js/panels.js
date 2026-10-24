@@ -100,10 +100,11 @@ export class Agenda {
     this.phases = [];
     this.current = "presentation";
     this.locked = false;
+    this.readOnly = false; // an observer (contract v5): the button shows the next phase but never presses it
     /** @type {ReturnType<typeof setTimeout>|undefined} */
     this.lockTimer = undefined;
     this.button.addEventListener("click", () => {
-      if (this.button.disabled || this.locked) return;
+      if (this.button.disabled || this.locked || this.readOnly) return;
       this.lock();
       onPhase();
     });
@@ -144,8 +145,8 @@ export class Agenda {
     });
     const { label, title, disabled } = phaseButton(this.current);
     this.button.textContent = label;
-    this.button.title = title;
-    this.button.disabled = disabled || this.locked;
+    this.button.title = this.readOnly ? "The operator moves the meeting on (the facilitator's Zoom window)" : title;
+    this.button.disabled = disabled || this.locked || this.readOnly;
     this.button.dataset.phase = this.current;
     const prompt = this.current === "discussion" ? this.phases.find((p) => p.id === "discussion")?.prompt ?? "" : "";
     this.promptEl.textContent = prompt ? quoted(prompt) : "";
@@ -238,7 +239,7 @@ export class DemoStrip {
   }
 }
 
-// ---------------------------------------------------------------- the prerecorded participants' tiles
+// ---------------------------------------------------------------- the participants' tiles (prerecorded, or in Zoom)
 
 /**
  * @typedef {object} ParticipantTile
@@ -247,6 +248,32 @@ export class DemoStrip {
  * @property {HTMLElement} status
  * @property {number} ringLevel
  */
+/**
+ * What the tiles say the participants are.
+ * @typedef {object} ParticipantTag
+ * @property {"recorded"|"live"} kind
+ * @property {string} text  the tag on the tile ("Recorded", "In Zoom")
+ * @property {(name: string) => string} title  the tag's tooltip
+ * @property {string} aria  "a prerecorded participant"
+ */
+
+/** @type {ParticipantTag} */
+export const RECORDED_TAG = Object.freeze({
+  kind: "recorded",
+  text: "Recorded",
+  title: (name) => `${name} is simulated: a prerecorded clip, played here and streamed to the facilitator as it plays`,
+  aria: "a prerecorded participant",
+});
+/**
+ * The participants are real people in the Zoom meeting the facilitator joined (contract v5).
+ * @type {ParticipantTag}
+ */
+export const LIVE_TAG = Object.freeze({
+  kind: "live",
+  text: "In Zoom",
+  title: (name) => `${name} is a real participant in the Zoom meeting: the facilitator hears them through its Zoom window`,
+  aria: "a participant in the Zoom meeting",
+});
 
 export class ParticipantTiles {
   /** @param {HTMLElement} people  the .people column (the tiles go after the facilitator's) */
@@ -256,8 +283,12 @@ export class ParticipantTiles {
     this.tiles = new Map();
   }
 
-  /** One tile per participant: avatar, a "Recorded" tag, name and role. @param {Participant[]} participants */
-  setup(participants) {
+  /**
+   * One tile per participant: avatar, the tag ("Recorded" / "In Zoom"), name and role.
+   * @param {Participant[]} participants
+   * @param {ParticipantTag} [tag]
+   */
+  setup(participants, tag = RECORDED_TAG) {
     for (const t of this.tiles.values()) t.el.remove();
     this.tiles.clear();
     for (const p of participants) {
@@ -265,9 +296,11 @@ export class ParticipantTiles {
       el.dataset.name = p.name;
       el.dataset.speaking = "false";
       el.dataset.playing = "false";
-      el.setAttribute("aria-label", `${p.name}${p.role ? `, ${p.role}` : ""}: a prerecorded participant`);
-      const tag = make("span", "tile-tag", "Recorded");
-      tag.title = `${p.name} is simulated: a prerecorded clip, played here and streamed to the facilitator as it plays`;
+      el.dataset.kind = tag.kind;
+      el.setAttribute("aria-label", `${p.name}${p.role ? `, ${p.role}` : ""}: ${tag.aria}`);
+      const tagEl = make("span", "tile-tag", tag.text);
+      tagEl.dataset.kind = tag.kind;
+      tagEl.title = tag.title(p.name);
       const avatar = make("div", "avatar");
       const ring = make("span", "ring");
       ring.setAttribute("aria-hidden", "true");
@@ -279,7 +312,7 @@ export class ParticipantTiles {
       const dot = make("span", "clip-dot");
       dot.setAttribute("aria-hidden", "true");
       plate.append(dot, make("span", "name", p.name), make("span", "role", p.role));
-      el.append(tag, avatar, status, plate);
+      el.append(tagEl, avatar, status, plate);
       this.people.append(el);
       this.tiles.set(p.name, { el, ring, status, ringLevel: -1 });
     }

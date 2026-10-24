@@ -161,7 +161,9 @@ key has access).
 _TBD_ — English only; narration must be pre-rendered (live narration falls back to it); Relay's talks use
 tap-to-talk floor control in the room (no speaker identification).
 
-The meeting demo is an online meeting, simulated: the participants are prerecorded clips with prepared speaker
-labels, and the script is fixed. In-person or hybrid meetings, where one room microphone also hears the facilitator's
-speakers, would need echo handling and possibly single-microphone diarization: future work, and an integration
-question for Boson rather than a known Higgs limitation.
+The meeting demos are online meetings: either simulated (the participants are prerecorded clips with prepared speaker
+labels, and the script is fixed) or a real Zoom call the facilitator joins as its own participant (`scripts/zoom_bot.py`;
+real people speak; speaker names come best-effort from Zoom's active-speaker display, never from the audio; one bot
+per meeting; it can't react to chat or raised hands). In-person or hybrid meetings, where one room microphone also
+hears the facilitator's speakers, would need echo handling and possibly single-microphone diarization: future work,
+and an integration question for Boson rather than a known Higgs limitation.
