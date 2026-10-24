@@ -3275,13 +3275,22 @@ kbd {
   color: var(--fg-2);
 }
 
-/* The observer IS the facilitator's screen share in Zoom (live 2026-10-24): Zoom already shows the people and their
-   controls, so the share drops the participant tiles (they read as a second, fake call) and the toolbar; the slides,
-   the agenda and the Evidence / Notes / Transcript panel stay. */
-.meeting.observer {
-  grid-template-rows: var(--top-h) minmax(0, 1fr) 0;
+/* The observer IS the facilitator's screen share in Zoom (Ken, live 2026-10-24): only the slides and, full height on
+   the right, the Evidence / Notes / Transcript / Chat panel. Zoom already shows the people and their controls, so no
+   topbar, agenda strip, participant tiles (they read as a second, fake call) or toolbar. */
+.meeting.observer,
+.meeting.observer.has-agenda {
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "share side";
 }
 
+.meeting.observer.side-off,
+.meeting.observer.has-agenda.side-off {
+  grid-template-areas: "share";
+}
+
+.meeting.observer .topbar,
+.meeting.observer .agenda,
 .meeting.observer .people,
 .meeting.observer .toolbar {
   display: none;
