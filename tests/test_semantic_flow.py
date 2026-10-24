@@ -22,6 +22,7 @@ from relay.controller import (
     ALIGNMENT_ANSWER_WINDOW, ALIGNMENT_HOLD_S, ALIGNMENT_WRAPUP_WAIT_S, BANNER_WRAPPING, INTERVENING, REPLY_WAIT_S,
     ROOM, ROOM_ECHO_S,
 )
+from relay.meeting import JOINED_ROLE
 from relay.talk import Talk, load_talk
 from tests.conftest import synthetic_chunks
 from tests.test_clip_flow import SILENCE, voice
@@ -776,6 +777,43 @@ async def test_zoom_voice_lines_without_a_speaker_are_analysed_and_can_be_a_hidd
     assert [v["speaker"] for v in intervene["participant_views"]] == ["Alice", None]  # never the model's "Bob"
     instructions = creates(h)[-1]["instructions"]
     assert 'someone said "is production"' in instructions and "Bob" not in instructions.split("They seem")[1]
+
+
+async def test_a_zoom_name_off_the_agenda_who_spoke_can_own_a_decision_and_one_who_never_spoke_cannot(mk):
+    """Real people in Zoom keep their own names: Dana Lee (not on the agenda) spoke, so the analysis sees her in the
+    roster and a decision she was assigned is saved with her as its owner (her action item too). Erin never said a
+    word in the meeting: an owner "Erin" is not a participant, as for any invented name, and the owner stays unknown."""
+    proposing = "I'll send the beta release notes on Friday."
+    agreeing = "Agreed, Dana sends them Friday."
+    decision = "Dana sends the beta release notes on Friday"
+
+    def confirmed(s: semantic.Snapshot) -> dict:
+        u1, u2 = uid(s, "release notes"), uid(s, "Agreed, Dana")
+        return {"decision_proposals": [proposal(decision=decision, owner="dana lee", owner_utterance_ids=[u1],
+                                                agreement_utterance_ids=[u2], follow_up="Send the beta release notes",
+                                                source_ids=["REQ-2"])]}
+
+    def stranger(s: semantic.Snapshot) -> dict:
+        u = uid(s, "Erin writes")
+        return {"decision_proposals": [proposal(decision="Erin writes the support FAQ", owner="Erin",
+                                                owner_utterance_ids=[u], agreement_utterance_ids=[u])]}
+
+    h = mk(script({"Agreed, Dana": confirmed, "Erin writes": stranger}),
+           settings=Settings(narration="live", alignment="claude", input="voice"))
+    await to_discussion(h)
+    h.reset()
+    await voice_line(h, proposing, "Dana Lee", "item_dana")
+    await voice_line(h, agreeing, "Carol", "item_carol")
+    await settle(h)
+    people = h.c.analyzer.calls[-1].participants
+    assert [p["name"] for p in people] == ["Alice", "Bob", "Carol", "Dana Lee"] and people[-1]["role"] == JOINED_ROLE
+    saved = h.c.mstate.decisions[0]
+    assert (saved.decision, saved.owner, saved.by) == (decision, "Dana Lee", "analysis")
+    assert [(a.owner, a.text) for a in h.c.mstate.action_items] == [("Dana Lee", "Send the beta release notes")]
+    await voice_line(h, "Agreed, and Erin writes the support FAQ.", "Carol", "item_erin")
+    await settle(h)
+    assert "owner 'Erin' is not a participant" in " | ".join(logged(h, "analysis_result")[-1]["dropped"])
+    assert all(d.owner != "Erin" for d in h.c.mstate.decisions) and "Erin" not in h.c.mstate.participant_names
 
 
 # --- review 2026-10-24: regressions ---------------------------------------------------------------------------------

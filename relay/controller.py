@@ -52,7 +52,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from . import alignment, evidence, prompts, semantic, tools
 from .config import RATE, STT_MODEL, Settings, input_mode
-from .meeting import MeetingState, load_demo, load_meeting
+from .meeting import JOINED_ROLE, MeetingState, Participant, live_speaker_name, load_demo, load_meeting
 from .ports import AsyncioClock, BrowserPort, Clock, LogFn, RealtimePort, Timer, null_log
 from .prompts import TurnContext, build_instructions, narration_instructions
 from .segmenter import Segmenter
@@ -497,6 +497,10 @@ class Controller:
         self._clip_target: tuple | None = None  # the utterance being streamed: ("turn", Turn) · ("room", speaker,
         # clip) · ("drop",) (its audio goes nowhere, e.g. Realtime offline or the floor closed under it)
         self._clip_frame: dict = {}  # the latest clip frame's speaker, clip, reply, played_ms and position
+        # voice (the Zoom bot): the speakers its frames named over the utterance being heard. Zoom's active-speaker
+        # indicator lags the speech by about a second, so the onset frame often still names the previous speaker:
+        # the line is labelled with the name most of its frames carried (clips: their prepared label, no vote).
+        self._speaker_votes: collections.Counter[str] = collections.Counter()
         self._clip_ignored = False  # a clip frame arrived in mic mode (logged once)
         self._flows: list[tuple[str, Any]] = []  # interventions and decisions waiting for the facilitator
         self._wrapup_pending = False  # the wrap-up waits for the transcript of the room's last line (WRAPUP_WAIT_S)
@@ -683,6 +687,37 @@ class Controller:
             return None
         found = self.meeting.participant(name)
         return found.name if found is not None else None
+
+    def _frame_speaker(self, name: Any) -> str | None:
+        """Who a participant frame names: an agenda participant (any case: their canonical name); in `--input voice`
+        (the Zoom bot) also anyone else Zoom showed as the active speaker, under their display name (canonicalised
+        against the people who joined already: MeetingState.joined); else None. Clips: agenda names only."""
+        found = self._participant_name(name)
+        if found is not None or self.input_mode != INPUT_VOICE or self.mstate is None:
+            return found
+        live = live_speaker_name(name)
+        if live is None:
+            return None
+        return self.mstate.participant(live) or live
+
+    def _prompt_meeting(self) -> Any:
+        """The meeting as the facilitator's instructions name it: the package, plus whoever joined in Zoom under a
+        name that is not on the agenda (they spoke: the transcript quotes them by that name)."""
+        if self.meeting is None or self.mstate is None or not self.mstate.joined:
+            return self.meeting
+        joined = tuple(Participant(name, JOINED_ROLE) for name in self.mstate.joined)
+        return dataclasses.replace(self.meeting, participants=(*self.meeting.participants, *joined))
+
+    def _voted_speaker(self, onset: str | None, what: str) -> str | None:
+        """The label of the utterance just heard (voice): the name most of its frames carried, else the onset's."""
+        if self.input_mode != INPUT_VOICE or not self._speaker_votes:
+            return onset
+        votes = dict(self._speaker_votes)
+        voted = self._speaker_votes.most_common(1)[0][0]
+        self._speaker_votes.clear()  # (counted once: the next utterance votes afresh)
+        if voted != onset:
+            self._note("speaker_vote", {"what": what, "onset": onset, "voted": voted, "votes": votes})
+        return voted
 
     @property
     def turn_detection(self) -> dict | None:
@@ -1138,11 +1173,17 @@ class Controller:
         clip = msg.get("clip")
         clip = clip if isinstance(clip, str) and 0 < len(clip) <= CLIP_ID_MAX_CHARS else None
         tail = msg.get("tail") is True  # the silence the deck streams after a clip (or after stopping it)
+        named = self._frame_speaker(msg.get("speaker"))
         self._clip_frame = {
-            "speaker": self._participant_name(msg.get("speaker")) or self.speaker,
+            "speaker": named or self.speaker,
             "clip": clip,
             "position": {"reply": msg.get("reply"), "reply_played_ms": msg.get("played_ms"), "at": msg.get("at")},
         }
+        if self.input_mode == INPUT_VOICE:
+            if not self._clip_seg.speaking and self._clip_target is None:
+                self._speaker_votes.clear()  # nobody is talking: the next utterance's vote starts here
+            elif named:
+                self._speaker_votes[named] += 1  # a frame of the utterance being heard (its onset to its end)
         boundary = (tail and not self._clip_tail) or clip != self._clip_on
         self._clip_on, self._clip_tail = clip, tail
         if boundary and self._clip_seg.speaking:
@@ -1265,11 +1306,12 @@ class Controller:
         if target is None or target[0] == "drop":
             return
         if target[0] == "room":
-            await self._room_commit(target[1], self.participant_source)
+            await self._room_commit(self._voted_speaker(target[1], "line"), self.participant_source)
             return
         turn = target[1]
         if self.turn is not turn or self.state != LISTENING:
             return
+        turn.speaker = self._voted_speaker(turn.speaker, "turn")
         end_ms = getattr(self._clip_seg, "end_frames", 70) * SEGMENTER_FRAME_MS if lag_ms is None else lag_ms
         estimate = self._stream_time(turn, self._stream_ms - end_ms)
         await self._send_turn(turn, "vad")
@@ -1283,12 +1325,13 @@ class Controller:
         target, self._clip_target = self._clip_target, None
         if target is not None and target[0] == "room":
             if commit:
-                await self._room_commit(target[1], self.participant_source)
+                await self._room_commit(self._voted_speaker(target[1], "line"), self.participant_source)
             else:
                 await self._rt({"type": "input_audio_buffer.clear"})
         if self._clip_seg is not None:
             self._clip_seg.reset()
         self._clip_on, self._clip_tail = None, False
+        self._speaker_votes.clear()
 
     async def _on_key(self, msg: dict) -> None:
         key = msg.get("key")
@@ -2617,7 +2660,7 @@ class Controller:
                     and self._meeting_time() - float(existing.at_s) <= DUPLICATE_DECISION_S):
                 turn.decision_saved = True
                 return True, tools.ok_output(note="already saved")
-        check = tools.check_decision(args, participants=[person.name for person in self.meeting.participants],
+        check = tools.check_decision(args, participants=self.mstate.participant_names,  # (+ who joined in Zoom)
                                      draft=turn.draft, recent=self._recent_texts(turn), known_ids=known,
                                      proposal=proposal, match=PROPOSAL_MATCH)
         if not check.ok:
@@ -2714,7 +2757,7 @@ class Controller:
         # 2026-10-24 Higgs did not honour it (a follow-up called get_presentation_state anyway).
         response: dict[str, Any] = {
             "instructions": prompts.followup_instructions(
-                kind, meeting=self.meeting, agenda_phase=phase, question=turn.user_text, speaker=turn.speaker,
+                kind, meeting=self._prompt_meeting(), agenda_phase=phase, question=turn.user_text, speaker=turn.speaker,
                 results=getattr(lookup, "results", None) or [], decision=decision),
             "metadata": metadata, "tool_choice": "none"}
         self._cancel_timer("drain")
@@ -2856,7 +2899,7 @@ class Controller:
         if target is not None and target[0] == "room":
             self._clip_target = ("drop",)
             if commit:
-                await self._room_commit(target[1], self.participant_source)
+                await self._room_commit(self._voted_speaker(target[1], "line"), self.participant_source)
             else:
                 await self._rt({"type": "input_audio_buffer.clear"})
         seg = self._room_seg
@@ -3036,7 +3079,7 @@ class Controller:
         wanted = {cid for item in conflicts for cid in item.get("clarification_ids") or []}
         clarifications = [item for item in self.mstate.clarifications if item.id in wanted]
         turn = Turn(origin=ORIGIN_ROOM, kind=KIND_INTERVENTION, phase=DISCUSSION, events=list(events))
-        instructions = prompts.intervention_instructions(conflicts, lookup, meeting=self.meeting,
+        instructions = prompts.intervention_instructions(conflicts, lookup, meeting=self._prompt_meeting(),
                                                          clarifications=clarifications)
         await self._flow_request(turn, instructions, tool_choice="none", state=INTERVENING)
 
@@ -3054,7 +3097,7 @@ class Controller:
         wanted = set(event.get("clarification_ids") or [])
         clarifications = [item for item in self.mstate.clarifications if item.id in wanted]
         turn = Turn(origin=ORIGIN_ROOM, kind=KIND_INTERVENTION, phase=DISCUSSION, events=[event])
-        instructions = prompts.intervention_instructions(event, lookup, meeting=self.meeting,
+        instructions = prompts.intervention_instructions(event, lookup, meeting=self._prompt_meeting(),
                                                          clarifications=clarifications)
         await self._flow_request(turn, instructions, tool_choice="none", state=INTERVENING)
 
@@ -3091,7 +3134,7 @@ class Controller:
         quotes = [(utterance.speaker, utterance.text) for utterance in quoted]
         turn = Turn(origin=ORIGIN_ROOM, kind=KIND_DECISION, phase=DISCUSSION, draft=dict(draft),
                     events=list(payload.get("resolved") or []), proposal=payload.get("proposal"))
-        instructions = prompts.decision_instructions(draft, quotes, meeting=self.meeting)
+        instructions = prompts.decision_instructions(draft, quotes, meeting=self._prompt_meeting())
         await self._flow_request(turn, instructions, tool_choice=None, state=INTERVENING)
 
     async def _flow_request(self, turn: Turn, instructions: str, *, tool_choice: str | None, state: str) -> None:
@@ -3170,7 +3213,8 @@ class Controller:
         if self.turn is not None:  # a participant took the floor while the wrap-up waited: never sum up over them
             return
         turn = Turn(origin=ORIGIN_WRAPUP, kind=KIND_SUMMARY, phase=WRAPUP)
-        await self._flow_request(turn, prompts.wrapup_instructions(self.mstate.notes_text(), meeting=self.meeting),
+        await self._flow_request(turn, prompts.wrapup_instructions(self.mstate.notes_text(),
+                                                                   meeting=self._prompt_meeting()),
                                  tool_choice="none", state=REPLYING)
 
     async def _flush_issues(self) -> None:
@@ -4276,7 +4320,7 @@ class Controller:
                            context=tuple(self.mstate.context_lines()))
 
     def _instructions(self) -> str:
-        return build_instructions(self.talk, self._context(), self.meeting)
+        return build_instructions(self.talk, self._context(), self._prompt_meeting())
 
     def _turn_update(self) -> dict:
         """Per-turn session.update: instructions only, or the full config with RELAY_FULL_SESSION_UPDATE=1. A turn

@@ -212,7 +212,9 @@ def build_snapshot(package: MeetingPackage | None, state: MeetingState, *, gener
     base = dict(
         generation=generation, revision=len(state.transcript), phase=state.phase, title=state.title,
         discussion_prompt=(package.phase("discussion").prompt if package and package.phase("discussion") else ""),
-        participants=tuple({"name": p.name, "role": p.role} for p in (package.participants if package else ())),
+        # the roster: the agenda's participants, then whoever spoke in Zoom under another name (MeetingState.joined)
+        participants=tuple(state.people()) if hasattr(state, "people") else tuple(
+            {"name": p.name, "role": p.role} for p in (package.participants if package else ())),
         clarifications=tuple(_record(c) for c in state.clarifications),
         decisions=tuple(_record(d) for d in state.decisions),
         action_items=tuple(_record(a) for a in state.action_items),

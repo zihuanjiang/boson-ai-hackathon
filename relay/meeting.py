@@ -38,6 +38,9 @@ DEFAULT_WINDOW = 3
 NOTES_MAX_CHARS = 1200
 CONTEXT_LINES = 6
 RESERVED_NAMES = frozenset({"room", "facilitator"})  # labels the page uses next to the participants
+LIVE_NAME_MAX_CHARS = 60  # a Zoom display name as a speaker label (the bot's clean_speaker bounds it the same way)
+MAX_JOINED = 24  # names heard live that are not on the agenda (MeetingState.joined)
+JOINED_ROLE = "joined in Zoom, not on the agenda"  # (prompts print it in parentheses after the name)
 RESERVED_PREFIXES = frozenset({"CL"})  # CL-<n> are clarifications recorded in the meeting
 
 STATEMENT_ID_RE = re.compile(r"^[A-Z]{2,5}-\d{1,3}$")
@@ -93,6 +96,23 @@ class Statement:
 def value_label(value: str) -> str:
     """A slot value's label: its id with _ → space ("beta_users" → "beta users")."""
     return value.replace("_", " ")
+
+
+_ANY_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def live_speaker_name(raw: Any) -> str | None:
+    """A speaker's name as Zoom showed it (the bot's `speaker`, `--input voice`), usable as a line's label: control
+    characters dropped, whitespace collapsed, at most LIVE_NAME_MAX_CHARS, at least one letter, never a reserved
+    label ("Room", "Facilitator"); else None."""
+    if not isinstance(raw, str):
+        return None
+    name = " ".join(_ANY_CONTROL_RE.sub(" ", raw).split())
+    if not name or len(name) > LIVE_NAME_MAX_CHARS or not any(ch.isalpha() for ch in name):
+        return None
+    if name.casefold() in RESERVED_NAMES:
+        return None
+    return name
 
 
 @dataclass(frozen=True)
@@ -974,6 +994,9 @@ class MeetingState:
         self.assumptions: list[dict] = []  # {speaker, utterance_id, topic, interpretation}
         self.candidate_decisions: list[dict] = []  # proposals not confirmed yet: {decision, status, owner, …}
         self.alignment: dict = {}  # the controller's status of the alignment check (mode, model, available, …)
+        # the roster beyond the agenda: people heard live in Zoom (`--input voice`) under a name that is not an agenda
+        # participant's, in the order they first spoke (a line of theirs is in the transcript), at most MAX_JOINED
+        self.joined: list[str] = []
         self._counters: dict[str, int] = {}
 
     # --- helpers
@@ -990,20 +1013,54 @@ class MeetingState:
         return round(float(self.clock()), 3)
 
     def _name(self, name: str | None) -> str | None:
-        """A participant's canonical spelling; None for empty or "Room"; other names as given."""
+        """A participant's canonical spelling (the agenda's, else a joined name's first spelling); None for empty or
+        "Room"; other names as given."""
         if not isinstance(name, str) or not " ".join(name.split()):
             return None
         name = " ".join(name.split())
         if name.casefold() == "room":
             return None
-        participant = self.package.participant(name) if self.package else None
-        return participant.name if participant else name
+        return self.participant(name) or name
+
+    # --- the roster: the agenda's participants, then the people who joined live
+
+    def participant(self, name: str | None) -> str | None:
+        """The canonical spelling of an agenda participant or of someone who joined (any case), else None."""
+        key = " ".join(name.split()).casefold() if isinstance(name, str) else ""
+        if not key:
+            return None
+        found = self.package.participant(key) if self.package else None
+        if found is not None:
+            return found.name
+        return next((joined for joined in self.joined if joined.casefold() == key), None)
+
+    @property
+    def agenda_names(self) -> list[str]:
+        return list(self.package.participant_names) if self.package else []
+
+    @property
+    def participant_names(self) -> list[str]:
+        """Everyone who can be named (a line's speaker, a decision's owner): the agenda's, then the joined."""
+        return [*self.agenda_names, *self.joined]
+
+    def people(self) -> list[dict]:
+        """[{name, role}]: the agenda's participants, then the people who joined live (JOINED_ROLE)."""
+        agenda = [{"name": p.name, "role": p.role} for p in (self.package.participants if self.package else ())]
+        return agenda + [{"name": name, "role": JOINED_ROLE} for name in self.joined]
+
+    def _join(self, name: str | None) -> None:
+        """(a roster is seeded from an agenda: a state without a package keeps names as given and joins nobody)"""
+        if name and self.package and len(self.joined) < MAX_JOINED and self.participant(name) is None:
+            self.joined.append(name)
 
     # --- adding
 
     def add_utterance(self, text: str, speaker: str | None, source: str = "voice") -> Utterance:
-        utterance = Utterance(self._next("U"), " ".join(str(text).split()), self._name(speaker), self._now(),
-                              self.phase, source)
+        """A line of the discussion. A speaker who is not on the agenda (a Zoom display name, `--input voice`) joins
+        the roster with it: from then on a valid name for the analysis and a decision's owner."""
+        name = self._name(speaker)
+        self._join(name)
+        utterance = Utterance(self._next("U"), " ".join(str(text).split()), name, self._now(), self.phase, source)
         self.transcript.append(utterance)
         return utterance
 
@@ -1180,6 +1237,7 @@ class MeetingState:
             "agenda": [{"id": p.id, "title": p.title, "prompt": p.prompt, "current": p.id == self.phase}
                        for p in (package.phases if package else ())],
             "participants": [asdict(p) for p in (package.participants if package else ())],
+            "joined": list(self.joined),  # people heard live in Zoom who are not on the agenda (first spoke first)
             "checkpoint": dict(self.checkpoint) if self.checkpoint else None,
             "clarifications": [c.to_json() for c in self.clarifications],
             "decisions": [d.to_json() for d in self.decisions],
