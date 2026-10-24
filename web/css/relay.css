@@ -3296,6 +3296,12 @@ kbd {
   display: none;
 }
 
+/* Zoom crops the bottom edge of the shared tab: keep the captions (and the panel's end) clear of it. */
+.meeting.observer .share,
+.meeting.observer .side {
+  padding-bottom: calc(var(--gap) + 7vh);
+}
+
 .meeting.observer .tb:disabled {
   color: var(--fg-dim);
   cursor: default;
