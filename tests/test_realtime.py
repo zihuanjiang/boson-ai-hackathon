@@ -241,6 +241,26 @@ async def test_reconnect_backoff_sequence_resets_after_a_good_session() -> None:
     await link.stop()
 
 
+async def test_restart_opens_a_fresh_session_at_once() -> None:
+    """A meeting's Restart: the socket closes and a new session opens with no backoff (reconnecting → ready)."""
+    first = ScriptedConn()
+    connector, rec, sleeps = Connector(first), Recorder(), Sleeps()
+    link = make_link(connector, rec, sleeps)
+    await link.restart()  # not running yet: a restart is a start
+    await until(lambda: link.ready)
+    await link.restart()
+    assert not link.ready  # nothing more goes to the old session
+    assert await link.send({"type": "response.create"}) is False
+    await until(lambda: first.closed)
+    await until(lambda: len(connector.conns) == 2 and link.ready)
+    assert rec.statuses == [("connecting", None), ("ready", None), ("reconnecting", "restarting: a fresh session"),
+                            ("ready", None)]
+    assert sleeps.delays == [0.0] and link.sessions == 2
+    assert connector.conns[1].sent[0]["session"]["instructions"] == "config 2"  # the controller's current config
+    assert "realtime_restart" in rec.kinds()
+    await link.stop()
+
+
 async def test_backoff_caps_at_five_seconds() -> None:
     connector, sleeps = Connector(*[OSError("down")] * 9), Sleeps()
     link = make_link(connector, Recorder(), sleeps)

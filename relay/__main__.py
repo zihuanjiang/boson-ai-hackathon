@@ -77,9 +77,24 @@ def narration_mode_note(settings: Settings) -> str | None:
     return "narration: live (Higgs Realtime presents every slide; the TTS 3 renders are the offline backup)"
 
 
-def startup_notes(talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], settings: Settings) -> list[str]:
+def meeting_note(meeting: Any) -> str | None:
+    """The startup line of a meeting package (On the Same Page); None for a plain talk."""
+    if meeting is None:
+        return None
+    phases = " → ".join(phase.id for phase in meeting.phases)
+    documents = len({statement.doc_id for statement in meeting.statements})
+    return (f"meeting: \"{meeting.title}\" hosted by {meeting.host}, {len(meeting.participants)} participants, "
+            f"{len(meeting.statements)} source statements in {documents} document(s); agenda {phases}; the "
+            "facilitator listens to the discussion with manual turns (turn detection off)")
+
+
+def startup_notes(talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], settings: Settings,
+                  meeting: Any = None) -> list[str]:
     """Warnings printed under the URL: what will not sound or behave like the real show."""
     notes = []
+    if meeting is not None and settings.turn_detection is not None:
+        notes.append("RELAY_TURN_DETECTION is ignored for a meeting: the discussion needs manual turns (a session "
+                     "can't switch turn detection later)")
     fake = sum(1 for chunk in chunks.values() if chunk.fake)
     if fake:
         notes.append(f"fake narration audio ({fake}/{len(chunks)} chunks are placeholder tones): render it for real "
@@ -125,14 +140,18 @@ def serve(args: argparse.Namespace) -> int:
         return 1
 
     talk, chunks = app.state.talk, app.state.chunks
+    meeting = getattr(app.state.controller, "meeting", None)
     print(f"Relay: talk '{talk.id}' ({len(talk.slides)} slides, {len(chunks)} narration chunks, voice {talk.voice}, "
           f"mic mode {settings.mic_mode})")
     print(f"Relay: {narration_note(app.state.narration, app.state.version)}")
     mode_note = narration_mode_note(settings)
     if mode_note:
         print(f"Relay: {mode_note}")
+    note = meeting_note(meeting)
+    if note:
+        print(f"Relay: {note}")
     print(f"Relay: open {deck_url(settings)} in Chrome, then click Join with Computer Audio")
-    for note in startup_notes(talk, chunks, settings):
+    for note in startup_notes(talk, chunks, settings, meeting):
         print(f"  warning: {note}")
     sys.stdout.flush()
 

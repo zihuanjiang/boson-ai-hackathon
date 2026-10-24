@@ -35,11 +35,18 @@
   --c-ok: #3ddc97;
   --c-warn: #ffc95c;
   --c-fail: #ff6b6b;
+  /* On the Same Page: what the facilitator cites and checks */
+  --c-evidence: #6cb2ff; /* a source statement */
+  --c-clarify: #c3a6ff; /* an earlier clarification */
+  --c-decision: #4be38b; /* a decision in the notes */
+  --c-agree: #3ddc97;
+  --c-conflict: #ffb547;
 
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
   --top-h: clamp(40px, 5vh, 54px);
+  --agenda-h: clamp(40px, 5.6vh, 58px); /* a meeting talk's agenda strip */
   --bar-h: clamp(64px, 8vh, 84px);
   --side-w: clamp(248px, 17vw, 340px);
   --gap: 8px;
@@ -1862,6 +1869,1087 @@ kbd {
   border-radius: 0.35em;
 }
 
+/* ================================================================ On the Same Page (a meeting talk: .has-agenda)
+   The agenda strip under the topbar; the tiles in a row over a tabbed side panel (Evidence, Notes, Transcript,
+   Chat); the evidence callout over the shared screen; the speaker picker by the mic. A plain talk has none of it. */
+
+.meeting.has-agenda {
+  --side-w: clamp(320px, 27vw, 460px); /* the evidence, the notes and the transcript need the room */
+  grid-template-rows: var(--top-h) var(--agenda-h) minmax(0, 1fr) var(--bar-h);
+  grid-template-areas:
+    "top top"
+    "agenda agenda"
+    "share side"
+    "bar bar";
+}
+
+.meeting.has-agenda.side-off {
+  grid-template-areas:
+    "top"
+    "agenda"
+    "share"
+    "bar";
+}
+
+.agenda {
+  grid-area: agenda;
+}
+
+.meeting.has-agenda .strip {
+  top: calc(var(--top-h) + var(--agenda-h) + 6px);
+}
+
+.meeting.has-agenda ~ .toasts {
+  top: calc(var(--top-h) + var(--agenda-h) + 10px);
+}
+
+/* ---- the agenda strip: phases · checkpoint · the phase button */
+
+.agenda {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  padding: 0 12px;
+  overflow: hidden;
+  font-size: clamp(13px, 1.5vh, 16px);
+  line-height: 1.2;
+  color: var(--fg-2);
+  background: #1f2023;
+  border-bottom: 1px solid var(--line);
+}
+
+.agenda-steps {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agenda-step {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 13px 4px 5px;
+  border-radius: 999px;
+  white-space: nowrap;
+  color: var(--fg-dim);
+  background: rgba(255, 255, 255, 0.04);
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease;
+}
+
+/* the line between two steps */
+.agenda-step + .agenda-step::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -17px;
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--line-strong);
+}
+
+.step-num {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 1.6em;
+  height: 1.6em;
+  border-radius: 50%;
+  font-size: 0.82em;
+  font-weight: 800;
+  border: 1.5px solid var(--line-strong);
+}
+
+.step-title {
+  font-weight: 600;
+}
+
+.agenda-step[data-state="current"] {
+  color: #fff;
+  background: rgba(34, 211, 107, 0.15);
+  box-shadow: inset 0 0 0 1px rgba(34, 211, 107, 0.5);
+}
+
+.agenda-step[data-state="current"] .step-num {
+  color: #06140d;
+  background: var(--speak);
+  border-color: var(--speak);
+}
+
+.agenda-step[data-state="done"] {
+  color: var(--fg-2);
+}
+
+.agenda-step[data-state="done"] .step-num {
+  color: var(--speak);
+  border-color: rgba(34, 211, 107, 0.45);
+}
+
+.agenda-step[data-state="done"] + .agenda-step::before {
+  background: rgba(34, 211, 107, 0.5);
+}
+
+.agenda-info {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.checkpoint {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 9px;
+}
+
+.checkpoint-where {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--fg);
+}
+
+.checkpoint-status {
+  --st-c: var(--c-idle);
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.78em;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--st-c);
+  background: color-mix(in srgb, var(--st-c) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--st-c) 42%, transparent);
+}
+
+.checkpoint-status[data-status="presenting"],
+.checkpoint-status[data-status="resuming"] {
+  --st-c: var(--c-narrating);
+}
+
+.checkpoint-status[data-status="answering"] {
+  --st-c: var(--c-replying);
+}
+
+.checkpoint-status[data-status="paused"] {
+  --st-c: var(--c-paused);
+}
+
+.checkpoint-status[data-status="listening"] {
+  --st-c: var(--c-user);
+}
+
+.checkpoint-status[data-status="intervening"] {
+  --st-c: var(--c-conflict);
+}
+
+.checkpoint-status[data-status="wrapping_up"] {
+  --st-c: var(--c-clarify);
+}
+
+.agenda-prompt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: italic;
+  color: var(--fg-dim);
+}
+
+.phase-button {
+  flex: none;
+  height: calc(var(--agenda-h) - 14px);
+  padding: 0 18px;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.95em;
+  font-weight: 700;
+  white-space: nowrap;
+  color: #fff;
+  background: var(--primary);
+  cursor: pointer;
+}
+
+.phase-button:hover:not(:disabled) {
+  background: #2483f5;
+}
+
+.phase-button:disabled {
+  color: var(--fg-dim);
+  background: var(--tile);
+  cursor: default;
+}
+
+.phase-button:focus-visible,
+.tab:focus-visible,
+.speaker:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+/* ---- tiles: a row over the side panel */
+
+.meeting.has-agenda .people {
+  flex-direction: row;
+}
+
+.meeting.has-agenda .tile {
+  flex: 1 1 0;
+  aspect-ratio: auto;
+  height: clamp(104px, 16vh, 168px);
+  padding: 2.1em 6px;
+}
+
+.meeting.has-agenda .avatar {
+  width: clamp(34px, 5.4vh, 60px);
+  height: clamp(34px, 5.4vh, 60px);
+}
+
+.meeting.has-agenda .avatar-face {
+  font-size: clamp(16px, 2.6vh, 26px);
+}
+
+.meeting[data-state="ROOM"] .tile-relay .tile-status {
+  color: var(--c-user);
+}
+
+.meeting[data-state="INTERVENING"] .tile-relay .tile-status {
+  color: var(--c-conflict);
+}
+
+.state-badge[data-state="ROOM"] {
+  --state-c: var(--c-user);
+}
+
+.state-badge[data-state="INTERVENING"] {
+  --state-c: var(--c-conflict);
+}
+
+/* ---- the side panel: tabs and panes */
+
+.tabs {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tab {
+  position: relative;
+  display: inline-flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 7px 3px;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.88em;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--fg-dim);
+  background: transparent;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--fg);
+}
+
+.tab[aria-selected="true"] {
+  color: #fff;
+  background: var(--tile);
+  box-shadow: inset 0 -2px 0 var(--primary);
+}
+
+.tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-badge {
+  position: absolute;
+  top: -3px;
+  right: 0;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  font-size: 9.5px;
+  font-weight: 800;
+  line-height: 15px;
+  text-align: center;
+  color: #fff;
+  background: var(--leave);
+}
+
+.meeting.has-agenda .chat-head {
+  gap: 4px;
+  padding: 5px 4px 5px 6px;
+}
+
+.pane {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 10px 10px 12px;
+  overflow-y: auto;
+  line-height: 1.35;
+}
+
+.pane-empty {
+  margin: 0;
+  font-size: 0.92em;
+  color: var(--fg-dim);
+}
+
+/* a source id: blue for a document's statement, violet for a clarification, green for a decision */
+.src-chip {
+  --chip-c: var(--c-evidence);
+  display: inline-block;
+  flex: none;
+  padding: 0.05em 0.45em;
+  border-radius: 0.35em;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: nowrap;
+  color: var(--chip-c);
+  background: color-mix(in srgb, var(--chip-c) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--chip-c) 45%, transparent);
+}
+
+.src-chip[data-kind="clarification"] {
+  --chip-c: var(--c-clarify);
+}
+
+.src-chip[data-kind="decision"] {
+  --chip-c: var(--c-decision);
+}
+
+.owner-chip {
+  display: inline-block;
+  flex: none;
+  padding: 0.05em 0.55em;
+  border-radius: 999px;
+  font-size: 0.85em;
+  font-weight: 800;
+  white-space: nowrap;
+  color: #06140d;
+  background: var(--c-decision);
+}
+
+.auto-tag {
+  padding: 0 0.45em;
+  border-radius: 0.3em;
+  font-size: 0.75em;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  border: 1px dashed var(--line-strong);
+}
+
+.fresh {
+  animation: fresh 1.6s ease-out;
+}
+
+/* ---- Evidence: each lookup's sources, newest first; the documents below */
+
+.lookups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lookup {
+  --look-c: var(--c-evidence);
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: var(--tile);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--look-c);
+}
+
+.lookup[data-by="engine"],
+.lookup[data-purpose="intervention"] {
+  --look-c: var(--c-conflict);
+}
+
+.lookup-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--look-c);
+}
+
+.lookup-time {
+  font-weight: 600;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-faint);
+}
+
+.lookup-query {
+  margin: 3px 0 7px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.result-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.result-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.88em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+
+.result-text {
+  margin: 3px 0 0;
+  color: var(--fg-2);
+}
+
+.result-none {
+  font-size: 0.92em;
+  color: var(--fg-dim);
+}
+
+.docs {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.docs-summary {
+  font-size: 0.85em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.docs-count {
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--fg-faint);
+}
+
+.doc-title {
+  margin: 10px 0 5px;
+  font-size: 0.95em;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.doc-statements {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.statement {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 3px 5px;
+  border-radius: 6px;
+  font-size: 0.92em;
+  color: var(--fg-2);
+}
+
+.statement[data-cited="true"] {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--c-evidence) 13%, transparent);
+}
+
+/* ---- Notes */
+
+.notes-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.notes-title {
+  margin: 0;
+  font-size: 1.1em;
+  font-weight: 700;
+  color: #fff;
+}
+
+.notes-time {
+  font-size: 0.85em;
+  color: var(--fg-dim);
+}
+
+.notes-h {
+  margin: 0 0 6px;
+  font-size: 0.78em;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.notes-count {
+  color: var(--fg-faint);
+}
+
+.notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.note {
+  --note-c: var(--c-evidence);
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--tile);
+  border-left: 3px solid var(--note-c);
+}
+
+.note[data-kind="decision"] {
+  --note-c: var(--c-decision);
+}
+
+.note[data-kind="clarification"] {
+  --note-c: var(--c-clarify);
+}
+
+.note[data-kind="question"] {
+  --note-c: var(--c-paused);
+}
+
+.note[data-resolved="true"] .note-text {
+  text-decoration: line-through;
+  color: var(--fg-dim);
+}
+
+.note-top,
+.note-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 3px;
+}
+
+.note-meta {
+  margin: 5px 0 0;
+}
+
+.note-id,
+.note-supersedes {
+  font-family: var(--mono);
+  font-size: 0.82em;
+  color: var(--fg-dim);
+}
+
+.note-text {
+  margin: 0;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.note-sub {
+  margin: 3px 0 0;
+  font-size: 0.92em;
+  color: var(--fg-2);
+}
+
+.note-none {
+  font-size: 0.9em;
+  color: var(--fg-faint);
+}
+
+/* ---- Transcript: lines with claim chips; alignment cards and silent suggestions between them */
+
+.transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.utt-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.utt-who {
+  font-weight: 700;
+  color: var(--c-user);
+}
+
+.utt[data-who="room"] .utt-who {
+  color: var(--fg-2);
+}
+
+.utt[data-who="facilitator"] .utt-who {
+  color: #4be38b;
+}
+
+.utt-time {
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-faint);
+}
+
+.utt-source {
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.utt-text {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-2);
+}
+
+.utt[data-who="facilitator"] .utt-text {
+  color: var(--fg);
+}
+
+.utt-claims {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 5px 0 0;
+}
+
+.claim {
+  --claim-c: var(--fg-dim);
+  padding: 0.05em 0.6em;
+  border-radius: 999px;
+  font-size: 0.8em;
+  font-weight: 700;
+  color: var(--claim-c);
+  background: color-mix(in srgb, var(--claim-c) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--claim-c) 42%, transparent);
+}
+
+.claim[data-tone="agree"] {
+  --claim-c: var(--c-agree);
+}
+
+.claim[data-tone="conflict"] {
+  --claim-c: var(--c-conflict);
+}
+
+.align-card {
+  --card-c: var(--c-conflict);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 10px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card-c) 7%, var(--tile));
+  border: 1px solid color-mix(in srgb, var(--card-c) 55%, transparent);
+}
+
+.align-card[data-status="resolved"] {
+  --card-c: var(--c-decision);
+}
+
+.align-card[data-kind="suggestion"] {
+  --card-c: var(--fg-dim);
+  background: transparent;
+  border-style: dashed;
+}
+
+.align-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.align-title {
+  font-size: 0.8em;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--card-c);
+}
+
+.align-status {
+  padding: 0.05em 0.6em;
+  border-radius: 999px;
+  font-size: 0.75em;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--card-c);
+  border: 1px solid color-mix(in srgb, var(--card-c) 50%, transparent);
+}
+
+.align-card[data-status="asked"] .align-status {
+  color: #1d1300;
+  background: var(--card-c);
+}
+
+.align-card[data-status="resolved"] .align-status {
+  color: #06140d;
+  background: var(--card-c);
+}
+
+.align-label {
+  display: block;
+  font-size: 0.72em;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.align-quote {
+  margin: 2px 0 0;
+  color: var(--fg);
+}
+
+.align-diffs {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.align-diff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+  font-size: 0.92em;
+}
+
+.diff-slot {
+  color: var(--fg-dim);
+}
+
+.diff-slot::after {
+  content: ":";
+}
+
+.diff-heard {
+  font-weight: 700;
+  color: var(--c-conflict);
+  text-decoration: line-through 0.08em color-mix(in srgb, var(--c-conflict) 70%, transparent);
+}
+
+.align-card[data-kind="suggestion"] .diff-heard {
+  text-decoration: none;
+}
+
+.diff-vs {
+  color: var(--fg-faint);
+}
+
+.diff-source {
+  font-weight: 700;
+  color: var(--c-evidence);
+}
+
+.align-refs {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 3px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.align-ref-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.align-ref-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.88em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+
+.align-ref-text {
+  margin: 2px 0 0;
+  font-size: 0.95em;
+  color: var(--fg-2);
+}
+
+.align-outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.align-result,
+.align-decision {
+  flex: 1 1 100%;
+  margin: 0;
+  font-weight: 600;
+  color: var(--c-decision);
+}
+
+.align-decision {
+  font-weight: 500;
+  color: var(--fg-2);
+}
+
+/* ---- the evidence callout: what the facilitator cites, over the share's bottom-left corner */
+
+.callout {
+  --callout-c: var(--c-evidence);
+  position: absolute;
+  bottom: calc(var(--gap) + var(--cap-h) + 6px + 1.4vh);
+  left: calc(var(--gap) + 1.4vh);
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  width: min(500px, 48%);
+  max-height: 52%;
+  padding: 1.1vh 1.5vh 1.3vh;
+  overflow: hidden;
+  border-radius: 12px;
+  font-size: max(14px, 1.95vh);
+  line-height: 1.35;
+  color: var(--fg);
+  background: rgba(22, 24, 29, 0.95);
+  border: 1px solid var(--line-strong);
+  border-left: 4px solid var(--callout-c);
+  box-shadow: 0 1.5vh 4vh rgba(0, 0, 0, 0.55);
+}
+
+.callout.fresh {
+  animation: callout-in 0.35s ease-out;
+}
+
+.meeting.captions-off .callout {
+  bottom: calc(var(--gap) + 1.4vh);
+}
+
+.callout[data-kind="intervention"] {
+  --callout-c: var(--c-conflict);
+}
+
+.callout[data-kind="decision"] {
+  --callout-c: var(--c-decision);
+}
+
+.callout-head {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: 0.7em;
+  min-width: 0;
+  margin: 0 0 0.55em;
+  font-size: 0.78em;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+
+.callout-kind {
+  flex: none;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--callout-c);
+}
+
+.callout-query {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.callout-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55em;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  list-style: none;
+}
+
+.callout-ref {
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+  min-width: 0;
+}
+
+.callout-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.85em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+
+.callout-text {
+  display: -webkit-box;
+  margin: 0.2em 0 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+/* ---- the speaker picker (the discussion), right of the mic button; the room mic */
+
+.meeting.has-agenda .toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px;
+  overflow: hidden;
+}
+
+.speakers {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.speakers-label {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.speaker-chips {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.speaker {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 5px 9px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+  background: transparent;
+  cursor: pointer;
+}
+
+.speaker:hover {
+  color: #fff;
+  background: var(--tile);
+}
+
+.speaker[aria-checked="true"] {
+  color: #04201c;
+  background: var(--c-user);
+  border-color: var(--c-user);
+}
+
+.mic-button[data-room="true"][aria-pressed="true"] {
+  color: #fff;
+  background: color-mix(in srgb, var(--c-user) 20%, transparent);
+}
+
+.mic-button[data-room="true"][data-muted="true"] {
+  color: #ff8a80;
+}
+
+/* ---- Restart meeting (More): the second click confirms */
+
+.more-menu .menu-reset {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 6px 6px;
+  color: #ff9a96;
+}
+
+.more-menu .menu-reset[data-confirm="true"] {
+  color: #fff;
+  background: var(--leave);
+}
+
 /* ---------------------------------------------------------------- narrow windows: tiles above the shared screen */
 
 @media (max-width: 899px) {
@@ -1915,6 +3003,51 @@ kbd {
     min-width: 56px;
     padding: 0 4px;
     font-size: 10.5px;
+  }
+}
+
+/* a meeting talk in a narrow window: the agenda strip keeps the current step and the button */
+@media (max-width: 899px) {
+  .meeting.has-agenda {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: var(--top-h) var(--agenda-h) auto minmax(0, 1fr) var(--bar-h);
+    grid-template-areas:
+      "top"
+      "agenda"
+      "side"
+      "share"
+      "bar";
+  }
+
+  .meeting.has-agenda.side-off {
+    grid-template-rows: var(--top-h) var(--agenda-h) minmax(0, 1fr) var(--bar-h);
+    grid-template-areas:
+      "top"
+      "agenda"
+      "share"
+      "bar";
+  }
+
+  .meeting.has-agenda .chat {
+    top: calc(var(--top-h) + var(--agenda-h) + var(--gap));
+  }
+
+  .agenda-step:not([data-state="current"]) .step-title,
+  .agenda-prompt,
+  .speakers-label {
+    display: none;
+  }
+
+  .agenda-step {
+    padding-right: 5px;
+  }
+
+  .agenda-step[data-state="current"] {
+    padding-right: 12px;
+  }
+
+  .callout {
+    width: calc(100% - 2 * var(--gap) - 2.8vh);
   }
 }
 
@@ -2003,6 +3136,23 @@ kbd {
   }
   50% {
     opacity: 0.95;
+  }
+}
+
+/* something new on a panel (a lookup, a note, an alignment card) glows once */
+@keyframes fresh {
+  0% {
+    box-shadow: 0 0 0 0 rgba(108, 178, 255, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 0.6em rgba(108, 178, 255, 0);
+  }
+}
+
+@keyframes callout-in {
+  from {
+    opacity: 0;
+    transform: translateY(1.2vh);
   }
 }
 

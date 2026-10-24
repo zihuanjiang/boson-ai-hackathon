@@ -1,13 +1,17 @@
-# bosonai_hackathon — Relay
+# bosonai_hackathon — On the Same Page (built on Relay)
 
 Project for the **Higgs Audio Hackathon 2026** (Boson AI + UofT MScAC, Toronto, Fri Oct 23 – Sat Oct 24, 2026).
-We are building **Relay**, a live voice co-presenter: pre-rendered narration (Higgs TTS 3 with word timestamps) plus
-live interruptions, answers and deck control through one Higgs Realtime session.
+We are building **On the Same Page**, a real-time AI meeting facilitator: it presents a short deck live through one
+Higgs Realtime session, answers interruptions from cited documents (`lookup_evidence`), listens to the discussion,
+speaks up only when a decision is about to contradict the sources or an earlier clarification, and keeps the
+decisions in meeting notes. It grew out of **Relay** (a live voice co-presenter); the Python package is still `relay`.
 The workspace-level `../CLAUDE.md` rules (uv only, scratch dir, git branches, sandbox) still apply.
 
 ## Read first
 
-- `doc/brief.md` — **the spec** (product behaviour wins here). Appendices A–F are the build contract.
+- `doc/brief_updated.md` — **the spec** since 2026-10-23 evening (a teammate's revision; product behaviour wins
+  here). `doc/discrepancies.md` maps it onto the code. `doc/brief.md` is the original Relay brief (history; its
+  Appendices still describe the narration and floor-control parts that carried over).
 - `doc/design.md` — interfaces, deck socket protocol, state machine, session config. Change it with the code.
 - `doc/plan.md` — status, decisions (D1…), milestones, live task list. Keep it current.
 - `doc/gotchas.md` — read before writing any API code. Add every new finding (dated).
@@ -17,7 +21,7 @@ The workspace-level `../CLAUDE.md` rules (uv only, scratch dir, git branches, sa
 
 ```text
 relay/      Python backend (FastAPI + raw websockets to Higgs)   web/     deck client, plain ES modules, no build
-talks/<id>/ talk packages (slides.md, script.yaml, kb.md)         tests/   pytest (offline)
+talks/<id>/ talk/meeting packages (slides.md, script.yaml, agenda.yaml, sources/, checks.yaml)   tests/ pytest
 out/        renders, logs, smoke outputs (gitignored)            scripts/ smoke tests, vendoring, docs fetch
 ```
 

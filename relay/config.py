@@ -28,9 +28,14 @@ MIC_MODES = ("tap", "hold")  # "open" (hands-free) is a nice-to-have, not in v1
 # live: Higgs Realtime presents every slide in its own words (D52); rendered: the TTS 3 renders play, as in v1.
 # In live mode the renders are the offline backup (D53).
 NARRATION_MODES = ("live", "rendered")
-# Live 2026-10-23: semantic_vad's default 100 ms silence ended 3 of 4 spoken lines at their first pause ("Sorry," →
-# "No worries…"); with 700 ms every line was heard in full and replies still started within ~0.7–1.2 s.
-DEFAULT_TURN_DETECTION: dict = {"type": "semantic_vad", "silence_duration_ms": 700}
+# Manual turns by default (On the Same Page): `turn_detection: null` for the whole session, and the backend ends user
+# turns itself (relay/segmenter.py) and decides every response.create. Live 2026-10-23: turn detection cannot be
+# changed after the session starts, and the discussion must be transcribed without replies (a commit with turn
+# detection off gives the transcript and no response). RELAY_TURN_DETECTION='<JSON object>' brings server VAD back.
+DEFAULT_TURN_DETECTION: dict | None = None
+# The server-VAD setting of the old path (live 2026-10-23: semantic_vad's default 100 ms silence ended 3 of 4 spoken
+# lines at their first pause; with 700 ms every line was heard in full and replies started within ~0.7–1.2 s).
+VAD_TURN_DETECTION: dict = {"type": "semantic_vad", "silence_duration_ms": 700}
 
 
 @dataclass(frozen=True)
@@ -41,7 +46,7 @@ class Settings:
     realtime_model: str = REALTIME_MODEL
     mic_mode: str = "tap"
     narration: str = "live"
-    turn_detection: dict | None = field(default_factory=lambda: dict(DEFAULT_TURN_DETECTION))
+    turn_detection: dict | None = None  # None: manual turns (DEFAULT_TURN_DETECTION); a dict: server VAD
     temperature: float | None = None
     full_session_update: bool = False
     fake_realtime: bool = False
@@ -55,7 +60,8 @@ class Settings:
 
     @property
     def session_turn_detection(self) -> dict | None:
-        """`audio.input.turn_detection` for session.update: VAD in tap mode, manual commit (null) in hold mode.
+        """`audio.input.turn_detection` for session.update: the setting in tap mode (null by default: manual turns),
+        manual commit (null) in hold mode.
 
         A copy, so a caller mutating its session config can't change every later session.update.
         """
@@ -69,7 +75,7 @@ def _flag(value: str | None) -> bool:
 def _turn_detection(raw: str | None) -> dict | None:
     raw = (raw or "").strip()
     if not raw:
-        return dict(DEFAULT_TURN_DETECTION)
+        return copy.deepcopy(DEFAULT_TURN_DETECTION)
     value = json.loads(raw)
     if value is not None and not isinstance(value, dict):
         raise ValueError("RELAY_TURN_DETECTION must be a JSON object or null")

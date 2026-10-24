@@ -17,7 +17,7 @@
         <div class="topbar-left">
           <span class="brand"
             ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10.5v3" /></svg
-            >Relay</span
+            ><span class="brand-name">Relay</span></span
           >
           <span class="talk-name"></span>
         </div>
@@ -36,7 +36,7 @@
             ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
               <rect x="3" y="4.5" width="18" height="12" rx="2" />
               <path d="M8.5 20h7M12 16.5V20" /></svg
-            >You are viewing Relay's screen</span
+            ><span class="viewing-text">You are viewing Relay's screen</span></span
           >
         </div>
         <div class="topbar-right">
@@ -49,6 +49,16 @@
           </button>
         </div>
       </header>
+
+      <nav class="agenda" aria-label="Agenda" hidden>
+        <ol class="agenda-steps"></ol>
+        <p class="agenda-info">
+          <span class="checkpoint" title="Checkpoint: slide · talking point · status"
+            ><span class="checkpoint-where"></span><span class="checkpoint-status" data-status="idle">idle</span></span
+          ><span class="agenda-prompt" hidden></span>
+        </p>
+        <button type="button" class="phase-button" title="End the presentation: the facilitator hands over and listens">Start discussion</button>
+      </nav>
 
       <section class="strip" aria-label="Meeting info" title="Click for the audio and connection check" hidden>
         <h2 class="strip-title">Meeting info</h2>
@@ -101,6 +111,10 @@
         <div class="banner" role="status" hidden>
           <span class="banner-text"></span><span class="banner-count" aria-hidden="true" hidden></span>
         </div>
+        <aside class="callout" data-kind="evidence" role="status" aria-live="polite" hidden>
+          <p class="callout-head"><span class="callout-kind">Evidence</span><span class="callout-query"></span></p>
+          <ol class="callout-items"></ol>
+        </aside>
         <section class="captions" data-mode="idle" aria-label="Captions">
           <div class="cap-meta">
             <span class="cap-tag" hidden></span>
@@ -115,7 +129,10 @@
         <div class="left-card" role="dialog" aria-labelledby="relay-left-title" hidden>
           <div class="left-panel">
             <h2 id="relay-left-title">You left the meeting</h2>
-            <p>Relay stopped. <span class="presenter-name">The presenter</span> has the floor; R hands it back to Relay.</p>
+            <p>
+              <span class="ai-name-cap">Relay</span> stopped. <span class="presenter-name">The presenter</span> has the floor; R hands it
+              back to <span class="ai-name">Relay</span>.
+            </p>
             <button type="button" class="rejoin-button">Rejoin</button>
           </div>
         </div>
@@ -162,10 +179,64 @@
         <section class="chat" aria-label="Meeting chat" hidden>
           <header class="chat-head">
             <h2 class="chat-title">Meeting chat</h2>
+            <div class="tabs" role="tablist" aria-label="Meeting panels" hidden>
+              <button type="button" class="tab" role="tab" data-tab="evidence" aria-selected="true">
+                <span class="tab-label">Evidence</span><span class="tab-badge" hidden>0</span>
+              </button>
+              <button type="button" class="tab" role="tab" data-tab="notes" aria-selected="false">
+                <span class="tab-label">Notes</span><span class="tab-badge" hidden>0</span>
+              </button>
+              <button type="button" class="tab" role="tab" data-tab="transcript" aria-selected="false">
+                <span class="tab-label">Transcript</span><span class="tab-badge" hidden>0</span>
+              </button>
+              <button type="button" class="tab" role="tab" data-tab="chat" aria-selected="false">
+                <span class="tab-label">Chat</span><span class="tab-badge" hidden>0</span>
+              </button>
+            </div>
             <button type="button" class="chat-close" aria-label="Close the chat" title="Close">
               <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
             </button>
           </header>
+          <div class="pane evidence-pane" role="tabpanel" aria-label="Evidence" hidden>
+            <p class="pane-empty lookups-empty">
+              Nothing looked up yet. When someone asks about the project, the facilitator searches the documents below and the
+              sources it used show here.
+            </p>
+            <ol class="lookups" aria-live="polite"></ol>
+            <details class="docs">
+              <summary class="docs-summary">Documents<span class="docs-count"></span></summary>
+              <div class="docs-list"></div>
+            </details>
+          </div>
+          <div class="pane notes-pane" role="tabpanel" aria-label="Notes" hidden>
+            <header class="notes-head" hidden>
+              <h3 class="notes-title">Meeting notes</h3>
+              <span class="notes-time"></span>
+            </header>
+            <section class="notes-section" data-section="decisions">
+              <h3 class="notes-h">Decisions<span class="notes-count"></span></h3>
+              <ol class="notes-list"></ol>
+            </section>
+            <section class="notes-section" data-section="action_items">
+              <h3 class="notes-h">Action items<span class="notes-count"></span></h3>
+              <ol class="notes-list"></ol>
+            </section>
+            <section class="notes-section" data-section="clarifications">
+              <h3 class="notes-h">Clarifications<span class="notes-count"></span></h3>
+              <ol class="notes-list"></ol>
+            </section>
+            <section class="notes-section" data-section="open_questions">
+              <h3 class="notes-h">Open questions<span class="notes-count"></span></h3>
+              <ol class="notes-list"></ol>
+            </section>
+          </div>
+          <div class="pane transcript-pane" role="tabpanel" aria-label="Transcript" hidden>
+            <p class="pane-empty transcript-empty">
+              The discussion shows here, line by line. The facilitator listens and checks each claim against the documents and
+              earlier clarifications; it speaks up only before a conflicting decision is confirmed.
+            </p>
+            <ol class="transcript" aria-live="polite"></ol>
+          </div>
           <ol class="chat-log" aria-live="polite"></ol>
           <form class="chat-compose" autocomplete="off">
             <label class="sr-only" for="relay-chat-input">Ask Relay</label>
@@ -199,6 +270,9 @@
             </svg>
             <span class="tb-label">Unmute</span>
           </button>
+          <div class="speakers" role="radiogroup" aria-label="Who is speaking" hidden>
+            <span class="speakers-label">Speaking</span><span class="speaker-chips"></span>
+          </div>
         </div>
         <div class="toolbar-center">
           <button type="button" class="tb people-button" aria-pressed="true" title="Show or hide the participants">
@@ -237,16 +311,23 @@
               <span class="tb-label">More</span>
             </button>
             <div class="more-menu" role="menu" aria-label="More" hidden>
-              <button type="button" role="menuitem" data-action="pause"><span>Pause or resume Relay</span><kbd>P</kbd></button>
+              <button type="button" role="menuitem" data-action="pause">
+                <span>Pause or resume <span class="ai-name">Relay</span></span><kbd>P</kbd>
+              </button>
               <button type="button" role="menuitem" data-action="human">
                 <span>Give the floor to <span class="presenter-name">the presenter</span></span><kbd>H</kbd>
               </button>
-              <button type="button" role="menuitem" data-action="relay"><span>Back to Relay</span><kbd>R</kbd></button>
+              <button type="button" role="menuitem" data-action="relay">
+                <span>Back to <span class="ai-name">Relay</span></span><kbd>R</kbd>
+              </button>
               <button type="button" role="menuitem" data-action="prev"><span>Previous slide</span><kbd>←</kbd></button>
               <button type="button" role="menuitem" data-action="next"><span>Next slide</span><kbd>→</kbd></button>
               <button type="button" role="menuitem" data-action="type"><span>Type a question</span><kbd>T</kbd></button>
               <button type="button" role="menuitem" data-action="checklist"><span>Audio and connection check</span></button>
               <button type="button" role="menuitem" data-action="info"><span>Meeting info</span><kbd>I</kbd></button>
+              <button type="button" role="menuitem" data-action="reset" class="menu-reset" data-confirm="false" hidden>
+                <span class="reset-label">Restart meeting</span>
+              </button>
             </div>
           </div>
         </div>
@@ -312,12 +393,12 @@
           </p>
         </div>
         <dl class="keys" aria-label="Presenter keys">
-          <div><dt><kbd>Space</kbd></dt><dd>talk to Relay, again to send</dd></div>
+          <div><dt><kbd>Space</kbd></dt><dd>talk to <span class="ai-name">Relay</span>, again to send</dd></div>
           <div><dt><kbd>Esc</kbd></dt><dd>cancel the turn</dd></div>
           <div><dt><kbd>→</kbd> <kbd>←</kbd></dt><dd>next / previous slide</dd></div>
           <div><dt><kbd>P</kbd></dt><dd>pause</dd></div>
           <div><dt><kbd>H</kbd></dt><dd>presenter has the floor</dd></div>
-          <div><dt><kbd>R</kbd></dt><dd>back to Relay</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>back to <span class="ai-name">Relay</span></dd></div>
           <div><dt><kbd>T</kbd></dt><dd>type a question</dd></div>
           <div><dt><kbd>I</kbd></dt><dd>meeting info</dd></div>
         </dl>

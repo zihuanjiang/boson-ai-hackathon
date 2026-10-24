@@ -4,7 +4,14 @@ Spec: `doc/brief.md`. Build contract (interfaces, protocol, state machine): `doc
 
 ## Status
 
-2026-10-23 (Fri) ~19:00 — on `claude/relay-v1`, 1090 tests pass (unit, controller scenarios, backend end-to-end
+2026-10-23 (Fri) ~20:45 — **Pivot to `doc/brief_updated.md` (On the Same Page, D58).** Done first: Relay presents
+live through Realtime with the TTS 3 renders as backup, voice `default`, and the deck is a Zoom-like meeting page
+(D52–D57, commit f89bd1a, 1154 tests). Gap analysis: `doc/discrepancies.md`. Build in progress (contract
+`.scratch/same-page/contract.md`): meeting package (agenda, sources with ids, checks), evidence retrieval, the
+listening phase with the alignment check, decisions and notes, panels. Capability probes behind it:
+`doc/gotchas.md` (evening sections).
+
+Earlier, 2026-10-23 (Fri) ~19:00 — on `claude/relay-v1`, 1090 tests pass (unit, controller scenarios, backend end-to-end
 over real uvicorn with the fake Realtime, deck checks under JavaScriptCore). An adversarial review confirmed 29
 findings, all fixed (D27–D45). Live API checks (`doc/gotchas.md` → Measured): smoke tests, F1–F3, F6 and F7 pass;
 F5 shows Higgs rarely calls resume_script / handoff_to_human on its own (4/10), so the watchdog does it (D46); a
@@ -83,6 +90,13 @@ start of its sentence for the resume. Details: `doc/design.md`.
 | D55 | The deck is a **video-meeting page** (Ken): slides as the shared screen, Relay and You tiles, meeting captions, a toolbar, chat, a join dialog; the status strip is a hidden "Meeting info" panel (I key) | it must look like a Zoom call, not a control panel |
 | D56 | The audience is a real person at the mic (Ken): no synthesized voices; floor control stays tap-to-talk (Space or the toolbar's Unmute) | real voice input; hands-free barge-in would need echo-free audio |
 | D57 | Opening watchdog: an opening reply that was heard but called no tool counts down 1.5 s and starts the presentation itself (ticker `auto`) | extends D46; the probe's opening greeting skipped `start_presentation` in 1 of 4 runs |
+| D58 | **The goal is `doc/brief_updated.md`, "On the Same Page"** (a teammate's revision, Ken 2026-10-23 ~20:00): a meeting facilitator that presents, answers from cited documents, listens, intervenes selectively, captures decisions. Gap list: `doc/discrepancies.md` | Ken: "follow the updated document to identify the discrepancy, and update as it suggested" |
+| D59 | One Realtime session per meeting with `turn_detection: null`; the backend ends user turns (energy segmenter) and decides every `response.create` | live: `turn_detection` can't change after session start; manual commits give transcripts without replies (~0.5 s); one session keeps the presentation's clarification in context for the discussion |
+| D60 | Live narration per talking point (`script.yaml` chunk + `id`); checkpoint `{slide_id, talking_point_id, status}` | brief §4.2 and §14: resume at the interrupted talking point, not the slide |
+| D61 | `lookup_evidence` = local BM25 over the package's `sources/*.md` statements (stable ids) plus live clarifications and decisions; a real tool round trip | live: the model called it first for 6/6 interruption questions and answered from it |
+| D62 | Alignment check = claims extracted with the package's `checks.yaml` patterns (applied alike to sources, clarifications and utterances), spoken only when a conflicting claim has an action and a confirmation follows; otherwise a silent on-screen suggestion | brief §4.4 / §10 intervention policy; deterministic and inspectable for a rehearsed demo |
+| D63 | Model `save_decision` calls are validated against the participants, the draft and the recent transcript; an invalid or missing call saves the engine's draft (`auto`) | live: the model once invented an unrelated decision and owner |
+| D64 | The client stays plain ES modules (brief §10 prefers TypeScript + Vite) until Ken OKs installing Node | D1: Node isn't installed; installing it is a system change |
 
 ## Decided earlier (Ken): the Relay voice was chloe (superseded by D54: `default`)
 

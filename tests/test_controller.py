@@ -5,7 +5,9 @@ followed by a `response.create` that would answer them (a narration request carr
 audio payload reaches the log; no handler swallowed an internal error.
 
 The harness narrates from the renders (`narration="rendered"`, v1's behaviour) unless a test asks for live
-narration (D52): `make(narration="live")`; the live-narration tests are at the end of this file.
+narration (D52): `make(narration="live")`; the live-narration tests are at the end of this file. Its turns use server
+VAD (`VAD_TURN_DETECTION`, the path these tests were written for); manual turns with the segmenter (the default since
+contract v3) and the meeting facilitator are tested at the end of this file and in tests/test_meeting_flow.py.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from relay.config import DEFAULT_TURN_DETECTION, ROOT, Settings
+from relay.config import DEFAULT_TURN_DETECTION, ROOT, VAD_TURN_DETECTION, Settings
 from relay.controller import (
     BANNER_END, BANNER_OFFLINE, BANNER_OFFLINE_BACK, BANNER_OPENING, BANNER_PAUSED, BANNER_PAUSED_R, BANNER_QA,
     BANNER_RESUMING, BANNER_STARTING, COUNTDOWN_S, CUT_CALL_OUTPUT, DOUBLE_SEND_S, DRAIN_GRACE_S, ERR_LINK_LOST,
@@ -76,16 +78,21 @@ class RecordingBrowser(Recorder):
 
 
 class RecordingRealtime(Recorder):
-    """RealtimePort stand-in: `ready`/`status` settable, counts start(), records what was sent while ready."""
+    """RealtimePort stand-in: `ready`/`status` settable, counts start() and restart(), records what was sent while
+    ready."""
 
     def __init__(self, timeline: list, *, ready: bool = True):
         super().__init__("realtime", timeline)
         self.ready = ready
         self.status = "ready" if ready else "offline"
         self.starts = 0
+        self.restarts = 0
 
     async def start(self) -> None:
         self.starts += 1
+
+    async def restart(self) -> None:
+        self.restarts += 1
 
     async def send(self, event: dict) -> bool:
         if not self.ready:
@@ -116,6 +123,17 @@ def _json_or_none(text: str) -> Any:
 def is_narration_request(event: dict) -> bool:
     """A live narration's response.create: it brings its own instructions, so it never answers a tool output."""
     return ((event.get("response") or {}).get("metadata") or {}).get("relay") == "narration"
+
+
+OWN_INSTRUCTIONS = ("narration", "followup", "intervention", "decision", "handover", "summary")
+
+
+def brings_own_instructions(event: dict) -> bool:
+    """A response.create with its own per-response instructions and tag: a narration, or (a meeting) a follow-up
+    after a tool round trip or one of the facilitator's own responses. The protocol's "never answer a tool output
+    with a bare response.create" rule doesn't apply to it: a follow-up answers the output on purpose."""
+    response = event.get("response") or {}
+    return (response.get("metadata") or {}).get("relay") in OWN_INSTRUCTIONS and bool(response.get("instructions"))
 
 
 def call(name: str, args: Any = "{}", call_id: str | None = None) -> dict:
@@ -328,7 +346,7 @@ class Harness:
                 armed = text.startswith(SUMMARY_PREFIX)  # the reconnect summary is context only: never answered
             elif kind == "input_audio_buffer.commit":
                 armed = False  # a new user turn may ask for a response
-            elif kind == "response.create" and not is_narration_request(event):
+            elif kind == "response.create" and not brings_own_instructions(event):
                 assert not armed, "response.create sent after a function_call_output or the summary"
         if not self.expect_errors:
             assert [data for kind, data in self.logs if kind == "controller_error"] == []
@@ -344,8 +362,9 @@ def with_end_slide(talk: Talk) -> Talk:
 
 @pytest.fixture
 def settings() -> Settings:
-    """conftest's defaults, but narrating from the renders: the tests before the live-narration section are v1's."""
-    return Settings(narration="rendered")
+    """conftest's defaults, but narrating from the renders (the tests before the live-narration section are v1's)
+    and with server VAD (the turn-detection path these tests drive with speech_started / speech_stopped)."""
+    return Settings(narration="rendered", turn_detection=dict(VAD_TURN_DETECTION))
 
 
 @pytest.fixture
@@ -1680,18 +1699,25 @@ def test_session_config_tap_mode(h: Harness, test_talk):
         "audio": {
             "input": {"format": {"type": "audio/pcm", "rate": 24000},
                       "transcription": {"model": "higgs-stt-3.1", "language": "en"},
-                      "turn_detection": DEFAULT_TURN_DETECTION},
+                      "turn_detection": VAD_TURN_DETECTION},
             "output": {"format": {"type": "audio/pcm", "rate": 24000}, "voice": "chloe"},
         },
         "tools": tool_specs(test_talk),
         "tool_choice": "auto",
     }
-    assert DEFAULT_TURN_DETECTION["type"] == "semantic_vad"
+    assert VAD_TURN_DETECTION["type"] == "semantic_vad"
     assert config["instructions"].startswith("You are Relay, a voice co-presenter for Ken's talk.")
     assert "Phase: opening" in config["instructions"]
     json.dumps(config)
     config["audio"]["input"]["turn_detection"]["type"] = "server_vad"  # a copy: settings stay untouched
-    assert h.settings.turn_detection == DEFAULT_TURN_DETECTION
+    assert h.settings.turn_detection == VAD_TURN_DETECTION
+
+
+def test_session_config_defaults_to_manual_turns(make):
+    """Contract v3: turn detection off by default (the backend ends turns itself; it can't change mid-session)."""
+    assert DEFAULT_TURN_DETECTION is None and Settings().turn_detection is None
+    config = make(settings_=Settings()).c.session_config()
+    assert config["audio"]["input"]["turn_detection"] is None
 
 
 def test_session_config_hold_mode_custom_vad_and_temperature(make):

@@ -14,6 +14,8 @@ const STATE_LABELS = {
   PAUSED: "Paused",
   LISTENING: "Listening",
   REPLYING: "Replying",
+  ROOM: "Room", // a meeting's discussion: the facilitator listens to the room
+  INTERVENING: "Speaking up",
 };
 /** @type {Record<string, string>} */
 const PHASE_LABELS = { opening: "Opening", presenting: "Presenting", qa: "Q&A", human: "Human" };

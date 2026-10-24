@@ -371,6 +371,116 @@ async def test_metadata_of_any_request_is_echoed_and_an_untagged_one_still_repli
     assert events[types(events).index("response.created")]["response"]["metadata"] is None
 
 
+# --- a meeting session (contract v3 §9: the facilitator's tools) -------------------------------------------------
+
+
+def meeting_tools() -> list[dict]:
+    none = {"type": "object", "properties": {}}
+    return [{"type": "function", "name": name, "description": f"{name}.", "parameters": none}
+            for name in ("lookup_evidence", "get_presentation_state", "generate_meeting_notes", "record_clarification",
+                         "save_decision", "set_presentation_state")]
+
+
+async def open_meeting(phase: str = "presenting", *, options: FakeOptions | None = None) -> FakeRealtimeConn:
+    conn = FakeRealtimeConn(URL, options or FakeOptions(sleep=instant, drop_after=0))
+    config = session(phase, vad=False)
+    config["tools"] = meeting_tools()
+    await send(conn, {"type": "session.update", "session": config})
+    await read_until(conn, "session.created")
+    return conn
+
+
+def calls_of(events: list[dict]) -> list[tuple[str, dict]]:
+    return [(event["name"], json.loads(event["arguments"])) for event in events
+            if event["type"] == "response.function_call_arguments.done"]
+
+
+async def ask(conn: FakeRealtimeConn, text: str) -> list[dict]:
+    await send(conn, {"type": "conversation.item.create", "item": {
+        "type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}})
+    await send(conn, {"type": "response.create"})
+    return await read_until(conn, "response.done")
+
+
+async def test_a_meeting_question_gets_a_silent_lookup_like_the_live_model() -> None:
+    conn = await open_meeting()
+    events = await ask(conn, "Wait, I thought Friday was production. Which one is it?")
+    assert calls_of(events) == [("lookup_evidence", {"query": "Wait, I thought Friday was production. Which one is "
+                                                              "it?"})]
+    assert "response.output_audio.delta" not in types(events)  # silent: only the call
+    assert "response.output_audio_transcript.delta" not in types(events)
+    assert [item["type"] for item in events[-1]["response"]["output"]] == ["message", "function_call"]
+    opening = await open_meeting("opening")
+    events = await ask(opening, "Facilitator, take us through the plan.")
+    assert calls_of(events) == [("set_presentation_state", {"action": "start"})]
+    assert "(fake) Thanks! Hi everyone, I'm the facilitator." in json.dumps(events)
+
+
+async def test_a_follow_up_answers_from_the_last_tool_output_and_resumes_when_asked() -> None:
+    conn = await open_meeting()
+    events = await ask(conn, "Is Friday beta?")
+    (call,) = [event for event in events if event["type"] == "response.function_call_arguments.done"]
+    result = {"results": [{"source_id": "REQ-2", "excerpt": "On Friday the beta release goes to the beta group."}]}
+    await send(conn, {"type": "conversation.item.create", "item": {
+        "type": "function_call_output", "call_id": call["call_id"], "output": json.dumps(result)}})
+    followup = {"relay": "followup", "reply": "3"}
+    await send(conn, {"type": "response.create", "response": {
+        "metadata": followup, "instructions": "Answer the question now from these results in one or two short "
+                                              "sentences, then call set_presentation_state with action resume."}})
+    events = await read_until(conn, "response.done")
+    assert events[types(events).index("response.created")]["response"]["metadata"] == followup
+    said = "".join(event["delta"] for event in events if event["type"] == "response.output_audio_transcript.delta")
+    assert said == "(fake) From the documents: On Friday the beta release goes to the beta group [REQ-2]."
+    assert calls_of(events) == [("set_presentation_state", {"action": "resume"})]
+    await send(conn, {"type": "response.create", "response": {
+        "metadata": followup, "tool_choice": "none", "instructions": "Answer the question now from these results."}})
+    events = await read_until(conn, "response.done")
+    assert calls_of(events) == [] and "From the documents" in json.dumps(events)
+    await send(conn, {"type": "response.create", "response": {
+        "metadata": followup, "tool_choice": "none", "instructions": "Confirm it in one short sentence."}})
+    events = await read_until(conn, "response.done")
+    assert "(fake) Confirmed, it's in the meeting notes." in json.dumps(events)
+
+
+async def test_the_facilitators_own_responses() -> None:
+    conn = await open_meeting()
+    for kind in ("intervention", "handover", "summary"):
+        await send(conn, {"type": "response.create", "response": {
+            "metadata": {"relay": kind, "reply": "7"}, "instructions": "…", "tool_choice": "none"}})
+        events = await read_until(conn, "response.done")
+        assert calls_of(events) == [] and "response.output_audio.delta" in types(events)
+        assert events[types(events).index("response.created")]["response"]["metadata"]["relay"] == kind
+    draft = {"decision": "Friday: beta", "owner": "Bob", "follow_up": "Bob notifies beta users",
+             "source_ids": ["REQ-2"]}
+    await send(conn, {"type": "response.create", "response": {
+        "metadata": {"relay": "decision", "reply": "8"},
+        "instructions": "The group settled it:\nCarol: \"Yes.\"\nDRAFT: " + json.dumps(draft) + "\nCall save_decision."}})
+    events = await read_until(conn, "response.done")
+    assert calls_of(events) == [("save_decision", draft)]
+    assert "(fake) Confirmed. It's in the meeting notes." in json.dumps(events)
+
+
+async def test_committed_turns_get_the_scripted_transcripts_in_order() -> None:
+    conn = await open_meeting(options=FakeOptions(sleep=instant, drop_after=0, transcripts=("One.", "Two.")))
+    heard = []
+    for _ in range(3):
+        await send(conn, {"type": "input_audio_buffer.append", "audio": pcm(500)})
+        await send(conn, {"type": "input_audio_buffer.commit"})
+        events = await read_until(conn, "conversation.item.input_audio_transcription.completed")
+        heard.append(events[-1]["transcript"])
+    assert heard == ["One.", "Two.", FAKE_TRANSCRIPT]
+    await assert_quiet(conn)  # transcribed, never answered (turn detection off)
+
+
+async def test_a_talking_point_narration_names_its_point() -> None:
+    conn = await open_meeting()
+    await send(conn, {"type": "response.create", "response": {
+        "metadata": {"relay": "narration", "reply": "1", "slide": "plan", "talking_point": "friday-beta"}}})
+    events = await read_until(conn, "response.done")
+    said = "".join(event["delta"] for event in events if event["type"] == "response.output_audio_transcript.delta")
+    assert said == "(fake) Live narration of slide plan, talking point friday-beta."
+
+
 async def test_response_create_while_one_is_active_is_an_error() -> None:
     conn = await open_session("presenting", options=FakeOptions(sleep=Steps(free=0), drop_after=0))
     await send(conn, {"type": "response.create"})

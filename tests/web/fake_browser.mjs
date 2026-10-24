@@ -200,6 +200,21 @@ export class FakeElement extends FakeNode {
   prepend(...nodes) {
     this.childNodes.unshift(...this._adopt(nodes));
   }
+  insertBefore(node, ref) {
+    if (!ref) {
+      this.append(node);
+      return node;
+    }
+    const [adopted] = this._adopt([node]);
+    const k = this.childNodes.indexOf(ref);
+    if (k < 0) throw new Error("insertBefore: the reference node is not a child");
+    this.childNodes.splice(k, 0, adopted);
+    return node;
+  }
+  get nextElementSibling() {
+    const siblings = this.parentNode ? this.parentNode.children : [];
+    return siblings[siblings.indexOf(this) + 1] ?? null;
+  }
   replaceChildren(...nodes) {
     for (const n of this.childNodes) n.parentNode = null;
     this.childNodes = [];

@@ -87,6 +87,8 @@ def test_test_talk_model(test_talk):
     assert how.plain.startswith("Like a radio host") and qa.plain is None and test_talk.slide("title").plain is None
     assert [c.fragment for c in how.chunks] == [1, 2, 3] and qa.chunks[0].fragment is None
     assert [c.index for c in how.chunks] == [0, 1, 2]
+    assert [c.id for c in how.chunks] == ["how-1", "how-2", "how-3"] and qa.chunks[0].id == "qa-1"  # default ids
+    assert [(c.slide, c.point_id) for c in qa.chunks] == [("qa", None)]
     assert how.chunks[0].say.startswith("<|emotion:enthusiasm|>Here")
     assert how.chunks[0].text.startswith("Here is how this works.")
     assert qa.chunks[0].text == "That is the whole pipeline. I would love to take a question."
@@ -103,6 +105,24 @@ def test_talk_lookups(test_talk):
         test_talk.slide("nope")
     with pytest.raises(IndexError):
         test_talk.chunk("how", 3)
+
+
+def test_chunk_id():
+    assert Chunk(0, "a.").id == "1" and Chunk(1, "b.", slide="how").id == "how-2"
+    assert Chunk(1, "b.", slide="how", point_id="friday-beta").id == "friday-beta"
+
+
+def test_explicit_talking_point_ids(tmp_path):
+    def ids(data: dict) -> None:
+        data["slides"][1]["chunks"][0]["id"] = "friday-beta"
+        data["slides"][1]["chunks"][2]["id"] = "a" * 40
+        data["slides"][2]["chunks"][0]["id"] = "0-questions"
+
+    root = package(tmp_path, script=ids)
+    assert issues_of(root) == []  # `id` is a known chunk key: no warning
+    talk = load_talk(root)
+    assert [c.id for c in talk.slide("how").chunks] == ["friday-beta", "how-2", "a" * 40]
+    assert talk.slide("qa").chunks[0].id == "0-questions"
 
 
 def test_fragment_at_is_a_cumulative_max():
@@ -213,6 +233,14 @@ def _all_human(data: dict) -> None:
     data["slides"] = [{"id": s["id"], "speaker": "human"} for s in data["slides"]]
 
 
+def point_ids(*where: tuple[int, int, str]) -> Callable[[dict], None]:
+    """Set chunk ids: (slide index, chunk index, id)…"""
+    def mutate(data: dict) -> None:
+        for slide, chunk, value in where:
+            data["slides"][slide]["chunks"][chunk]["id"] = value
+    return mutate
+
+
 LONG_TEXT = ("Words " * 48)[:-1] + "."  # 288 characters: fine alone, too long with a tag
 
 ERRORS = [
@@ -301,6 +329,24 @@ ERRORS = [
     ("slide without a .slide comment", dict(slides=lambda md: md.replace('<!-- .slide: id="qa" -->\n', "")),
      'error: slides.md: slide 3: must start with <!-- .slide: id="..." -->'),
     ("trailing separator", dict(slides=lambda md: md + "\n---\n"), "error: slides.md: slide 4: empty slide"),
+    # talking point ids (script.yaml chunk `id:`)
+    ("talking point id in capitals", dict(script=setting(("slides", 1, "chunks", 0, "id"), "Friday")),
+     "error: script.yaml: how.chunks[0]: `id: 'Friday'`: a talking point id is 1–40 lowercase letters, digits and -"),
+    ("talking point id with _", dict(script=setting(("slides", 1, "chunks", 0, "id"), "friday_beta")),
+     "how.chunks[0]: `id: 'friday_beta'`: a talking point id"),
+    ("talking point id starting with -", dict(script=setting(("slides", 1, "chunks", 0, "id"), "-beta")),
+     "`id: '-beta'`: a talking point id"),
+    ("talking point id of 41 characters", dict(script=setting(("slides", 1, "chunks", 0, "id"), "a" * 41)),
+     "a talking point id is 1–40"),
+    ("talking point id empty", dict(script=setting(("slides", 1, "chunks", 0, "id"), "")), "`id: ''`: a talking"),
+    ("talking point id a number", dict(script=setting(("slides", 1, "chunks", 0, "id"), 5)),
+     "how.chunks[0]: `id: 5`: a talking point id"),
+    ("talking point id twice", dict(script=point_ids((1, 0, "beta"), (1, 2, "beta"))),
+     "error: script.yaml: talking point id 'beta' appears more than once (how.chunks[0] and how.chunks[2])"),
+    ("talking point id equal to a default", dict(script=point_ids((1, 0, "how-2"))),
+     "error: script.yaml: talking point id 'how-2' appears more than once (how.chunks[0] and how.chunks[1])"),
+    ("talking point id twice across slides", dict(script=point_ids((1, 1, "intro"), (2, 0, "intro"))),
+     "talking point id 'intro' appears more than once (how.chunks[1] and qa.chunks[0])"),
 ]
 
 

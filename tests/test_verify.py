@@ -10,6 +10,7 @@ from __future__ import annotations
 import array
 import asyncio
 import base64
+import dataclasses
 import json
 import math
 import struct
@@ -28,7 +29,7 @@ from websockets.http11 import Response
 
 import relay.config
 from relay import render, verify
-from relay.config import DEFAULT_TURN_DETECTION, RATE, Settings
+from relay.config import DEFAULT_TURN_DETECTION, RATE, VAD_TURN_DETECTION, Settings
 from relay.talk import load_talk
 from relay.textutil import strip_tags
 from relay.verify import CREDITS_URL, NO_KEY_MESSAGE, Ctx, Result, TimedWord, ToolCallSeen, VerifyError
@@ -1149,7 +1150,8 @@ async def test_check_session_flags_a_first_update_that_did_not_stick(live_settin
         return session
 
     server = FakeServer(resolve=server_vad)
-    result = await verify.check_session(Ctx(live_settings, connect=server.connect, echo=quiet), talk="talks/test")
+    vad = dataclasses.replace(live_settings, turn_detection=VAD_TURN_DETECTION)  # the default is manual turns now
+    result = await verify.check_session(Ctx(vad, connect=server.connect, echo=quiet), talk="talks/test")
     assert result.status == "FAIL"
     assert "the full session.update did not stick (turn_detection: 'semantic_vad' → 'server_vad')" in result.summary
 

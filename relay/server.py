@@ -69,7 +69,12 @@ def default_controller_factory(talk: Talk, chunks: Chunks, settings: Settings, *
 
 
 def talk_json(talk: Talk, chunks: Chunks, settings: Settings) -> dict:
-    """The `GET /api/talk` payload (design §3)."""
+    """The `GET /api/talk` payload (design §3). `meeting` is the meeting package as the deck shows it (title,
+    participants, agenda phases, documents with their statement ids, the discussion slide), null for a plain talk;
+    every chunk carries its talking point `id`."""
+    from .meeting import load_meeting
+
+    meeting = load_meeting(talk)
     slides = []
     for slide in talk.slides:
         items = []
@@ -77,6 +82,7 @@ def talk_json(talk: Talk, chunks: Chunks, settings: Settings) -> dict:
             rendered = chunks.get((slide.id, chunk.index))
             items.append({
                 "index": chunk.index,
+                "id": chunk.id,
                 "text": rendered.text if rendered else chunk.text,
                 "fragment": chunk.fragment,
                 "duration_ms": rendered.duration_ms if rendered else 0,
@@ -89,7 +95,8 @@ def talk_json(talk: Talk, chunks: Chunks, settings: Settings) -> dict:
                        "title": slide.title, "fragments": slide.fragments, "chunks": items})
     return {"id": talk.id, "presenter": talk.presenter, "voice": talk.voice, "mic_mode": settings.mic_mode,
             "narration_mode": settings.narration, "fake_audio": any(chunk.fake for chunk in chunks.values()),
-            "version": render_version(talk, dict(chunks)), "slides": slides}
+            "version": render_version(talk, dict(chunks)), "slides": slides,
+            "meeting": meeting.to_json() if meeting is not None else None}
 
 
 # --- the narration snapshot ---------------------------------------------------------------------------------

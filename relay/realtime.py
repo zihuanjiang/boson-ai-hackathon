@@ -9,6 +9,8 @@ A drop reconnects at once, then backs off 0.5, 1, 2, 4, 5 s (reset after a sessi
 
 A send that makes no progress for 2 s (stalled network, full write buffer) drops the connection and returns False,
 so the controller (and with it the presenter keys) never hangs on the socket; the loop then reconnects.
+`restart()` replaces the session at once (a meeting's Restart: an empty conversation), reporting `reconnecting` →
+`ready` like a reconnect without backoff.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ SEND_TIMEOUT_S = 2.0
 CLOSE_TIMEOUT_S = 2.0
 DETAIL_MAX = 200
 
+RESTARTING = "restarting: a fresh session"
 MISSING_KEY = "BOSON_API_KEY missing"
 BAD_KEY = "API key invalid or expired ({why}): check BOSON_API_KEY"
 NO_CREDIT = "billing refused ({why}): claim the credits in the Boson workspace"
@@ -144,6 +147,25 @@ class RealtimeLink:
             await self._set_status("error", MISSING_KEY)
             return
         self._task = asyncio.get_running_loop().create_task(self._run(), name="relay-realtime-link")
+
+    async def restart(self) -> None:
+        """A fresh session now (the meeting's Restart: the model must forget everything): close the current socket;
+        the loop opens a new session at once (no backoff), reporting `reconnecting` ("restarting") → `ready`. Not
+        running: start(). Between sessions (backoff) the next attempt is the fresh session anyway."""
+        if self._task is None or self._task.done():
+            await self.start()
+            return
+        ws = self._ws
+        if ws is None:
+            return
+        self._drop_reason = RESTARTING
+        self._ready = False  # nothing more goes to the old session
+        self._log("realtime_restart", {})
+        # in the background: a real close handshake can take a while, and the caller (the deck's message loop) must
+        # not wait for it; the read loop sees the socket close and opens the new session
+        task = asyncio.get_running_loop().create_task(self._close_quietly(ws))
+        self._aborts.add(task)
+        task.add_done_callback(self._aborts.discard)
 
     async def stop(self) -> None:
         task, self._task = self._task, None

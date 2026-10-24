@@ -22,6 +22,14 @@ Mic (turn detection on): ≥ 0.3 s of appended audio since the last `clear` → 
 
 `response.cancel` with nothing active gets Higgs's documented `error` (code `response_not_active`).
 
+A meeting session (its tools include `lookup_evidence`, On the Same Page) answers like the live model did in the
+2026-10-23 probes: a user turn (typed, or committed audio) → a *silent* `lookup_evidence` call with what the user said
+as the query (the opening phase: a greeting + `set_presentation_state` start); the follow-up (`metadata.relay`
+"followup") → "(fake) From the documents: <the first result's excerpt> [<its id>]." and, when its instructions ask
+for it, `set_presentation_state` resume; "intervention" / "handover" / "summary" → a short canned line, no tool;
+"decision" → a `save_decision` call with the values of the instructions' `DRAFT: {...}` line, and a confirmation.
+`transcripts` (FakeOptions) are the transcripts of successive committed user turns (then "(fake) I heard you.").
+
 Stricter than the real server on purpose (to catch our own bugs): a non-string `function_call_output.output`, an
 unknown client event type, or a client event before the first `session.update` gets an `error` event.
 Tests: `FakeConnector(sleep=..., speed=...)` fixes the timing knobs and keeps the connections it made;
@@ -58,6 +66,7 @@ MAX_APPEND_B64 = 1 << 20  # Higgs: ≤ 1 MiB of base64 per input_audio_buffer.ap
 MIN_COMMIT_MS = 100
 FAKE_TRANSCRIPT = "(fake) I heard you."
 NARRATION_TEXT = "(fake) Live narration of slide {slide}."
+POINT_TEXT = "(fake) Live narration of slide {slide}, talking point {point}."
 INVALID_SESSION_CLOSE = 1008
 VAD_TYPES = ("server_vad", "semantic_vad")
 PCM_RATES = (8000, 16000, 24000, 48000)
@@ -72,6 +81,19 @@ REPLY_TEXT = {
     "resume_script": "(fake) Good point. As I was saying…",
     None: "(fake) I heard you, but I have no tool to call.",
 }
+# A meeting session (the facilitator's tools)
+MEETING_GREETING = "(fake) Thanks! Hi everyone, I'm the facilitator. Let's start."
+FROM_DOCUMENTS = "(fake) From the documents: {excerpt} [{source_id}]."
+NOTHING_FOUND = "(fake) The documents don't say."
+CONFIRMED = "(fake) Confirmed, it's in the meeting notes."
+FLOW_TEXT = {
+    "intervention": "(fake) One clarification before we confirm: the documents say otherwise. Has the plan changed?",
+    "handover": "(fake) That's the presentation. Over to you: I'll listen and only speak up if something doesn't "
+                "match the documents.",
+    "summary": "(fake) To sum up: the decisions, their owners and the open questions are in the meeting notes.",
+    "decision": "(fake) Confirmed. It's in the meeting notes.",
+}
+DRAFT_RE = re.compile(r"^DRAFT:\s*", re.M)
 
 SleepFn = Callable[[float], Awaitable[None]]
 _ids = itertools.count(1)
@@ -93,6 +115,7 @@ class FakeOptions:
     drop_after: float | None = None  # close each connection after this many seconds; None → RELAY_FAKE_DROP_AFTER
     sleep: SleepFn = asyncio.sleep  # every delay goes through this (tests inject their own)
     reuse_ids: bool = False  # number ids per connection and prefix from 1 (a server numbering ids per session)
+    transcripts: tuple[str, ...] = ()  # transcripts of the committed user turns, in order (then FAKE_TRANSCRIPT)
 
 
 def _env_drop_after() -> float | None:
@@ -229,6 +252,55 @@ def choose_reply(instructions: str, user_text: str, tools: list) -> tuple[str | 
     return None, {}, REPLY_TEXT[None]
 
 
+def is_meeting_session(tools: list) -> bool:
+    return any(isinstance(tool, dict) and tool.get("name") == "lookup_evidence" for tool in tools or [])
+
+
+def choose_meeting_reply(instructions: str, user_text: str) -> tuple[str | None, dict, str]:
+    """A meeting session's answer to a user turn: in the opening a greeting and set_presentation_state start, else
+    a silent lookup_evidence call with what the user said (live 2026-10-23: 6/6)."""
+    match = PHASE_RE.search(instructions or "")
+    if match and match.group(1).lower() == "opening":
+        return "set_presentation_state", {"action": "start"}, MEETING_GREETING
+    return "lookup_evidence", {"query": (user_text or "").strip()[:200] or "the plan"}, ""
+
+
+def followup_reply(instructions: str, tool_choice: Any, tools: list, last_output: str | None) -> tuple[
+        str | None, dict, str]:
+    """A follow-up after a tool round trip: answer from the last tool output (the first result), and resume the
+    presentation when the instructions ask for it."""
+    results: list = []
+    try:
+        parsed = json.loads(last_output or "")
+        results = parsed.get("results") or [] if isinstance(parsed, dict) else []
+    except ValueError:
+        results = []
+    if "Confirm" in (instructions or "") and "results" not in (instructions or ""):
+        text = CONFIRMED
+    elif results and isinstance(results[0], dict):
+        first = results[0]
+        text = FROM_DOCUMENTS.format(excerpt=str(first.get("excerpt") or "").rstrip("."),
+                                     source_id=first.get("source_id"))
+    else:
+        text = NOTHING_FOUND
+    names = {tool.get("name") for tool in tools if isinstance(tool, dict)}
+    if tool_choice != "none" and "set_presentation_state" in names and "action resume" in (instructions or ""):
+        return "set_presentation_state", {"action": "resume"}, text
+    return None, {}, text
+
+
+def draft_from(instructions: str) -> dict:
+    """The JSON object after `DRAFT: ` in a decision request's instructions ({} if there is none)."""
+    match = DRAFT_RE.search(instructions or "")
+    if not match:
+        return {}
+    try:
+        value, _ = json.JSONDecoder().raw_decode(instructions, match.end())
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 @functools.lru_cache(maxsize=512)
 def tone_delta(index: int, count: int) -> str:
     """Delta `index` of `count`: 20 ms of a soft 220 Hz tone with a syllable-rate swell (base64 PCM16 LE).
@@ -293,6 +365,8 @@ class FakeRealtimeConn:
         self._last_item_id: str | None = None
         self._conversation_id = self._new_id("conv")
         self._user_text = ""  # what the "model" heard last: typed text or the fake transcript
+        self._transcripts = list(self.options.transcripts)  # the next committed turns' transcripts
+        self._last_output: str | None = None  # the last function_call_output (a follow-up answers from it)
         self._buffer_ms = 0.0  # audio appended since the last clear / commit
         self._audio_ms = 0.0  # all audio appended on this connection
         self._vad = "idle"  # idle → speaking → stopped: one turn per clear
@@ -500,13 +574,14 @@ class FakeRealtimeConn:
                 "role": "user", "content": [{"type": "input_audio", "transcript": None}]}
         self._add_item(item)
         self._buffer_ms = 0.0
-        self._user_text = FAKE_TRANSCRIPT
+        transcript = self._transcripts.pop(0) if self._transcripts else FAKE_TRANSCRIPT
+        self._user_text = transcript
         self._emit("input_audio_buffer.committed", previous_item_id=previous, item_id=item_id)
         self._emit("conversation.item.added", previous_item_id=previous, item=item)
         transcription = self._input().get("transcription") or {}
         if transcription.get("model"):
             self._emit("conversation.item.input_audio_transcription.completed", item_id=item_id, content_index=0,
-                       transcript=FAKE_TRANSCRIPT)
+                       transcript=transcript)
 
     def _on_commit(self, event: dict) -> None:
         if self._response is not None:
@@ -552,6 +627,7 @@ class FakeRealtimeConn:
                 self._error("invalid_type", "function_call_output.output must be a string (json.dumps it)", event,
                             param="item.output")
                 return
+            self._last_output = item["output"]
         elif kind != "function_call":
             self._error("invalid_value", f"unsupported item type {kind!r}", event, param="item.type")
             return
@@ -593,8 +669,19 @@ class FakeRealtimeConn:
             return
         overrides = event.get("response") if isinstance(event.get("response"), dict) else {}
         metadata = overrides.get("metadata") if isinstance(overrides.get("metadata"), dict) else None
-        if metadata is not None and metadata.get("relay") == "narration":
+        relay = metadata.get("relay") if metadata is not None else None
+        if relay == "narration":
             self._start_narration(metadata)
+        elif relay == "followup":
+            self._start_meeting_reply(*followup_reply(overrides.get("instructions") or "", overrides.get("tool_choice"),
+                                                      (self.session or {}).get("tools") or [], self._last_output),
+                                      metadata=metadata)
+        elif relay == "decision":
+            draft = draft_from(overrides.get("instructions") or "")
+            args = {key: draft.get(key) for key in ("decision", "owner", "follow_up", "source_ids") if key in draft}
+            self._start_meeting_reply("save_decision", args, FLOW_TEXT["decision"], metadata=metadata)
+        elif relay in FLOW_TEXT:
+            self._start_meeting_reply(None, {}, FLOW_TEXT[relay], metadata=metadata)
         else:
             self._start_response(overrides.get("instructions"), metadata)
 
@@ -608,6 +695,10 @@ class FakeRealtimeConn:
 
     def _start_response(self, instructions: str | None = None, metadata: dict | None = None) -> None:
         session = self.session or {}
+        if is_meeting_session(session.get("tools") or []):
+            tool, args, text = choose_meeting_reply(instructions or session.get("instructions") or "", self._user_text)
+            self._start_meeting_reply(tool, args, text, metadata=metadata)
+            return
         tool, args, text = choose_reply(instructions or session.get("instructions") or "", self._user_text,
                                         session.get("tools") or [])
         self._begin(_Reply(id=self._new_id("resp"), tool=tool, args=args, text=text, item_id=self._new_id("item"),
@@ -615,10 +706,20 @@ class FakeRealtimeConn:
                            call_item_id=self._new_id("item") if tool else None, audio_s=self.options.reply_s,
                            metadata=metadata))
 
+    def _start_meeting_reply(self, tool: str | None, args: dict, text: str, *, metadata: dict | None) -> None:
+        """A reply of a meeting session; no text = a silent response (only the tool call, like the live lookup)."""
+        self._begin(_Reply(id=self._new_id("resp"), tool=tool, args=args, text=text, item_id=self._new_id("item"),
+                           call_id=self._new_id("call") if tool else None,
+                           call_item_id=self._new_id("item") if tool else None,
+                           audio_s=self.options.reply_s if text else 0.0, metadata=metadata))
+
     def _start_narration(self, metadata: dict) -> None:
-        """A live narration request: the slide "presented" as tone, never a tool call."""
-        self._begin(_Reply(id=self._new_id("resp"), tool=None, args={},
-                           text=NARRATION_TEXT.format(slide=metadata.get("slide")), item_id=self._new_id("item"),
+        """A live narration request: the slide (a meeting: its talking point) "presented" as tone, never a tool
+        call."""
+        text = NARRATION_TEXT.format(slide=metadata.get("slide"))
+        if metadata.get("talking_point"):
+            text = POINT_TEXT.format(slide=metadata.get("slide"), point=metadata.get("talking_point"))
+        self._begin(_Reply(id=self._new_id("resp"), tool=None, args={}, text=text, item_id=self._new_id("item"),
                            call_id=None, call_item_id=None, audio_s=self.options.narration_s, metadata=metadata))
 
     def _begin(self, reply: _Reply) -> None:
@@ -648,6 +749,16 @@ class FakeRealtimeConn:
         self._emit("response.output_item.added", response_id=reply.id, output_index=0, item=message)
         self._emit("conversation.item.added", previous_item_id=previous, item=message)  # unknown to the controller
         where = {"response_id": reply.id, "item_id": reply.item_id, "output_index": 0, "content_index": 0}
+        if reply.audio_s <= 0 and not reply.text:  # a silent response: only its tool call (a meeting's lookup)
+            done_message = {**message, "status": "completed", "content": []}
+            self._items[reply.item_id] = done_message
+            self._emit("response.output_item.done", response_id=reply.id, output_index=0, item=done_message)
+            output = [done_message]
+            if reply.tool:
+                output.append(self._announce_call(reply))
+            self._response = None
+            self._emit("response.done", response=self._response_obj(reply, "completed", output))
+            return
         part = "text" if reply.text_mode else "audio"
         self._emit("response.content_part.added", **where, part={"type": part, "transcript": ""})
         words = reply.text.split()

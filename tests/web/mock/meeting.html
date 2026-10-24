@@ -3,12 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Relay layout mock: the meeting window</title>
+    <title>Layout mock: the meeting window (Relay and On the Same Page)</title>
     <!-- A copy of web/index.html's meeting window with sample content, the real relay.css and the real vendored
          reveal.js (embedded, inline sample slides instead of /api/slides.md). Open it in Chrome at 1280×720 and at
-         1920×1080 (window size, or the DevTools device toolbar): it walks through the meeting's states (panels open
-         and closed, both caption modes, the join dialog) and measures each one. The verdict in the corner must say
-         PASS. tests/web/test_static.mjs checks that this copy still has every class of the real window. -->
+         1920×1080 (window size, or the DevTools device toolbar): it walks through the meeting's states and measures
+         each one. The plain-Relay states switch the meeting additions off (a talk without a meeting); the
+         "facilitator" states are On the Same Page (the agenda strip, the evidence callout, the tabbed side panel with
+         the alignment card and the notes, the speaker picker). The verdict in the corner must say PASS.
+         tests/web/test_static.mjs checks that this copy still has every class of the real window. -->
     <link rel="stylesheet" href="../../../web/vendor/reveal/reset.css" />
     <link rel="stylesheet" href="../../../web/vendor/reveal/reveal.css" />
     <link rel="stylesheet" href="../../../web/vendor/reveal/theme/black.css" />
@@ -44,14 +46,14 @@
     </style>
   </head>
   <body>
-    <div class="meeting" data-state="NARRATING" data-narration="live">
+    <div class="meeting has-agenda" data-state="INTERVENING" data-narration="">
       <header class="topbar">
         <div class="topbar-left">
           <span class="brand"
             ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10.5v3" /></svg
-            >Relay</span
+            ><span class="brand-name">On the Same Page</span></span
           >
-          <span class="talk-name">How Relay knows exactly where it stopped, and picks up again</span>
+          <span class="talk-name">Release 4.3 rollout review: the staged launch of the new billing dashboard</span>
         </div>
         <div class="topbar-center">
           <span class="live-badge" data-status="ready"
@@ -64,7 +66,7 @@
             ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
               <rect x="3" y="4.5" width="18" height="12" rx="2" />
               <path d="M8.5 20h7M12 16.5V20" /></svg
-            >You are viewing Relay's screen</span
+            ><span class="viewing-text">You are viewing the facilitator's screen</span></span
           >
         </div>
         <div class="topbar-right">
@@ -77,6 +79,22 @@
           </button>
         </div>
       </header>
+
+      <nav class="agenda" aria-label="Agenda">
+        <ol class="agenda-steps">
+          <li class="agenda-step" data-phase="presentation" data-state="done"><span class="step-num">✓</span><span class="step-title">Rollout plan</span></li>
+          <li class="agenda-step" data-phase="discussion" data-state="current" aria-current="step"
+            ><span class="step-num">2</span><span class="step-title">Launch announcement</span></li
+          >
+          <li class="agenda-step" data-phase="wrapup" data-state="next"><span class="step-num">3</span><span class="step-title">Decisions and next steps</span></li>
+        </ol>
+        <p class="agenda-info">
+          <span class="checkpoint"
+            ><span class="checkpoint-where">Slide 5</span><span class="checkpoint-status" data-status="intervening">intervening</span></span
+          ><span class="agenda-prompt">“What goes out on Friday, and who sends it? And to whom, exactly, on which channel?”</span>
+        </p>
+        <button type="button" class="phase-button" data-phase="discussion">Wrap up</button>
+      </nav>
 
       <section class="strip offline" aria-label="Meeting info" hidden>
         <h2 class="strip-title">Meeting info</h2>
@@ -103,11 +121,13 @@
         <div class="screen">
           <div class="reveal">
             <div class="slides">
-              <section id="how">
-                <h2>How it works</h2>
-                <p>Relay presents every slide live, through one warm Higgs Realtime session</p>
-                <p>One tap stops its audio at once; the browser counts what the room heard</p>
-                <p>Relay trims its memory to that, answers, and picks up where it left off</p>
+              <section id="plan">
+                <h2>The rollout plan</h2>
+                <ul>
+                  <li>Friday 24 October: beta, to the beta group (about forty customers)</li>
+                  <li>Tuesday 28 October: beta exit review</li>
+                  <li>Wednesday 29 October: production, to all customers</li>
+                </ul>
               </section>
               <section id="limits">
                 <h2>Known limitations</h2>
@@ -124,15 +144,30 @@
           </div>
         </div>
         <div class="banner counting" role="status">
-          <span class="banner-text">Resuming…</span><span class="banner-count" aria-hidden="true">2</span>
+          <span class="banner-text">Discussion: What goes out on Friday, and who sends it? — the facilitator is listening</span
+          ><span class="banner-count" aria-hidden="true">2</span>
         </div>
+        <aside class="callout fresh" data-kind="intervention" role="status">
+          <p class="callout-head"
+            ><span class="callout-kind">Alignment check</span><span class="callout-query">Friday's release stage production beta Friday's audience all customers beta users</span></p
+          >
+          <ol class="callout-items">
+            <li class="callout-item">
+              <div class="callout-ref"><span class="src-chip" data-kind="clarification">CL-1</span><span class="callout-title">Earlier clarification</span></div>
+              <p class="callout-text">The approved rollout plan says beta on Friday and production next Wednesday, after the beta exit review approves it on Tuesday.</p>
+            </li>
+            <li class="callout-item">
+              <div class="callout-ref"><span class="src-chip" data-kind="source">REQ-2</span><span class="callout-title">Rollout plan v3</span></div>
+              <p class="callout-text">Stage one of the rollout: on Friday 24 October the beta release goes to the beta group only, about 40 customers who opted in to early access.</p>
+            </li>
+          </ol>
+        </aside>
         <section class="captions" data-mode="live" aria-label="Captions">
           <div class="cap-meta">
             <span class="cap-tag" hidden></span>
             <span class="cap-hint" hidden></span>
             <span class="cap-user"
-              ><span class="cap-speaker">You</span
-              ><span class="cap-user-text">Sorry, can you explain that like I'm not an engineer, in one sentence?</span></span
+              ><span class="cap-speaker">Carol</span><span class="cap-user-text">Sounds good. Let's finalize that, and send it out on Friday morning.</span></span
             >
           </div>
           <div class="cap-main">
@@ -147,10 +182,10 @@
               >
             </p>
             <p class="cap-live speaking">
-              <span class="cap-speaker">Relay</span
+              <span class="cap-speaker">Facilitator</span
               ><span class="cap-live-text"
-                >So the browser counts the audio samples the room heard, and Relay trims its memory of what it said to
-                exactly that,</span
+                >One clarification before we confirm: we established that Friday is a beta release, not production. Should
+                Friday's announcement go only to beta users?</span
               >
             </p>
           </div>
@@ -158,7 +193,10 @@
         <div class="left-card" role="dialog" aria-labelledby="relay-left-title" hidden>
           <div class="left-panel">
             <h2 id="relay-left-title">You left the meeting</h2>
-            <p>Relay stopped. <span class="presenter-name">Ken</span> has the floor; R hands it back to Relay.</p>
+            <p>
+              <span class="ai-name-cap">The facilitator</span> stopped. <span class="presenter-name">Alice</span> has the floor; R hands it
+              back to <span class="ai-name">the facilitator</span>.
+            </p>
             <button type="button" class="rejoin-button">Rejoin</button>
           </div>
         </div>
@@ -168,9 +206,9 @@
         <div class="people" aria-label="Participants">
           <article class="tile tile-relay" data-speaking="true">
             <ol class="ticker" aria-label="Tool calls">
-              <li class="tool" data-status="applied"><i class="tool-dot"></i><span class="tool-name">handoff_to_human()</span><span class="tool-status">applied</span></li>
-              <li class="tool" data-status="auto"><i class="tool-dot"></i><span class="tool-name">resume_script()</span><span class="tool-status">auto</span></li>
-              <li class="tool" data-status="rejected"><i class="tool-dot"></i><span class="tool-name">goto_slide("demo")</span><span class="tool-status">rejected</span></li>
+              <li class="tool" data-status="applied"><i class="tool-dot"></i><span class="tool-name">lookup_evidence("Friday rollout")</span><span class="tool-status">applied</span></li>
+              <li class="tool" data-status="auto"><i class="tool-dot"></i><span class="tool-name">record_clarification()</span><span class="tool-status">auto</span></li>
+              <li class="tool" data-status="rejected"><i class="tool-dot"></i><span class="tool-name">save_decision()</span><span class="tool-status">rejected</span></li>
             </ol>
             <div class="avatar">
               <span class="ring" style="--level: 0.6"></span
@@ -186,15 +224,15 @@
                   <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" />
                   <path class="slash" d="M4.5 3.5l15 17" /></svg
               ></span>
-              <span class="name">Relay</span><span class="role">AI co-presenter</span>
+              <span class="name">Facilitator</span><span class="role">AI facilitator</span>
             </div>
           </article>
           <article class="tile tile-you" data-speaking="false">
             <div class="avatar">
-              <span class="ring"></span><span class="avatar-face"><span class="avatar-text">K</span></span>
+              <span class="ring"></span><span class="avatar-face"><span class="avatar-text">C</span></span>
             </div>
-            <span class="tile-status"></span>
-            <p class="tile-hint" role="status">You're muted. Press Space or click Unmute to talk to Relay.</p>
+            <span class="tile-status">The facilitator is listening</span>
+            <p class="tile-hint" role="status">You're muted. Press Space or click Unmute to talk to the facilitator.</p>
             <div class="nameplate">
               <span class="mic-ico" data-muted="true"
                 ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
@@ -202,18 +240,189 @@
                   <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" />
                   <path class="slash" d="M4.5 3.5l15 17" /></svg
               ></span>
-              <span class="name">You</span><span class="role">Ken · host</span>
+              <span class="name">Carol</span><span class="role">Engineering lead</span>
             </div>
           </article>
         </div>
-        <section class="chat" aria-label="Meeting chat" hidden>
+        <section class="chat" aria-label="Meeting panels">
           <header class="chat-head">
-            <h2 class="chat-title">Meeting chat</h2>
-            <button type="button" class="chat-close" aria-label="Close the chat">
+            <h2 class="chat-title" hidden>Meeting chat</h2>
+            <div class="tabs" role="tablist" aria-label="Meeting panels">
+              <button type="button" class="tab" role="tab" data-tab="evidence" aria-selected="false">
+                <span class="tab-label">Evidence</span><span class="tab-badge">2</span>
+              </button>
+              <button type="button" class="tab" role="tab" data-tab="notes" aria-selected="false">
+                <span class="tab-label">Notes</span><span class="tab-badge">9+</span>
+              </button>
+              <button type="button" class="tab" role="tab" data-tab="transcript" aria-selected="true">
+                <span class="tab-label">Transcript</span><span class="tab-badge" hidden>0</span>
+              </button>
+              <button type="button" class="tab" role="tab" data-tab="chat" aria-selected="false">
+                <span class="tab-label">Chat</span><span class="tab-badge">3</span>
+              </button>
+            </div>
+            <button type="button" class="chat-close" aria-label="Close the panel">
               <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
             </button>
           </header>
-          <ol class="chat-log">
+          <div class="pane evidence-pane" role="tabpanel" aria-label="Evidence" hidden>
+            <p class="pane-empty lookups-empty" hidden>Nothing looked up yet.</p>
+            <ol class="lookups">
+              <li class="lookup" data-by="engine" data-purpose="intervention">
+                <div class="lookup-head"><span class="lookup-by">Alignment check</span><span class="lookup-time">01:39</span></div>
+                <p class="lookup-query">“Friday's release stage production beta Friday's audience all customers beta users”</p>
+                <ol class="results">
+                  <li class="result" data-kind="clarification">
+                    <div class="result-head"><span class="src-chip" data-kind="clarification">CL-1</span><span class="result-title">Earlier clarification</span></div>
+                    <p class="result-text">The approved rollout plan says beta on Friday and production next Wednesday.</p>
+                  </li>
+                  <li class="result" data-kind="source">
+                    <div class="result-head"><span class="src-chip" data-kind="source">DEC-2</span><span class="result-title">Decisions log</span></div>
+                    <p class="result-text">Announcements follow the release stage and go only to that stage's audience. The Friday 24 October beta is announced to beta users only.</p>
+                  </li>
+                </ol>
+              </li>
+              <li class="lookup" data-by="model" data-purpose="answer">
+                <div class="lookup-head"><span class="lookup-by">Facilitator looked up</span><span class="lookup-time">00:40</span></div>
+                <p class="lookup-query">“Friday rollout”</p>
+                <ol class="results">
+                  <li class="result" data-kind="source">
+                    <div class="result-head"><span class="src-chip" data-kind="source">REQ-2</span><span class="result-title">Rollout plan v3</span></div>
+                    <p class="result-text">Stage one of the rollout: on Friday 24 October the beta release goes to the beta group only, about 40 customers who opted in to early access.</p>
+                  </li>
+                  <li class="result-none">No matching source</li>
+                </ol>
+              </li>
+            </ol>
+            <details class="docs" open>
+              <summary class="docs-summary">Documents<span class="docs-count"> · 2 · 11 statements</span></summary>
+              <div class="docs-list">
+                <section class="doc">
+                  <h4 class="doc-title">Rollout plan v3</h4>
+                  <ol class="doc-statements">
+                    <li class="statement" data-cited="true"><span class="src-chip" data-kind="source">REQ-2</span><span class="statement-text">Stage one of the rollout: on Friday 24 October the beta release goes to the beta group only.</span></li>
+                    <li class="statement" data-cited="false"><span class="src-chip" data-kind="source">REQ-3</span><span class="statement-text">Stage two: the production release goes to all customers on Wednesday 29 October.</span></li>
+                  </ol>
+                </section>
+              </div>
+            </details>
+          </div>
+          <div class="pane notes-pane" role="tabpanel" aria-label="Notes" hidden>
+            <header class="notes-head">
+              <h3 class="notes-title">Meeting notes</h3>
+              <span class="notes-time">generated at 02:10</span>
+            </header>
+            <section class="notes-section" data-section="decisions">
+              <h3 class="notes-h">Decisions<span class="notes-count"> · 2</span></h3>
+              <ol class="notes-list">
+                <li class="note fresh" data-kind="decision">
+                  <p class="note-top"><span class="note-id">D1</span><span class="owner-chip">Owner: Bob</span></p>
+                  <p class="note-text">Friday: beta release; the announcement goes to beta users only</p>
+                  <p class="note-sub">Follow-up: Bob notifies beta users only.</p>
+                  <p class="note-meta"><span class="src-chip" data-kind="source">REQ-2</span><span class="src-chip" data-kind="source">DEC-2</span><span class="src-chip" data-kind="clarification">CL-1</span></p>
+                </li>
+                <li class="note" data-kind="decision">
+                  <p class="note-top"><span class="note-id">D2</span><span class="note-supersedes">replaces D1</span></p>
+                  <p class="note-text">Support is briefed on Thursday 23 October</p>
+                  <p class="note-meta"><span class="src-chip" data-kind="source">DEC-4</span><span class="auto-tag">auto</span></p>
+                </li>
+              </ol>
+            </section>
+            <section class="notes-section" data-section="action_items">
+              <h3 class="notes-h">Action items<span class="notes-count"> · 1</span></h3>
+              <ol class="notes-list">
+                <li class="note" data-kind="action"><p class="note-top"><span class="owner-chip">Bob</span><span class="note-id">from D1</span></p><p class="note-text">Bob notifies beta users only.</p></li>
+              </ol>
+            </section>
+            <section class="notes-section" data-section="clarifications">
+              <h3 class="notes-h">Clarifications<span class="notes-count"> · 1</span></h3>
+              <ol class="notes-list">
+                <li class="note" data-kind="clarification">
+                  <p class="note-top"><span class="note-id">CL-1</span></p>
+                  <p class="note-sub">Q: Wait, I thought Friday was production. Which one is it?</p>
+                  <p class="note-text">The approved rollout plan says beta on Friday and production next Wednesday.</p>
+                </li>
+              </ol>
+            </section>
+            <section class="notes-section" data-section="open_questions">
+              <h3 class="notes-h">Open questions<span class="notes-count"></span></h3>
+              <ol class="notes-list"><li class="note-none">None yet</li></ol>
+            </section>
+          </div>
+          <div class="pane transcript-pane" role="tabpanel" aria-label="Transcript">
+            <p class="pane-empty transcript-empty" hidden>The discussion shows here, line by line.</p>
+            <ol class="transcript">
+              <li class="utt" data-who="facilitator" data-kind="handover">
+                <div class="utt-meta"><span class="utt-who">Facilitator</span><span class="utt-time">01:20</span></div>
+                <p class="utt-text">That's the plan. Over to you: what goes out on Friday, and who sends it?</p>
+              </li>
+              <li class="utt" data-who="participant">
+                <div class="utt-meta"><span class="utt-who">Alice</span><span class="utt-time">01:30</span></div>
+                <p class="utt-text">Production is next Wednesday, right?</p>
+                <p class="utt-claims" hidden></p>
+              </li>
+              <li class="utt" data-who="participant" data-source="typed">
+                <div class="utt-meta"><span class="utt-who">Bob</span><span class="utt-time">01:35</span><span class="utt-source">typed</span></div>
+                <p class="utt-text">I'll draft the announcement for Friday's production launch to all customers.</p>
+                <p class="utt-claims"
+                  ><span class="claim" data-tone="conflict">Friday's release stage: production</span
+                  ><span class="claim" data-tone="conflict">Friday's audience: all customers</span
+                  ><span class="claim" data-tone="agree">Owner: Bob</span></p
+                >
+              </li>
+              <li class="utt" data-who="participant">
+                <div class="utt-meta"><span class="utt-who">Carol</span><span class="utt-time">01:39</span></div>
+                <p class="utt-text">Sounds good. Let's finalize that.</p>
+              </li>
+              <li class="align-card fresh" data-kind="intervention" data-status="asked">
+                <header class="align-head"><span class="align-title">Alignment check</span><span class="align-status">Asked</span></header>
+                <div class="align-heard">
+                  <span class="align-label">Heard · Bob · 01:35</span>
+                  <p class="align-quote">“I'll draft the announcement for Friday's production launch to all customers.”</p>
+                </div>
+                <ul class="align-diffs">
+                  <li class="align-diff"><span class="diff-slot">Friday's release stage</span><span class="diff-heard">production</span><span class="diff-vs">≠</span><span class="diff-source">beta</span></li>
+                  <li class="align-diff"><span class="diff-slot">Friday's audience</span><span class="diff-heard">all customers</span><span class="diff-vs">≠</span><span class="diff-source">beta users</span></li>
+                </ul>
+                <div class="align-sources">
+                  <span class="align-label">Sources say</span>
+                  <ol class="align-refs">
+                    <li class="align-ref" data-kind="source">
+                      <div class="align-ref-head"><span class="src-chip" data-kind="source">REQ-2</span><span class="align-ref-title">Rollout plan v3</span></div>
+                      <p class="align-ref-text">“Stage one of the rollout: on Friday 24 October the beta release goes to the beta group only.”</p>
+                    </li>
+                    <li class="align-ref" data-kind="clarification">
+                      <div class="align-ref-head"><span class="src-chip" data-kind="clarification">CL-1</span><span class="align-ref-title">Earlier clarification</span></div>
+                      <p class="align-ref-text">“The approved rollout plan says beta on Friday and production next Wednesday.”</p>
+                    </li>
+                  </ol>
+                </div>
+                <div class="align-confirm"><span class="align-label">Before confirming · Carol</span><p class="align-quote">“Sounds good. Let's finalize that.”</p></div>
+                <div class="align-outcome">
+                  <p class="align-result">Confirmed · Friday's release stage: beta</p>
+                  <p class="align-result">Confirmed · Friday's audience: beta users</p>
+                  <span class="owner-chip">Owner: Bob</span>
+                  <p class="align-decision">To the notes: Friday's release stage: beta; Friday's audience: beta users</p>
+                </div>
+              </li>
+              <li class="utt" data-who="facilitator" data-kind="intervention">
+                <div class="utt-meta"><span class="utt-who">Facilitator</span><span class="utt-time">01:40</span></div>
+                <p class="utt-text">One clarification before we confirm: we established that Friday is a beta release, not production. Should Friday's announcement go only to beta users?</p>
+              </li>
+              <li class="utt" data-who="room">
+                <div class="utt-meta"><span class="utt-who">Room</span><span class="utt-time">01:52</span></div>
+                <p class="utt-text">And the beta notes go to all customers too.</p>
+              </li>
+              <li class="align-card" data-kind="suggestion" data-status="suggestion">
+                <header class="align-head"><span class="align-title">Possible mismatch (not raised)</span><span class="align-status">Silent</span></header>
+                <div class="align-heard"><span class="align-label">Heard · 01:52</span><p class="align-quote">“And the beta notes go to all customers too.”</p></div>
+                <ul class="align-diffs">
+                  <li class="align-diff"><span class="diff-slot">Friday's audience</span><span class="diff-heard">all customers</span><span class="diff-vs">≠</span><span class="diff-source">beta users</span></li>
+                </ul>
+              </li>
+            </ol>
+          </div>
+          <ol class="chat-log" hidden>
             <li class="chat-line" data-kind="slide"><p class="chat-text">Slide: Relay</p></li>
             <li class="chat-line" data-kind="you">
               <div class="chat-meta"><span class="chat-who">You</span><span class="chat-time">00:12</span></div>
@@ -236,7 +445,7 @@
           </ol>
           <form class="chat-compose" autocomplete="off">
             <label class="sr-only" for="relay-chat-input">Ask Relay</label>
-            <input id="relay-chat-input" class="chat-input" type="text" placeholder="Ask Relay a question…" />
+            <input id="relay-chat-input" class="chat-input" type="text" placeholder="Type a line for Carol · Enter adds it" />
             <button type="submit" class="chat-send" aria-label="Send to Relay">
               <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 11.5l15-7-6 15-2.5-6zM11 13.5l8.5-9" /></svg>
             </button>
@@ -246,7 +455,7 @@
 
       <footer class="toolbar" aria-label="Meeting controls">
         <div class="toolbar-left">
-          <button type="button" class="tb mic-button" data-muted="true" aria-pressed="false">
+          <button type="button" class="tb mic-button" data-muted="false" data-room="true" aria-pressed="true">
             <svg class="ico ico-mic-on" viewBox="0 0 24 24" aria-hidden="true">
               <rect x="9" y="3" width="6" height="11" rx="3" />
               <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
@@ -256,8 +465,17 @@
               <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
               <path class="slash" d="M4.5 3.5l15 17" />
             </svg>
-            <span class="tb-label">Hold to talk</span>
+            <span class="tb-label">Room mic on</span>
           </button>
+          <div class="speakers" role="radiogroup" aria-label="Who is speaking">
+            <span class="speakers-label">Speaking</span
+            ><span class="speaker-chips"
+              ><button type="button" class="speaker" role="radio" aria-checked="false">Alice</button
+              ><button type="button" class="speaker" role="radio" aria-checked="false">Bob</button
+              ><button type="button" class="speaker" role="radio" aria-checked="true">Carol</button
+              ><button type="button" class="speaker" role="radio" aria-checked="false">Room</button></span
+            >
+          </div>
         </div>
         <div class="toolbar-center">
           <button type="button" class="tb people-button" aria-pressed="true">
@@ -267,9 +485,9 @@
             </svg>
             <span class="tb-label">Participants</span>
           </button>
-          <button type="button" class="tb chat-button" aria-pressed="false">
+          <button type="button" class="tb chat-button" aria-pressed="true">
             <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16V16H10l-4.5 3.5V16H4z" /></svg>
-            <span class="tb-label">Chat</span><span class="tb-badge">9+</span>
+            <span class="tb-label">Panels</span><span class="tb-badge">9+</span>
           </button>
           <button type="button" class="tb cc-button" aria-pressed="true">
             <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
@@ -296,16 +514,23 @@
               <span class="tb-label">More</span>
             </button>
             <div class="more-menu" role="menu" aria-label="More" hidden>
-              <button type="button" role="menuitem" data-action="pause"><span>Pause or resume Relay</span><kbd>P</kbd></button>
-              <button type="button" role="menuitem" data-action="human">
-                <span>Give the floor to <span class="presenter-name">Ken</span></span><kbd>H</kbd>
+              <button type="button" role="menuitem" data-action="pause">
+                <span>Pause or resume <span class="ai-name">the facilitator</span></span><kbd>P</kbd>
               </button>
-              <button type="button" role="menuitem" data-action="relay"><span>Back to Relay</span><kbd>R</kbd></button>
+              <button type="button" role="menuitem" data-action="human">
+                <span>Give the floor to <span class="presenter-name">Alice</span></span><kbd>H</kbd>
+              </button>
+              <button type="button" role="menuitem" data-action="relay">
+                <span>Back to <span class="ai-name">the facilitator</span></span><kbd>R</kbd>
+              </button>
               <button type="button" role="menuitem" data-action="prev"><span>Previous slide</span><kbd>←</kbd></button>
               <button type="button" role="menuitem" data-action="next"><span>Next slide</span><kbd>→</kbd></button>
               <button type="button" role="menuitem" data-action="type"><span>Type a question</span><kbd>T</kbd></button>
               <button type="button" role="menuitem" data-action="checklist"><span>Audio and connection check</span></button>
               <button type="button" role="menuitem" data-action="info"><span>Meeting info</span><kbd>I</kbd></button>
+              <button type="button" role="menuitem" data-action="reset" class="menu-reset" data-confirm="true">
+                <span class="reset-label">Click again to restart: the notes and transcript are cleared</span>
+              </button>
             </div>
           </div>
         </div>
@@ -321,19 +546,19 @@
       <div class="panel">
         <header class="panel-head">
           <p class="panel-kicker">Join the meeting</p>
-          <h1 id="relay-overlay-title" class="panel-title">Relay</h1>
-          <p class="panel-sub">Relay presents · Ken hosts</p>
+          <h1 id="relay-overlay-title" class="panel-title">Release 4.3 rollout review</h1>
+          <p class="panel-sub">The facilitator presents · Alice hosts</p>
         </header>
         <ul class="checklist">
-          <li data-item="server" data-status="ok"><span class="ic"></span><span class="label">Connected to Relay</span><span class="detail">127.0.0.1:8000</span></li>
+          <li data-item="server" data-status="ok"><span class="ic"></span><span class="label">Connected to the facilitator</span><span class="detail">127.0.0.1:8000</span></li>
           <li data-item="talk" data-status="warn">
-            <span class="ic"></span><span class="label">Talk loaded</span><span class="detail">relay-intro · 10 slides (8 Relay) · 21 chunks · FAKE AUDIO: placeholder tones, not TTS</span>
+            <span class="ic"></span><span class="label">Talk loaded</span><span class="detail">rollout-review · 5 slides (3 Relay) · 6 chunks · FAKE AUDIO: placeholder tones, not TTS</span>
           </li>
           <li data-item="audio" data-status="ok"><span class="ic"></span><span class="label">Speaker</span><span class="detail">running · 24000 Hz · output latency 25 ms</span></li>
           <li data-item="mic" data-status="ok">
             <span class="ic"></span><span class="label">Microphone</span><span class="detail">MacBook Pro Microphone</span><span class="meter" style="--level: 0.6"><span class="meter-fill"></span></span>
           </li>
-          <li data-item="narration" data-status="working"><span class="ic"></span><span class="label">Backup narration</span><span class="detail">17/21</span></li>
+          <li data-item="narration" data-status="working"><span class="ic"></span><span class="label">Backup narration</span><span class="detail">5/6</span></li>
           <li data-item="realtime" data-status="fail"><span class="ic"></span><span class="label">Higgs Realtime</span><span class="detail">error: BOSON_API_KEY missing</span></li>
         </ul>
         <div class="panel-actions">
@@ -342,12 +567,12 @@
           <p class="panel-hint">Joining turns on the speaker, asks for the microphone, loads the backup narration and checks Higgs Realtime.</p>
         </div>
         <dl class="keys">
-          <div><dt><kbd>Space</kbd></dt><dd>talk to Relay, again to send</dd></div>
+          <div><dt><kbd>Space</kbd></dt><dd>talk to <span class="ai-name">the facilitator</span>, again to send</dd></div>
           <div><dt><kbd>Esc</kbd></dt><dd>cancel the turn</dd></div>
           <div><dt><kbd>→</kbd> <kbd>←</kbd></dt><dd>next / previous slide</dd></div>
           <div><dt><kbd>P</kbd></dt><dd>pause</dd></div>
           <div><dt><kbd>H</kbd></dt><dd>presenter has the floor</dd></div>
-          <div><dt><kbd>R</kbd></dt><dd>back to Relay</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>back to <span class="ai-name">the facilitator</span></dd></div>
           <div><dt><kbd>T</kbd></dt><dd>type a question</dd></div>
           <div><dt><kbd>I</kbd></dt><dd>meeting info</dd></div>
         </dl>
@@ -380,24 +605,53 @@
       const meeting = $(".meeting");
       const captions = $(".captions");
 
-      // Each state starts from the page as written (sample content, chat closed, captions on, tiles shown).
-      const touched = [".people", ".chat", ".strip", ".more-menu", ".left-card", ".overlay", ".tile-hint", ".banner"].map($);
+      // Each state starts from the page as written (the facilitator in the discussion: agenda strip, callout, the
+      // panel on the Transcript tab, the speaker picker), then switches what it needs.
+      const touched = [
+        ".people", ".chat", ".strip", ".more-menu", ".left-card", ".overlay", ".tile-hint", ".banner", ".agenda", ".callout",
+        ".chat-title", ".tabs", ".evidence-pane", ".notes-pane", ".transcript-pane", ".chat-log", ".speakers",
+      ].map($);
       const initial = touched.map((el) => el.hidden);
       function reset() {
         touched.forEach((el, i) => (el.hidden = initial[i]));
         meeting.classList.remove("side-off", "captions-off");
+        meeting.classList.add("has-agenda");
         captions.dataset.mode = "live";
+        $(".callout").dataset.kind = "intervention";
+      }
+      /** A talk without a meeting: exactly Relay's window (the meeting additions off, the chat panel as the chat). */
+      function plain() {
+        meeting.classList.remove("has-agenda");
+        for (const sel of [".agenda", ".callout", ".tabs", ".evidence-pane", ".notes-pane", ".transcript-pane", ".speakers"]) $(sel).hidden = true;
+        $(".chat-title").hidden = false;
+        $(".chat-log").hidden = false;
+        $(".chat").hidden = true;
+      }
+      /** The side panel on one tab. */
+      function pane(name) {
+        for (const p of ["evidence", "notes", "transcript"]) $(`.${p}-pane`).hidden = p !== name;
+        $(".chat-log").hidden = name !== "chat";
+        for (const t of document.querySelectorAll(".tab")) t.setAttribute("aria-selected", String(t.dataset.tab === name));
       }
       const STATES = [
-        { name: "default: tiles, live captions", apply() {} },
-        { name: "chat open", apply: () => ($(".chat").hidden = false) },
-        { name: "participants hidden, chat open", apply: () => (($(".people").hidden = true), ($(".chat").hidden = false)) },
-        { name: "participants and chat hidden", apply: () => (($(".people").hidden = true), meeting.classList.add("side-off")) },
-        { name: "captions off", apply: () => meeting.classList.add("captions-off") },
-        { name: "backup narration (karaoke captions)", apply: () => (captions.dataset.mode = "narration") },
-        { name: "meeting info and More menu open", apply: () => (($(".strip").hidden = false), ($(".more-menu").hidden = false)) },
-        { name: "you left the meeting", apply: () => ($(".left-card").hidden = false) },
-        { name: "join dialog", apply: () => ($(".overlay").hidden = false) },
+        { name: "Relay: default: tiles, live captions", apply: plain },
+        { name: "Relay: chat open", apply: () => (plain(), ($(".chat").hidden = false)) },
+        { name: "Relay: participants hidden, chat open", apply: () => (plain(), ($(".people").hidden = true), ($(".chat").hidden = false)) },
+        { name: "Relay: participants and chat hidden", apply: () => (plain(), ($(".people").hidden = true), meeting.classList.add("side-off")) },
+        { name: "Relay: captions off", apply: () => (plain(), meeting.classList.add("captions-off")) },
+        { name: "Relay: backup narration (karaoke captions)", apply: () => (plain(), (captions.dataset.mode = "narration")) },
+        { name: "Relay: meeting info and More menu open", apply: () => (plain(), ($(".strip").hidden = false), ($(".more-menu").hidden = false)) },
+        { name: "Relay: you left the meeting", apply: () => (plain(), ($(".left-card").hidden = false)) },
+        { name: "Relay: join dialog", apply: () => (plain(), ($(".overlay").hidden = false)) },
+        { name: "facilitator: discussion, alignment card, intervention callout", apply() {} },
+        { name: "facilitator: presenting, evidence callout, Evidence tab", apply: () => (pane("evidence"), ($(".callout").dataset.kind = "evidence"), ($(".speakers").hidden = true)) },
+        { name: "facilitator: wrap-up notes", apply: () => (pane("notes"), ($(".callout").dataset.kind = "decision"), ($(".speakers").hidden = true)) },
+        { name: "facilitator: chat tab, More menu (restart confirm)", apply: () => (pane("chat"), ($(".more-menu").hidden = false)) },
+        { name: "facilitator: panel closed", apply: () => ($(".chat").hidden = true) },
+        { name: "facilitator: participants and panel hidden", apply: () => (($(".chat").hidden = true), ($(".people").hidden = true), meeting.classList.add("side-off")) },
+        { name: "facilitator: captions off", apply: () => meeting.classList.add("captions-off") },
+        { name: "facilitator: you left, meeting info open", apply: () => (($(".left-card").hidden = false), ($(".strip").hidden = false)) },
+        { name: "facilitator: join dialog", apply: () => ($(".overlay").hidden = false) },
       ];
 
       const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -405,6 +659,7 @@
       const shown = (el) => el && el.getClientRects().length > 0;
       const within = (r, o, slack = 0.5) =>
         r.left >= o.left - slack && r.right <= o.right + slack && r.top >= o.top - slack && r.bottom <= o.bottom + slack;
+      const overlaps = (a, b) => a.left < b.right - 0.5 && a.right > b.left + 0.5 && a.top < b.bottom - 0.5 && a.bottom > b.top + 0.5;
       const view = () => ({ left: 0, top: 0, right: innerWidth, bottom: innerHeight });
       const fmt = (r) => `${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}×${Math.round(r.height)}`;
 
@@ -415,12 +670,18 @@
         if (doc.scrollWidth > innerWidth + 0.5 || doc.scrollHeight > innerHeight + 0.5) {
           p.push(`page scrolls (${doc.scrollWidth}×${doc.scrollHeight})`);
         }
-        for (const sel of [".meeting", ".topbar", ".toolbar", ".share", ".side", ".people", ".panel"]) {
+        for (const sel of [".meeting", ".topbar", ".toolbar", ".share", ".side", ".people", ".panel", ".agenda", ".chat-head"]) {
           const el = $(sel);
           if (!shown(el)) continue;
           if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) {
             p.push(`${sel} overflows (${el.scrollWidth}×${el.scrollHeight} in ${el.clientWidth}×${el.clientHeight})`);
           }
+        }
+        // the panes scroll up and down, never sideways
+        for (const sel of [".evidence-pane", ".notes-pane", ".transcript-pane", ".chat-log"]) {
+          const el = $(sel);
+          if (shown(el) && el.scrollWidth > el.clientWidth + 1) p.push(`${sel} scrolls sideways (${el.scrollWidth} in ${el.clientWidth})`);
+          if (shown(el) && el.clientHeight < 120) p.push(`${sel} too short (${el.clientHeight}px)`);
         }
         // the shared screen: a visible 16:9 slide box inside the share
         const share = box($(".share"));
@@ -431,29 +692,54 @@
         // both tiles, unless the participants are hidden
         if (shown($(".people"))) {
           const [relay, you] = [".tile-relay", ".tile-you"].map((s) => box($(s)));
-          for (const [label, r] of [["Relay tile", relay], ["You tile", you]]) {
+          for (const [label, r] of [["AI tile", relay], ["You tile", you]]) {
             if (!within(r, view()) || !within(r, box($(".side")))) p.push(`${label} not fully visible (${fmt(r)})`);
             if (r.height < 60) p.push(`${label} too small (${fmt(r)})`);
           }
-          if (relay.bottom > you.top + 0.5 && relay.top < you.bottom - 0.5 && relay.right > you.left + 0.5 && relay.left < you.right - 0.5) {
-            p.push("the tiles overlap");
-          }
-          for (const sel of [".tile-relay .tile-status", ".tile-relay .nameplate", ".tile-you .nameplate", ".tile-relay .avatar"]) {
+          if (overlaps(relay, you)) p.push("the tiles overlap");
+          for (const sel of [".tile-relay .tile-status", ".tile-relay .nameplate", ".tile-you .nameplate", ".tile-relay .avatar", ".tile-you .avatar"]) {
             const r = box($(sel));
             const tile = box($(sel).closest(".tile"));
             if (!within(r, tile)) p.push(`${sel} spills out of its tile`);
           }
+          const status = box($(".tile-relay .tile-status"));
+          if (overlaps(status, box($(".tile-relay .nameplate"))) || overlaps(status, box($(".tile-relay .ticker")))) p.push("the AI tile's status overlaps its nameplate or ticker");
         }
-        // the toolbar, every button in it
+        // the toolbar, every button in it; the speaker picker clear of the centre buttons
         const bar = box($(".toolbar"));
         if (!within(bar, view())) p.push(`toolbar not fully visible (${fmt(bar)})`);
         for (const b of document.querySelectorAll(".toolbar .tb, .toolbar .leave-button")) {
           if (!within(box(b), bar)) p.push(`toolbar button ${b.className} outside the toolbar`);
         }
+        if (shown($(".speakers"))) {
+          const picker = box($(".speakers"));
+          if (!within(picker, bar)) p.push("the speaker picker is outside the toolbar");
+          if (overlaps(picker, box($(".toolbar-center")))) p.push("the speaker picker runs into the centre buttons");
+          for (const chip of document.querySelectorAll(".speaker")) {
+            if (!within(box(chip), box($(".toolbar-left")), 1)) p.push(`speaker chip ${chip.textContent} cut off`);
+          }
+        }
         // the topbar's items
         const top = box($(".topbar"));
         for (const el of document.querySelectorAll(".topbar-left > *, .topbar-center > *, .topbar-right > *")) {
           if (shown(el) && !within(box(el), top)) p.push(`topbar item ${el.className} outside the topbar`);
+        }
+        // the agenda strip: the steps, the checkpoint and the button fully inside it
+        if (shown($(".agenda"))) {
+          const strip = box($(".agenda"));
+          if (!within(strip, view())) p.push(`agenda strip off screen (${fmt(strip)})`);
+          for (const sel of [".agenda-steps", ".checkpoint", ".phase-button"]) {
+            if (!within(box($(sel)), strip)) p.push(`${sel} outside the agenda strip`);
+          }
+          if (overlaps(box($(".agenda-steps")), box($(".phase-button")))) p.push("the agenda steps run into the phase button");
+        }
+        // the side panel's tabs fit their header
+        if (shown($(".tabs"))) {
+          for (const t of document.querySelectorAll(".tab")) {
+            if (!within(box(t), box($(".chat-head")), 1)) p.push(`tab ${t.dataset.tab} outside the panel header`);
+            const label = t.querySelector(".tab-label");
+            if (label.scrollWidth > label.clientWidth + 1) p.push(`tab ${t.dataset.tab}'s label is cut`);
+          }
         }
         // captions inside the share, ≥ 28 px, their text inside their box
         if (shown(captions)) {
@@ -467,6 +753,15 @@
           }
         } else if (!meeting.classList.contains("captions-off")) {
           p.push("captions not shown");
+        }
+        // the callout: over the shared screen, clear of the captions, its text inside it
+        if (shown($(".callout"))) {
+          const c = box($(".callout"));
+          if (!within(c, share)) p.push(`callout outside the share (${fmt(c)})`);
+          if (shown(captions) && overlaps(c, box(captions))) p.push("the callout covers the captions");
+          if (c.width < 260) p.push(`callout too narrow (${fmt(c)})`);
+          const first = $(".callout-item");
+          if (first && !within(box(first), c, 1)) p.push("the callout's first source is cut off");
         }
         // floating panels stay on screen
         for (const sel of [".strip", ".more-menu", ".chat", ".left-panel", ".panel", ".banner", ".toasts"]) {

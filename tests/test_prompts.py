@@ -8,6 +8,7 @@ import re
 
 import pytest
 
+from relay import prompts
 from relay.config import ROOT
 from relay.prompts import (BASE_TEMPLATE, LIVE_BASE_TEMPLATE, PHASES, SCREEN_MAX_CHARS, TALK_MAX_CHARS,
                            TurnContext, base_prompt, build_instructions, narration_instructions, screen_text,
@@ -290,3 +291,123 @@ def test_the_demo_talk_is_clean_and_true_for_live_narration():
         assert on_screen and not on_screen.endswith("…"), (slide.id, on_screen)
     assert not STALE_CLAIM.search(talk.kb)
     assert talk_summary(talk).startswith("Relay / A voice co-presenter you can interrupt")
+
+
+# --- the meeting facilitator (contract v3 §5) -------------------------------------------------------------------
+
+
+@pytest.fixture
+def meeting_pair(tmp_path) -> tuple[Talk, object]:
+    from relay.meeting import load_meeting
+    from tests.test_meeting_flow import write_meeting
+
+    talk = load_talk(write_meeting(tmp_path / "meeting"))
+    return talk, load_meeting(talk)
+
+
+def test_the_facilitator_base_is_short_and_says_when_to_look_things_up(meeting_pair):
+    talk, meeting = meeting_pair
+    base = prompts.facilitator_prompt(meeting)
+    assert len(base.split()) <= 130
+    assert base.startswith('You are the facilitator of the meeting "Release 4.3 rollout review" with Alice (Product '
+                           "manager), Bob (Customer communications) and Carol (Engineering lead).")
+    assert "call lookup_evidence first and answer only from what it returns" in base
+    assert "set_presentation_state with action resume" in base and "stay silent unless someone asks" in base
+    instructions = build_instructions(talk, TurnContext(phase="presenting", slide_id="plan"), meeting)
+    assert instructions.startswith(base + "\n\nPhase: presenting\n")
+
+
+def test_the_meeting_state_block(meeting_pair):
+    talk, meeting = meeting_pair
+    ctx = TurnContext(phase="presenting", slide_id="plan", cut_word="group.", cut_sentence="for our beta group",
+                      live=True, agenda_phase="presentation", talking_point="friday-beta",
+                      context=("Clarified (CL-1): Friday is beta.",))
+    block = prompts.meeting_state_block(talk, meeting, ctx)
+    assert block.splitlines() == [
+        "Phase: presenting",
+        "Agenda phase: presentation (Rollout plan); next: discussion (Launch announcement)",
+        "Meeting: Release 4.3 rollout review (host: Alice; participants: Alice, Bob and Carol)",
+        'Slides: plan "The plan", comms "Communications" (current: plan)',
+        'Talking point: friday-beta on plan: "Release four point three ships in two stages. Friday\'s rollout is '
+        'for our beta group."',
+        "Clarified (CL-1): Friday is beta.",
+        'You were cut off at «group» in: "for our beta group"',
+    ]
+    opening = prompts.meeting_state_block(talk, meeting, TurnContext(phase="opening", slide_id="agenda",
+                                                                     agenda_phase="presentation"))
+    assert opening.splitlines()[-1] == ("Alice is about to hand you the floor: greet the room in one line, then call "
+                                        "set_presentation_state with action start.")
+    discussion = prompts.meeting_state_block(talk, meeting, TurnContext(phase="human", slide_id="discussion",
+                                                                        agenda_phase="discussion"))
+    assert "Agenda phase: discussion (Launch announcement); next: wrapup (Decisions and next steps)" in discussion
+    assert 'Discussion question: "What goes out on Friday, and who sends it?"' in discussion
+    assert "Talking point:" not in discussion
+    assert "wrap up the meeting, call set_presentation_state with action end_presentation" in discussion
+    wrapup = prompts.meeting_state_block(talk, meeting, TurnContext(phase="human", slide_id="discussion",
+                                                                    agenda_phase="wrapup"))
+    assert "Agenda phase: wrapup (Decisions and next steps)\n" in wrapup and "next:" not in wrapup
+
+
+def test_talking_point_instructions(meeting_pair):
+    talk, meeting = meeting_pair
+    plan = talk.slide("plan")
+    first = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[0], seconds=7, first=True)
+    lines = first.splitlines()
+    assert lines[0] == ('You are the facilitator of the meeting "Release 4.3 rollout review", presenting "Rollout '
+                        'plan" live to Alice, Bob and Carol.')
+    assert lines[1].startswith('Now: slide 1 of 2, "The plan". On screen: The plan / Friday: beta to the beta group')
+    assert lines[2] == ("Talking point 1 of 2 on this slide: Release four point three ships in two stages. Friday's "
+                        "rollout is for our beta group.")
+    assert "You just said" not in first and "Use one to three sentences, about 7 seconds." in lines
+    assert "If you haven't welcomed the room yet" in first
+    assert lines[-1] == "Speak only this point. No lists, markdown, URLs or stage directions. Don't call any tool."
+    second = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[1], seconds=5, continuing=True,
+                                                heard="Production follows on")
+    assert 'You just said (the previous point): "Release four point three ships' in second
+    assert 'the room last heard you say: "Production follows on"' in second and "As I was saying" in second
+    assert "Don't greet or introduce yourself" in second
+    comms = talk.slide("comms")
+    across = prompts.talking_point_instructions(talk, meeting, comms, comms.chunks[0], seconds=4)
+    assert 'You just said (the previous point): "Production follows on Wednesday' in across  # across slides
+
+
+def test_follow_up_handover_intervention_decision_and_wrapup_instructions(meeting_pair):
+    talk, meeting = meeting_pair
+    lookup = prompts.followup_instructions(prompts.FOLLOWUP_LOOKUP, meeting=meeting, question="Is Friday beta?")
+    assert 'The question: "Is Friday beta?"' in lookup
+    assert ("Answer the question now from these results in one or two short sentences. Use only what they say; if "
+            "they don't answer it, say so, then call set_presentation_state with action resume.") in lookup
+    room = prompts.followup_instructions(prompts.FOLLOWUP_LOOKUP, meeting=meeting, agenda_phase="discussion")
+    assert "set_presentation_state" not in room and "Don't call any tool." in room
+    assert "Confirm it in one short sentence. Don't call any tool." in prompts.followup_instructions(
+        prompts.FOLLOWUP_CONFIRM, meeting=meeting)
+    handover = prompts.handover_instructions(meeting)
+    assert 'the group now discusses "What goes out on Friday, and who sends it?"' in handover
+    assert "only speak up if something doesn't match the documents" in handover and "Don't call any tool." in handover
+    event = {"type": "intervene", "label": "Friday's release stage", "claimed_label": "production",
+             "established_label": "beta", "source_ids": ["REQ-2"], "quote": "I'll draft the production launch.",
+             "confirm_quote": "Sounds good."}
+    lookup_result = {"results": [{"source_id": "REQ-2", "excerpt": "On Friday the beta release goes out."}]}
+    intervention = prompts.intervention_instructions(
+        [event, {**event, "label": "Friday's audience", "claimed_label": "all customers",
+                 "established_label": "beta users"}], lookup_result, meeting=meeting,
+        clarifications=[{"id": "CL-1", "answer": "Friday is beta."}])
+    assert 'You just heard: "I\'ll draft the production launch." Then: "Sounds good."' in intervention
+    assert ("Mismatch: Friday's release stage: the group said production, but the meeting established beta (REQ-2)."
+            in intervention)
+    assert "Mismatch: Friday's audience: the group said all customers" in intervention
+    assert "The documents say: [REQ-2] On Friday the beta release goes out." in intervention
+    assert 'Earlier in this meeting it was clarified (CL-1): "Friday is beta."' in intervention
+    assert "Never say anyone is wrong. At most two short sentences." in intervention
+    draft = {"decision": "Friday: beta", "owner": "Bob", "follow_up": "Bob notifies beta users",
+             "source_ids": ["REQ-2"], "type": "decision_draft"}
+    decision = prompts.decision_instructions(draft, [("Carol", "Yes, beta users only."), (None, "")],
+                                             meeting=meeting)
+    assert 'Carol: "Yes, beta users only."' in decision and "Someone" not in decision
+    assert (prompts.DRAFT_PREFIX + '{"decision": "Friday: beta", "owner": "Bob", "follow_up": "Bob notifies beta '
+            'users", "source_ids": ["REQ-2"]}') in decision.splitlines()
+    assert "Call save_decision with these values, correcting them only if the quotes say otherwise." in decision
+    wrapup = prompts.wrapup_instructions("Meeting notes: D1 Friday beta (owner Bob).", meeting=meeting)
+    assert "The meeting notes: Meeting notes: D1 Friday beta (owner Bob)." in wrapup
+    assert "the decisions with their owners first, then the open questions" in wrapup and "Don't call any tool." in \
+        wrapup

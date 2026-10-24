@@ -4,9 +4,11 @@
  * break the client, plus pure lookups: slide by id or deck index, chunk by index, the fragments visible while a
  * chunk plays, and the narration audio to preload. No DOM: unit-tested under JavaScriptCore.
  */
+import { normalizeMeetingInfo } from "./facilitator.js";
 import { resolveSlide, toInt } from "./util.js";
 
 /** @typedef {import("./util.js").Word} Word */
+/** @typedef {import("./facilitator.js").MeetingInfo} MeetingInfo */
 /**
  * @typedef {object} TalkChunk
  * @property {number} index
@@ -38,6 +40,8 @@ import { resolveSlide, toInt } from "./util.js";
  *   live narration)
  * @property {boolean} fake_audio
  * @property {TalkSlide[]} slides
+ * @property {MeetingInfo|null} meeting  the meeting package (On the Same Page: agenda, participants, documents);
+ *   null for a plain talk, which looks and behaves exactly like Relay
  */
 
 /** @param {unknown} raw @returns {Word[]} */
@@ -97,6 +101,7 @@ export function normalizeTalk(raw) {
         }),
       };
     }),
+    meeting: normalizeMeetingInfo(raw?.meeting),
   };
 }
 
@@ -117,10 +122,13 @@ export function staleTalk(talk, helloTalk, helloVersion) {
   return null;
 }
 
-/** The talk's name in the meeting window: the first slide's title, else the talk id. @param {Talk|null} talk */
+/**
+ * The talk's name in the meeting window: the meeting's title, else the first slide's title, else the talk id.
+ * @param {Talk|null} talk
+ */
 export function talkTitle(talk) {
   if (!talk) return "";
-  return talk.slides[0]?.title || talk.id;
+  return talk.meeting?.title || talk.slides[0]?.title || talk.id;
 }
 
 /**

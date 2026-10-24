@@ -19,7 +19,9 @@ function exists(path) {
   }
 }
 
-const JS = ["util", "talk", "socket", "deck", "audio", "captions", "status", "keys", "meeting", "main"].map((n) => `web/js/${n}.js`);
+const JS = ["util", "facilitator", "talk", "socket", "deck", "audio", "captions", "status", "keys", "panels", "meeting", "main"].map(
+  (n) => `web/js/${n}.js`,
+);
 const WORKLETS = ["web/worklets/pcm-player.js", "web/worklets/mic-capture.js"];
 const html = read(`${ROOT}/web/index.html`);
 const css = read(`${ROOT}/web/css/relay.css`);
@@ -73,7 +75,19 @@ for (const cls of ["mic-button", "people-button", "chat-button", "cc-button", "p
 }
 check("More is a menu", /class="more-menu" role="menu"/.test(html));
 const actions = [...html.matchAll(/role="menuitem" data-action="([^"]+)"/g)].map((m) => m[1]);
-check("More menu items", JSON.stringify(actions) === JSON.stringify(["pause", "human", "relay", "prev", "next", "type", "checklist", "info"]), actions.join(","));
+check(
+  "More menu items (Restart meeting last, for a meeting talk)",
+  JSON.stringify(actions) === JSON.stringify(["pause", "human", "relay", "prev", "next", "type", "checklist", "info", "reset"]),
+  actions.join(","),
+);
+check("Restart meeting is hidden until the talk is a meeting", /data-action="reset"[^>]* hidden>/.test(html));
+check("the agenda strip is hidden until the talk is a meeting", /<nav class="agenda"[^>]* hidden>/.test(html));
+check("the evidence callout sits in the share, hidden", inside('<main class="share"', '<aside class="callout"', "</main>") && /<aside class="callout"[^>]* hidden>/.test(html));
+check("the side panel's tabs sit in the chat panel, hidden", inside('<section class="chat"', '<div class="tabs" role="tablist"', "</section>") && /<div class="tabs"[^>]* hidden>/.test(html));
+const tabs = [...html.matchAll(/class="tab" role="tab" data-tab="(\w+)"/g)].map((m) => m[1]);
+check("tabs: Evidence, Notes, Transcript, Chat", JSON.stringify(tabs) === JSON.stringify(["evidence", "notes", "transcript", "chat"]), tabs.join(","));
+check("panes hidden at start", ["evidence-pane", "notes-pane", "transcript-pane"].every((c) => new RegExp(`class="pane ${c}"[^>]* hidden>`).test(html)));
+check("the speaker picker sits by the mic, hidden", inside('<div class="toolbar-left">', '<div class="speakers"', "</footer>") && /<div class="speakers"[^>]* hidden>/.test(html));
 const rows = [...html.matchAll(/<li data-item="(\w+)"[^>]*>\s*<span class="ic"[^>]*><\/span><span class="label">([^<]+)<\/span/g)].map((m) => `${m[1]}=${m[2]}`);
 check(
   "join dialog rows, labelled for people",
@@ -135,6 +149,12 @@ check(
 check("narrow windows: the tiles go above the share", /@media \(max-width: 899px\)[\s\S]*"side"\s*"share"/.test(withStrings));
 check("the slides keep 16:9 in the share", /width:\s*min\(100cqw, 100cqh \* 16 \/ 9\)/.test(rule(".share .reveal")) && /container-type:\s*size/.test(rule(".screen")));
 check("captions off frees their room", /display:\s*none/.test(rule(".meeting.captions-off .captions")));
+// On the Same Page: the agenda strip is a grid row of its own, only for a meeting talk (.has-agenda)
+check("meeting talk grid: the agenda row under the topbar", /\n\.meeting\.has-agenda \{[^}]*"top top"\s*"agenda agenda"\s*"share side"\s*"bar bar"/.test(withStrings));
+check("meeting talk grid without the side column keeps the agenda row", /\n\.meeting\.has-agenda\.side-off \{[^}]*"top"\s*"agenda"\s*"share"\s*"bar"/.test(withStrings));
+check("narrow meeting talk: agenda, tiles, share", /@media \(max-width: 899px\)[\s\S]*\.meeting\.has-agenda \{[^}]*"agenda"\s*"side"\s*"share"/.test(withStrings));
+check("the callout sits above the captions", /var\(--cap-h\)/.test(rule(".callout")) && /bottom:/.test(rule(".meeting.captions-off .callout")));
+check("plain talks keep the old toolbar-left (the meeting's flex row is scoped)", rule(".toolbar-left").trim() === "justify-self: start;");
 check("ticker: newest chip ellipsises", /min-width:\s*0/.test(rule(".tool:first-child")) && /text-overflow:\s*ellipsis/.test(rule(".tool .tool-name")));
 check("icons never take a click from their button", /pointer-events:\s*none/.test(rule(".ico")));
 
@@ -146,6 +166,7 @@ for (const file of JS) {
   const src = read(`${ROOT}/${file}`);
   for (const m of src.matchAll(/(?:part\([^,]+,\s*|el\(|querySelector\()"(\.[\w-]+(?:\s+\.[\w-]+)*)"/g)) lookedUp.add(m[1]);
   for (const m of src.matchAll(/className = "([\w -]+)"/g)) for (const c of m[1].split(/\s+/)) created.add(c);
+  for (const m of src.matchAll(/make\("\w+", "([\w -]+)"/g)) for (const c of m[1].split(/\s+/)) created.add(c); // panels.js
 }
 const SVG_TAGS = new Set(["svg", "path", "rect", "circle", "line", "g"]);
 for (const sel of lookedUp) {

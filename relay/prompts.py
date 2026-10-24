@@ -1,15 +1,21 @@
 """Realtime instructions: the fixed BASE prompt plus a STATE block rebuilt for every live turn (design §7), and the
 per-response instructions that make Higgs Realtime present one slide live (D52).
 
+A meeting package (agenda.yaml, On the Same Page) swaps BASE for FACILITATOR_BASE and STATE for the meeting's, and
+adds the per-response instructions of the facilitator: one talking point, a follow-up after a tool result, the
+hand-over to the discussion, an intervention, a decision, the wrap-up (contract §5).
+
 Keep them short: a long system prompt made the model stop calling tools (doc/gotchas.md).
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from typing import Any, Iterable
 
-from .talk import ID_ATTR_RE, SLIDE_ATTRS_RE, SLIDE_SPLIT_RE, Slide, Talk
+from .talk import ID_ATTR_RE, SLIDE_ATTRS_RE, SLIDE_SPLIT_RE, Chunk, Slide, Talk
 from .textutil import strip_tags
 
 PHASES = ("opening", "presenting", "qa", "human")
@@ -56,6 +62,10 @@ class TurnContext:
     cut_word: str | None = None  # only when this turn cut the narration
     cut_sentence: str | None = None
     live: bool = False  # live narration (D52): LIVE_BASE, and a slide's script is its notes
+    # a meeting only (build_instructions gets the MeetingPackage):
+    agenda_phase: str | None = None  # presentation | discussion | wrapup
+    talking_point: str | None = None  # the current (or interrupted) talking point id
+    context: tuple[str, ...] = ()  # MeetingState.context_lines(): what was clarified and decided
 
 
 def base_prompt(talk: Talk, *, live: bool = False) -> str:
@@ -134,8 +144,11 @@ def state_block(talk: Talk, ctx: TurnContext) -> str:
     return "\n".join(lines)
 
 
-def build_instructions(talk: Talk, ctx: TurnContext) -> str:
-    """BASE + blank line + STATE: the `instructions` of every session.update."""
+def build_instructions(talk: Talk, ctx: TurnContext, meeting: Any = None) -> str:
+    """BASE + blank line + STATE: the `instructions` of every session.update. With a meeting (a MeetingPackage):
+    FACILITATOR_BASE + the meeting's STATE."""
+    if meeting is not None:
+        return f"{facilitator_prompt(meeting)}\n\n{meeting_state_block(talk, meeting, ctx)}"
     return f"{base_prompt(talk, live=ctx.live)}\n\n{state_block(talk, ctx)}"
 
 
@@ -171,3 +184,254 @@ def narration_instructions(talk: Talk, slide: Slide, *, seconds: int, continuing
                      '"Hello", then stop.')
     lines.append("Speak only the presentation. No lists, markdown, URLs or stage directions. Don't call any tool.")
     return "\n".join(lines)
+
+
+# --- the meeting facilitator (On the Same Page, contract §5) -----------------------------------------------------
+
+# ≤ 130 words with a title and three participants filled in (tests/test_prompts.py checks it).
+FACILITATOR_BASE = (
+    'You are the facilitator of the meeting "{title}" with {participants}. You present the first agenda item '
+    "yourself, live, in your own words, from the notes given for each talking point. When anyone asks about the "
+    "project (dates, release stages, audiences, owners, decisions), call lookup_evidence first and answer only from "
+    "what it returns, in one or two short spoken sentences; then call set_presentation_state with action resume. In "
+    "the discussion, stay silent unless someone asks you directly. Never tell anyone they are wrong; ask neutral "
+    "questions. No lists, markdown or URLs."
+)
+NO_TOOLS = "Don't call any tool."
+PLAIN_SPEECH = "No lists, markdown or URLs."
+MEETING_PHASE_LINES = {
+    ("presentation", "opening"): "{host} is about to hand you the floor: greet the room in one line, then call "
+                                 "set_presentation_state with action start.",
+    ("presentation", "human"): "{host} has the floor: answer briefly.",
+    ("presentation", "qa"): "This is Q&A: answer from lookup_evidence in up to three sentences.",
+    ("discussion", None): "The group is discussing. Someone asked you directly: look it up, answer in one or two "
+                          "short sentences, then stop. If they ask you to wrap up the meeting, call "
+                          "set_presentation_state with action end_presentation.",
+    ("wrapup", None): "The meeting is wrapping up: answer briefly.",
+}
+
+
+def _names(names: list[str]) -> str:
+    if len(names) <= 1:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def participants_text(meeting: Any, *, roles: bool = True) -> str:
+    """"Alice (Product manager), Bob (Customer communications) and Carol (Engineering lead)"."""
+    people = [f"{p.name} ({p.role})" if roles and p.role else p.name for p in meeting.participants]
+    return _names(people) or "the team"
+
+
+def _phase(meeting: Any, phase_id: str) -> Any:
+    return next((phase for phase in meeting.phases if phase.id == phase_id), None)
+
+
+def phase_title(meeting: Any, phase_id: str) -> str:
+    phase = _phase(meeting, phase_id)
+    return (phase.title if phase is not None and phase.title else phase_id)
+
+
+def discussion_prompt(meeting: Any) -> str:
+    """What the discussion is about: the agenda's discussion prompt, else its title."""
+    phase = _phase(meeting, "discussion")
+    if phase is None:
+        return "the next steps"
+    return phase.prompt or phase.title or "the next steps"
+
+
+def facilitator_prompt(meeting: Any) -> str:
+    return FACILITATOR_BASE.format(title=meeting.title, participants=participants_text(meeting))
+
+
+def _points(talk: Talk) -> list[tuple[Slide, Chunk]]:
+    """Every talking point of the presentation, in order."""
+    return [(slide, chunk) for slide in talk.relay_slides for chunk in slide.chunks]
+
+
+def _find_point(talk: Talk, point_id: str | None) -> tuple[Slide, Chunk] | None:
+    for slide, chunk in _points(talk):
+        if chunk.id == point_id:
+            return slide, chunk
+    return None
+
+
+def meeting_state_block(talk: Talk, meeting: Any, ctx: TurnContext) -> str:
+    """The STATE block of a meeting: phase, agenda phase, meeting, slides, the talking point (presentation) or the
+    discussion question, what was clarified and decided, the cut, and the phase line."""
+    agenda = ctx.agenda_phase or "presentation"
+    order = [phase.id for phase in meeting.phases]
+    following = order[order.index(agenda) + 1] if agenda in order and order.index(agenda) + 1 < len(order) else None
+    agenda_line = f"Agenda phase: {agenda} ({phase_title(meeting, agenda)})"
+    if following:
+        agenda_line += f"; next: {following} ({phase_title(meeting, following)})"
+    lines = [
+        f"Phase: {ctx.phase}",
+        agenda_line,
+        f"Meeting: {meeting.title} (host: {meeting.host}; participants: {participants_text(meeting, roles=False)})",
+        f"Slides: {_slide_list(talk)} (current: {ctx.slide_id})",
+    ]
+    point = _find_point(talk, ctx.talking_point)
+    if agenda == "presentation" and point is not None:
+        lines.append(f"Talking point: {point[1].id} on {point[0].id}: {_quoted(point[1].text)}")
+    if agenda == "discussion":
+        lines.append(f"Discussion question: {_quoted(discussion_prompt(meeting))}")
+    lines.extend(ctx.context)
+    if ctx.cut_word:
+        cut = f"You were cut off at «{ctx.cut_word.strip(_WORD_EDGE_PUNCTUATION) or ctx.cut_word}»"
+        lines.append(f"{cut} in: {_quoted(ctx.cut_sentence)}" if ctx.cut_sentence else cut)
+    phase_line = MEETING_PHASE_LINES.get((agenda, ctx.phase)) or MEETING_PHASE_LINES.get((agenda, None))
+    if phase_line:
+        lines.append(phase_line.format(host=meeting.host))
+    return "\n".join(lines)
+
+
+def talking_point_instructions(talk: Talk, meeting: Any, slide: Slide, chunk: Chunk, *, seconds: int,
+                               continuing: bool = False, heard: str | None = None, first: bool = False) -> str:
+    """The `instructions` of one live talking point (`response.create`), one line each. Self-contained: they replace
+    the session's for that response (live 2026-10-23: the model presents from per-response notes in its own words)."""
+    relay = talk.relay_slides
+    number = next((n for n, candidate in enumerate(relay, 1) if candidate.id == slide.id), 0)
+    on_screen = screen_text(talk, slide)
+    points = _points(talk)
+    position = next((n for n, (s, c) in enumerate(points) if s.id == slide.id and c.index == chunk.index), None)
+    lines = [
+        f'You are the facilitator of the meeting "{meeting.title}", presenting '
+        f'"{phase_title(meeting, "presentation")}" live to {participants_text(meeting, roles=False)}.',
+        f'Now: slide {number} of {len(relay)}, "{slide.title or slide.id}".'
+        + (f" On screen: {on_screen}" if on_screen else ""),
+        f"Talking point {chunk.index + 1} of {len(slide.chunks)} on this slide: {strip_tags(chunk.say)}",
+    ]
+    if position:  # not the first point of the presentation
+        lines.append(f"You just said (the previous point): {_quoted(points[position - 1][1].text)}")
+    if continuing:
+        said = f'; the room last heard you say: "{" ".join(heard.split())}"' if heard and heard.strip() else ""
+        lines.append(f"You were interrupted during this point{said}. Start with a short bridge like \"As I was "
+                     "saying\", don't repeat what the room already heard, and finish this point.")
+    else:
+        lines.append("Say this point now in your own words, as a confident speaker. Don't read the notes word for "
+                     "word.")
+    lines.append(f"Use one to three sentences, about {seconds} seconds.")
+    lines.append("If you haven't welcomed the room yet, open with one short welcome; otherwise go straight in."
+                 if first else "Don't greet or introduce yourself: carry on naturally.")
+    lines.append(f"Speak only this point. No lists, markdown, URLs or stage directions. {NO_TOOLS}")
+    return "\n".join(lines)
+
+
+def handover_instructions(meeting: Any) -> str:
+    """The hand-over after the presentation: one sentence, then the facilitator listens (contract §5.2)."""
+    return "\n".join([
+        f'You are the facilitator of the meeting "{meeting.title}". You just finished presenting '
+        f'"{phase_title(meeting, "presentation")}".',
+        "Say one short sentence, without greeting: the presentation is done, the group now discusses "
+        f"{_quoted(discussion_prompt(meeting))}, and you will listen and only speak up if something doesn't match the "
+        "documents.",
+        f"{PLAIN_SPEECH} {NO_TOOLS}",
+    ])
+
+
+FOLLOWUP_LOOKUP = "lookup"  # a data tool ran: answer from its output
+FOLLOWUP_CONFIRM = "confirm"  # a state tool ran and nothing was said
+FOLLOWUP_DECISION = "decision"  # the decision is saved and nothing was said
+FOLLOWUP_KINDS = (FOLLOWUP_LOOKUP, FOLLOWUP_CONFIRM, FOLLOWUP_DECISION)
+
+
+def followup_instructions(kind: str, *, meeting: Any, agenda_phase: str = "presentation",
+                          question: str | None = None) -> str:
+    """The `instructions` of a follow-up `response.create` after a tool round trip (contract §5.3). Live
+    2026-10-23: a follow-up without new instructions repeated the tool call and said nothing."""
+    lines = [f'You are the facilitator of the meeting "{meeting.title}".']
+    if kind == FOLLOWUP_LOOKUP:
+        if question and question.strip():
+            lines.append(f"The question: {_quoted(question)}")
+        answer = ("Answer the question now from these results in one or two short sentences. Use only what they "
+                  "say; if they don't answer it, say so")
+        if agenda_phase == "presentation":
+            lines.append(f"{answer}, then call set_presentation_state with action resume.")
+        else:
+            lines.append(f"{answer}. {NO_TOOLS}")
+    elif kind == FOLLOWUP_DECISION:
+        lines.append(f"Confirm in one short sentence that the decision is in the meeting notes. {NO_TOOLS}")
+    else:
+        lines.append(f"Confirm it in one short sentence. {NO_TOOLS}")
+    lines.append(PLAIN_SPEECH)
+    return "\n".join(lines)
+
+
+def _results(lookup: Any) -> list[dict]:
+    results = lookup.get("results") if isinstance(lookup, dict) else getattr(lookup, "results", None)
+    return [result for result in results or [] if isinstance(result, dict)]
+
+
+def _clip_text(text: Any, limit: int) -> str:
+    return _clip(" ".join(str(text or "").split()), limit)
+
+
+def intervention_instructions(events: dict | list[dict], lookup: Any, *, meeting: Any,
+                              clarifications: Iterable[Any] = ()) -> str:
+    """The `instructions` of an intervention (contract §5.4): the conflicting line and the confirmation that the
+    alignment check heard, what the documents and the earlier clarification say, and one neutral question before
+    the group confirms (live 2026-10-23: a good question, but 17 s long → short sentences, at most two)."""
+    events = [events] if isinstance(events, dict) else list(events)
+    lines = [f'You are the facilitator of the meeting "{meeting.title}". The group is discussing and is about to '
+             "confirm a decision. You stop them, politely, with one clarification."]
+    quotes: list[str] = []
+    for event in events:
+        for key in ("quote", "confirm_quote"):
+            quote = _clip_text(event.get(key), 200)
+            if quote and quote not in quotes:
+                quotes.append(quote)
+    if quotes:
+        lines.append("You just heard: " + " Then: ".join(_quoted(quote) for quote in quotes))
+    for event in events:
+        label = event.get("label") or event.get("slot") or "a detail"
+        sources = ", ".join(event.get("source_ids") or [])
+        lines.append(f"Mismatch: {label}: the group said {event.get('claimed_label') or event.get('claimed')}, but "
+                     f"the meeting established {event.get('established_label') or event.get('established')}"
+                     + (f" ({sources})" if sources else "") + ".")
+    results = _results(lookup)
+    if results:
+        lines.append("The documents say: " + " ".join(
+            f"[{result.get('source_id')}] {_clip_text(result.get('excerpt'), 220)}" for result in results[:3]))
+    for clarification in clarifications:
+        answer = getattr(clarification, "answer", None) or (clarification.get("answer")
+                                                            if isinstance(clarification, dict) else None)
+        cid = getattr(clarification, "id", None) or (clarification.get("id") if isinstance(clarification, dict)
+                                                     else None)
+        if answer:
+            lines.append(f"Earlier in this meeting it was clarified ({cid}): {_quoted(_clip_text(answer, 220))}")
+    lines.append('Start with "One clarification before we confirm:", say what was established earlier (mention the '
+                 "earlier clarification if there is one, and the source id), then ask one neutral question about "
+                 "the plan. Never say anyone is wrong. At most two short sentences.")
+    lines.append(f"{PLAIN_SPEECH} {NO_TOOLS}")
+    return "\n".join(lines)
+
+
+DRAFT_PREFIX = "DRAFT: "  # the fake Realtime reads the draft back from this line
+
+
+def decision_instructions(draft: dict, quotes: Iterable[tuple[str | None, str]], *, meeting: Any) -> str:
+    """The `instructions` of the decision response (contract §5.4): the resolving lines, the alignment check's draft
+    as JSON, save it (corrected only by the quotes), then confirm in one short sentence."""
+    fields = {"decision": str(draft.get("decision") or ""), "owner": str(draft.get("owner") or ""),
+              "follow_up": str(draft.get("follow_up") or ""), "source_ids": list(draft.get("source_ids") or [])}
+    lines = [f'You are the facilitator of the meeting "{meeting.title}". The group just settled a decision:']
+    for speaker, text in quotes:
+        if text and text.strip():
+            lines.append(f"{speaker or 'Someone'}: {_quoted(_clip_text(text, 240))}")
+    lines.append(DRAFT_PREFIX + json.dumps(fields, ensure_ascii=False))
+    lines.append("Call save_decision with these values, correcting them only if the quotes say otherwise. Then "
+                 "confirm in one short sentence that it is in the meeting notes, naming the decision and its owner.")
+    lines.append(PLAIN_SPEECH)
+    return "\n".join(lines)
+
+
+def wrapup_instructions(notes_text: str, *, meeting: Any) -> str:
+    """The `instructions` of the wrap-up summary (contract §5.6)."""
+    return "\n".join([
+        f'You are the facilitator of the meeting "{meeting.title}", and the meeting is wrapping up.',
+        f"The meeting notes: {' '.join((notes_text or 'nothing was recorded').split())}",
+        "Sum up in two or three short spoken sentences: the decisions with their owners first, then the open "
+        "questions. Don't read ids aloud.",
+        f"{PLAIN_SPEECH} {NO_TOOLS}",
+    ])

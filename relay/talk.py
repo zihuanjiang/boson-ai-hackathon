@@ -1,5 +1,8 @@
 """Talk packages: `talks/<id>/{slides.md, script.yaml, kb.md}` → `Talk`. Loader + validator (design §2).
 
+A meeting package adds `agenda.yaml`, `sources/*.md` and `checks.yaml` (relay/meeting.py); their issues are part of
+`check_talk` / `load_talk` too, so a broken meeting blocks rendering and serving like a broken script.
+
     uv run python -m relay.talk talks/test        # print issues and a summary; exit 1 on errors
 """
 
@@ -30,6 +33,7 @@ FRAGMENT_RE = re.compile(r'class\s*=\s*"[^"]*\bfragment\b')
 NOTES_RE = re.compile(r"^\s*notes?:", re.M | re.I)
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")  # ids become folder names (out/talks/<id>/<slide>/) and URL segments
 HTML_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+CHUNK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")  # talking point ids (script.yaml chunk `id:`)
 
 Level = Literal["error", "warning"]
 
@@ -56,6 +60,15 @@ class Chunk:
     index: int  # 0-based within the slide
     say: str  # TTS input, tags included
     fragment: int | None = None  # fragments visible once this chunk starts (count); None = unchanged
+    point_id: str | None = None  # script.yaml `id:` (the talking point id); None = the default below
+    slide: str = ""  # id of the slide it belongs to (the loader sets it)
+
+    @property
+    def id(self) -> str:
+        """Talking point id: the script's `id:`, else "<slide>-<k+1>" (unique within the talk; validated)."""
+        if self.point_id:
+            return self.point_id
+        return f"{self.slide}-{self.index + 1}" if self.slide else str(self.index + 1)
 
     @property
     def text(self) -> str:
@@ -221,9 +234,14 @@ def _parse_chunks(slide_id: str, raw_chunks, fragments: int, issues: list[Issue]
         if not isinstance(raw, dict) or not isinstance(raw.get("say"), str):
             issues.append(Issue("error", where, "each chunk needs a `say:` string"))
             continue
-        unknown = set(raw) - {"say", "fragment"}
+        unknown = set(raw) - {"say", "fragment", "id"}
         if unknown:
             issues.append(Issue("warning", where, f"unknown keys ignored: {', '.join(sorted(unknown))}"))
+        point_id = raw.get("id")
+        if point_id is not None and (not isinstance(point_id, str) or not CHUNK_ID_RE.match(point_id)):
+            issues.append(Issue("error", where, f"`id: {point_id!r}`: a talking point id is 1–40 lowercase letters, "
+                                                "digits and -, starting with a letter or digit (e.g. friday-beta)"))
+            point_id = None
         say = raw["say"].strip()
         _check_say(say, where, issues)
         fragment = raw.get("fragment")
@@ -238,8 +256,21 @@ def _parse_chunks(slide_id: str, raw_chunks, fragments: int, issues: list[Issue]
                                                       "fragments never hide again"))
             if isinstance(fragment, int):
                 last_fragment = max(last_fragment, fragment)
-        chunks.append(Chunk(index=len(chunks), say=say, fragment=fragment))
+        chunks.append(Chunk(index=len(chunks), say=say, fragment=fragment, point_id=point_id, slide=slide_id))
     return chunks
+
+
+def _check_point_ids(slides: list[Slide], issues: list[Issue]) -> None:
+    """Talking point ids (explicit or default) are unique within the talk."""
+    seen: dict[str, str] = {}
+    for slide in slides:
+        for chunk in slide.chunks:
+            where = f"{slide.id}.chunks[{chunk.index}]"
+            if chunk.id in seen:
+                issues.append(Issue("error", "script.yaml", f"talking point id {chunk.id!r} appears more than once "
+                                                            f"({seen[chunk.id]} and {where})"))
+            else:
+                seen[chunk.id] = where
 
 
 def _read(path: Path, issues: list[Issue], required: bool = True) -> str | None:
@@ -255,6 +286,17 @@ def _read(path: Path, issues: list[Issue], required: bool = True) -> str | None:
 
 
 def _parse(root: Path) -> tuple[Talk | None, list[Issue]]:
+    """The talk package, then the meeting files on top (relay/meeting.py; a plain talk has none)."""
+    talk, issues = _parse_talk(root)
+    if root.is_dir():
+        from .meeting import meeting_issues  # here, not at the top: relay.meeting imports this module
+        issues.extend(meeting_issues(root, talk))
+        if talk is not None:
+            talk.warnings = [issue for issue in issues if issue.level == "warning"]
+    return talk, issues
+
+
+def _parse_talk(root: Path) -> tuple[Talk | None, list[Issue]]:
     issues: list[Issue] = []
     if not root.is_dir():
         return None, [Issue("error", str(root), "not a directory")]
@@ -262,7 +304,8 @@ def _parse(root: Path) -> tuple[Talk | None, list[Issue]]:
     script_src = _read(root / "script.yaml", issues)
     kb = _read(root / "kb.md", issues, required=False)
     if kb is None:
-        if not (root / "kb.md").is_file():  # no "missing" warning on top of a decode error
+        # no "missing" warning on top of a decode error; a meeting has its facts in sources/
+        if not (root / "kb.md").is_file() and not (root / "agenda.yaml").is_file():
             issues.append(Issue("warning", "kb.md", "missing: Relay will have no facts in Q&A"))
         kb = ""
     elif word_count(kb) > MAX_KB_WORDS:
@@ -360,6 +403,7 @@ def _parse(root: Path) -> tuple[Talk | None, list[Issue]]:
         slides.append(Slide(id=slide_id, index=len(slides), speaker=speaker, title=md["title"], mode=mode,
                             plain=plain.strip() if plain else None, fragments=md["fragments"], chunks=chunks))
 
+    _check_point_ids(slides, issues)
     if slides and not any(slide.is_relay for slide in slides):
         issues.append(Issue("error", "script.yaml", "no relay slides: Relay has nothing to present"))
     talk = Talk(id=talk_id, root=root, voice=voice if isinstance(voice, str) else "default",
@@ -401,8 +445,17 @@ def main(argv: list[str] | None = None) -> int:
     for slide in talk.relay_slides:
         print(f"  {slide.id:<12} {len(slide.chunks)} chunk(s) {word_count(slide.narration):>4} words"
               f"{'  [qa]' if slide.is_qa else ''}")
+    from .meeting import load_meeting  # see _parse
+    meeting = load_meeting(talk)
+    if meeting is not None:
+        documents = len({statement.doc_id for statement in meeting.statements})
+        slots = len(meeting.checks.slots) if meeting.checks else 0
+        print(f"meeting: {meeting.title}: host {meeting.host}, {len(meeting.participants)} participants, "
+              f"{len(meeting.statements)} statements in {documents} document(s), {slots} alignment slot(s)")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Run the package module's main, not this __main__ copy: relay.meeting checks `relay.talk.Talk` instances.
+    from relay.talk import main as package_main
+    sys.exit(package_main())

@@ -1,0 +1,87 @@
+# What the alignment check extracts (contract §2, §3.3). Every pattern is a Python regex, matched case-insensitively
+# on one clause (the text is split at . ! ? ; and " but "). The same patterns run over the source statements, the
+# clarifications recorded in the meeting and every discussion utterance, so the sources must establish
+#   friday_stage = beta (REQ-2, DEC-2)   and   friday_audience = beta_users (REQ-2, DEC-2).
+# Checked with .scratch/same-page/content/check_patterns.py (the brief §3 lines plus a battery of variants).
+#
+# Why the odd-looking guards:
+# - Apostrophes are written [’'] because speech-to-text may return curly ones ("I’ll", "Friday’s").
+# - `production` / `all customers` must not count when the clause is about Wednesday: the facilitator's own answer
+#   ("beta on Friday and production next Wednesday") becomes the clarification, and without the guard that clause
+#   would hold two stage values (ambiguous) or, worse, establish all_customers for Friday. The lookahead skips a
+#   value followed within eight words by Wednesday / the twenty-ninth / 29 / next week; the fixed-width lookbehinds
+#   skip "Wednesday is production" and "production goes to all customers".
+# - friday_audience's context drops a clause that mentions Wednesday at all, for the same reason.
+slots:
+  - id: friday_stage
+    label: "Friday's release stage"
+    context:
+      - '\bfriday'                        # Friday, Friday's, Fridays
+      - '\b24(th)? oct'
+      - '\boct(ober)? 24'
+      - '\btwenty[- ]fourth\b'
+    values:
+      beta:
+        - '\bbeta\b'
+      production:
+        - '(?<!wednesday )(?<!wednesday, )(?<!wednesday is )(?<!wednesday is the )(?<!wednesday[’'']s )(?<!wednesday for )(?<!ninth is )(?<!29th is )\bproduction\b(?!(?:\W+\w+){0,8}?\W+(?:wednesday|twenty[- ]ninth|29(?:th)?\b|next week\b))'
+        - '\bgeneral availability\b(?!(?:\W+\w+){0,8}?\W+(?:wednesday|twenty[- ]ninth|29(?:th)?\b|next week\b))'
+        - '\b(launch(es|ing)?|go(es|ing)? live|ship(s|ping)?) (it )?to (all|every)(?!(?:\W+\w+){0,8}?\W+(?:wednesday|twenty[- ]ninth|29(?:th)?\b|next week\b))'
+        - '\bfull (launch|release|rollout)\b(?!(?:\W+\w+){0,8}?\W+(?:wednesday|twenty[- ]ninth|29(?:th)?\b|next week\b))'
+
+  - id: friday_audience
+    label: "Friday's announcement audience"
+    context:
+      - '^(?!.*\b(wednesday|twenty[- ]ninth|29(th)?\b|next week\b)).*(\bfriday|\b24(th)? oct|\boct(ober)? 24|\btwenty[- ]fourth\b)'
+    values:
+      beta_users:
+        - '\bbeta (users?|group|customers?|testers?|participants|cohort|list)\b'
+        - '\b(forty|40) (beta )?customers\b'
+        - '\bbeta[- ]only\b'
+      all_customers:
+        - '(?<!production to )(?<!production for )(?<!production is for )(?<!production goes to )(?<!production goes out to )(?<!production release goes to )\ball (of )?(our |the )?(customers|users|clients)\b(?!(?:\W+\w+){0,8}?\W+(?:wednesday|twenty[- ]ninth|29(?:th)?\b|next week\b))'
+        - '\bevery (customer|user|client)\b(?!(?:\W+\w+){0,8}?\W+(?:wednesday|twenty[- ]ninth|29(?:th)?\b|next week\b))'
+        - '\bcustomer[- ]wide\b(?!(?:\W+\w+){0,8}?\W+(?:wednesday|twenty[- ]ninth|29(?:th)?\b|next week\b))'
+        - '\b(whole|entire) customer base\b(?!(?:\W+\w+){0,8}?\W+(?:wednesday|twenty[- ]ninth|29(?:th)?\b|next week\b))'
+
+# A conflict counts as consequential when its utterance (or the confirming one) commits to doing something.
+actions:
+  - '\bi[’'']ll\b'
+  - '\bi will\b'
+  - '\bwe[’'']ll\b'
+  - '\bwe will\b'
+  - '\blet[’'']?s\b'
+  - '\blet us\b'
+  - '\bdraft'
+  - '\bsend'
+  - '\bannounc'
+  - '\blaunch'
+  - '\bship'
+  - '\bpublish'
+  - '\bemail'
+  - '\bnotify'
+  - '\bgo(es)? out\b'
+
+# The group is about to commit: the gate opens when one of these follows a consequential conflict.
+confirmations:
+  - '\bsounds (good|great|right)\b'
+  - '\bfinali[sz]e'
+  - '\bagreed\b'
+  - '\bconfirm'
+  - '\bgo ahead\b'
+  - '\bthat works\b'
+  - '\block (it|that|this) in\b'
+  - '\bsigned off\b'
+
+# Who takes the follow-up ("Bob owns the announcement").
+ownership:
+  - '\bowns?\b'
+  - '\bowner\b'
+  - '\bwill (draft|send|write|own|handle|take)'
+  - '[’'']ll (draft|send|write|own|handle|take)'
+  - '\b(is|[’'']s) on it\b'
+  - '\btakes? (it|that|this)\b'
+  - '\bin charge of\b'
+  - '\bresponsible for\b'
+
+window_utterances: 3

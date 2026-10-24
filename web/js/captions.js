@@ -455,12 +455,30 @@ export class Captions {
     this.hintEl.hidden = true;
   }
 
+  /** How the open mic is used, after "Listening…" ("" hides it). @param {string} text */
+  hint(text) {
+    this.hintEl.textContent = text;
+    this.hintEl.hidden = !text;
+  }
+
   /**
-   * What the user said (final transcript, or typed).
-   * @param {string} text
+   * The speaker labels: the AI's lines (narration and live) and the user's line. null keeps one as it is.
+   * @param {string|null} ai  e.g. "Facilitator"
+   * @param {string|null} user  e.g. "Room", or who is speaking in the discussion
    */
-  user(text) {
+  labels(ai, user) {
+    if (ai !== null) for (const el of this.root.querySelectorAll(".cap-main .cap-speaker")) el.textContent = ai;
+    if (user !== null) part(this.userEl, ".cap-speaker").textContent = user;
+  }
+
+  /**
+   * What the user said (final transcript, or typed); in a meeting's discussion, a line of the room and who said it.
+   * @param {string} text
+   * @param {string|null} [who]  the line's label (null keeps it)
+   */
+  user(text, who = null) {
     this.wake();
+    if (who !== null) this.labels(null, who);
     this.setUser(text);
   }
 

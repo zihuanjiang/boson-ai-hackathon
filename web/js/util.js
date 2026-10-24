@@ -413,8 +413,9 @@ export function isNewerReply(a, b) {
 }
 
 /**
- * @typedef {"space"|"space_up"|"esc"|"next"|"prev"|"pause"|"human"|"relay"|"type"} KeyAction
- *   `type` = focus the typed-question box (browser only, never sent).
+ * @typedef {"space"|"space_up"|"esc"|"next"|"prev"|"pause"|"human"|"relay"|"type"|"phase"|"reset"} KeyAction
+ *   `type` = focus the typed-question box (browser only, never sent). `phase` (the agenda's next phase) and `reset`
+ *   (restart the meeting) come from the meeting's buttons, never from a key on the keyboard.
  */
 
 /**

@@ -202,8 +202,10 @@ def test_api_talk_matches_the_design_shape(tmp_path: Path, web: Path) -> None:
     assert (how["id"], how["index"], how["speaker"], how["mode"], how["title"], how["fragments"]) == (
         "how", 1, "relay", None, "How it works", 3)
     assert [chunk["index"] for chunk in how["chunks"]] == [0, 1, 2]
+    assert [chunk["id"] for chunk in how["chunks"]] == ["how-1", "how-2", "how-3"]  # the talking point ids
+    assert data["meeting"] is None  # a plain talk (no agenda.yaml)
     first = how["chunks"][0]
-    assert set(first) == {"index", "text", "fragment", "duration_ms", "words", "sentences", "audio"}
+    assert set(first) == {"index", "id", "text", "fragment", "duration_ms", "words", "sentences", "audio"}
     assert first["text"].startswith("Here is how this works.") and "<|" not in first["text"]
     assert first["fragment"] == 1 and first["audio"] == "/media/how/0.wav"
     assert first["duration_ms"] == controller.chunks[("how", 0)].duration_ms
@@ -211,6 +213,54 @@ def test_api_talk_matches_the_design_shape(tmp_path: Path, web: Path) -> None:
     assert first["sentences"] == ["Here is how this works.",
                                   "Everything you hear from me right now was written and rendered ahead of time."]
     assert qa["mode"] == "qa" and qa["chunks"][0]["audio"] == "/media/qa/0.wav"
+
+
+def test_api_talk_carries_a_meeting_package(tmp_path: Path, web: Path) -> None:
+    """Contract v3 §6: /api/talk's `meeting` (title, host, participants, phases, documents with statement ids, the
+    discussion slide), the same object as the controller's hello; chunks carry their talking point ids."""
+    from tests.test_meeting_flow import write_meeting
+
+    talk_dir = write_meeting(tmp_path / "talks" / "meeting")
+    app, _ = build(tmp_path, web, talk_dir=talk_dir)
+    with TestClient(app) as client:
+        data = client.get("/api/talk").json()
+    meeting = data["meeting"]
+    assert (meeting["title"], meeting["host"], meeting["discussion_slide"]) == (
+        "Release 4.3 rollout review", "Alice", "discussion")
+    assert meeting["participants"][1] == {"name": "Bob", "role": "Customer communications"}
+    assert [phase["id"] for phase in meeting["phases"]] == ["presentation", "discussion", "wrapup"]
+    assert meeting["phases"][1]["prompt"] == "What goes out on Friday, and who sends it?"
+    assert [(doc["id"], doc["title"]) for doc in meeting["documents"]] == [("decisions", "Decisions log"),
+                                                                         ("requirements", "Rollout plan v3")]
+    assert [s["id"] for s in meeting["documents"][1]["statements"]] == ["REQ-1", "REQ-2", "REQ-3"]
+    assert [chunk["id"] for chunk in data["slides"][1]["chunks"]] == ["friday-beta", "wednesday-production"]
+
+
+def test_a_broken_meeting_package_refuses_to_start(tmp_path: Path, web: Path) -> None:
+    from tests.test_meeting_flow import write_meeting
+
+    talk_dir = write_meeting(tmp_path / "talks" / "meeting")
+    agenda = talk_dir / "agenda.yaml"
+    agenda.write_text(agenda.read_text(encoding="utf-8").replace("host: Alice", "host: Mallory"), encoding="utf-8")
+    with pytest.raises(TalkError, match="not a participant"):
+        create_app(talk_dir, Settings(), out_root=tmp_path / "out", web_dir=web,
+                   chunks=synthetic_chunks(load_talk(TEST_TALK_DIR)))
+
+
+def test_the_cli_describes_a_meeting_and_warns_that_server_vad_is_ignored(tmp_path: Path) -> None:
+    from relay.meeting import load_meeting
+    from tests.test_meeting_flow import write_meeting
+
+    talk = load_talk(write_meeting(tmp_path / "meeting"))
+    meeting = load_meeting(talk)
+    note = cli.meeting_note(meeting)
+    assert note.startswith('meeting: "Release 4.3 rollout review" hosted by Alice, 3 participants, 5 source statements '
+                           "in 2 document(s); agenda presentation → discussion → wrapup")
+    assert cli.meeting_note(None) is None
+    vad = Settings(turn_detection={"type": "semantic_vad"}, fake_realtime=True)
+    notes = cli.startup_notes(talk, synthetic_chunks(talk), vad, meeting)
+    assert any("RELAY_TURN_DETECTION is ignored for a meeting" in line for line in notes)
+    assert not any("RELAY_TURN_DETECTION" in line for line in cli.startup_notes(talk, synthetic_chunks(talk), vad))
 
 
 def test_fake_audio_is_false_when_every_chunk_is_real(tmp_path: Path, web: Path) -> None:

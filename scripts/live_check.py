@@ -6,6 +6,7 @@ tool calls with the real prompts, reply audio and latency. Runs on any talk; nee
 
     uv run python scripts/live_check.py [--talk talks/test] [--narration live|rendered] [--port N]
     uv run python scripts/live_check.py --talk talks/relay-intro
+    uv run python scripts/live_check.py --talk talks/rollout-review      # the meeting (On the Same Page)
     RELAY_TURN_DETECTION='{"type": "semantic_vad", "silence_duration_ms": 500}' uv run python scripts/live_check.py
 
 The flow: the opening ("take it away") → the first relay slide's narration → a comment cut-in during it → the slide
@@ -16,6 +17,14 @@ RELAY_NARRATION), read from its hello; in rendered mode the cut-ins land on word
 Writes out/live/: the synthesized lines (*.pcm), everything Relay streamed (reply_<n>.wav: answers and live
 narrations), frames.jsonl, summary.json. Each turn reports whether the model called the expected tool or the
 watchdog did it ("auto"); each live narration its slide, length and what Relay said.
+
+A meeting package (agenda.yaml: `--talk talks/rollout-review`, On the Same Page) runs the meeting instead, after its
+run of show: Alice's opening → the talking points → her question during the rollback plan (lookup_evidence → the
+answer → resume at that talking point, the clarification) → the hand-over → the discussion spoken into the room mic
+by three synthesized voices (Alice, Bob, Carol: transcripts, the alignment events, the facilitator's intervention
+at Carol's confirmation, the decision after her correction) → Alice asks for the wrap-up (else the phase button, said
+so in the report) → the summary. Turns end by the backend's segmenter (manual turns). The report lists what the room
+heard, which tools the model called, the evidence, the notes.
 """
 
 from __future__ import annotations
@@ -54,7 +63,21 @@ LINES = {  # key: (voice, text)
     "plain": ("nora", "Sorry, can you explain that like I'm not an engineer?"),
     "question": ("nora", "How do you know where to pick up after someone interrupts you?"),
 }
-PRINTED = ("tool", "state", "cut", "play", "slide", "reply_start", "metric", "error", "connection")
+# The meeting (talks/rollout-review/run_of_show.md, "Lines for the attendees"): key → (voice, speaker, text)
+MEETING_LINES = {
+    "opening": ("eleanor", "Alice", "Hi everyone, this is our release four point three rollout review. Facilitator, "
+                                    "please take us through the plan."),
+    "question": ("eleanor", "Alice", "Wait, I thought Friday was production. Which one is it?"),
+    "alice": ("eleanor", "Alice", "Production is next Wednesday, right? Bob, what goes out on Friday?"),
+    "bob": ("jake", "Bob", "I'll draft the announcement for Friday's production launch to all customers."),
+    "carol_confirm": ("nora", "Carol", "Sounds good. Let's finalize that."),
+    "carol_fix": ("nora", "Carol", "Yes, beta users only. Bob owns the announcement."),
+    "wrapup": ("eleanor", "Alice", "Thanks, everyone. Facilitator, please wrap us up."),
+}
+INTERRUPT_AT = "rollback-trigger"  # the run of show's cue: Alice asks as the rollback plan starts
+ROOM_PAUSE_S = 1.0  # a beat before each discussion line (the facilitator's echo window is 0.3 s)
+PRINTED = ("tool", "state", "cut", "play", "slide", "reply_start", "metric", "error", "connection", "evidence",
+           "transcript", "alignment")
 
 
 def tts_pcm(settings, voice: str, text: str) -> bytes:
@@ -66,6 +89,13 @@ def tts_pcm(settings, voice: str, text: str) -> bytes:
     resp.raise_for_status()
     path.write_bytes(resp.content)
     return resp.content
+
+
+def synthesize(settings, talk: dict) -> dict[str, bytes]:
+    """The mic lines for this talk: the meeting's run of show (three voices) for a meeting package, else Relay's."""
+    if talk.get("meeting"):
+        return {key: tts_pcm(settings, voice, text) for key, (voice, _, text) in MEETING_LINES.items()}
+    return {key: tts_pcm(settings, voice, text) for key, (voice, text) in LINES.items()}
 
 
 def free_port() -> int:
@@ -97,9 +127,11 @@ class Deck:
         self.first_audio: dict[int, float] = {}  # reply → when its first audio arrived (it starts playing then)
         self.ended: set[int] = set()  # replies whose reply_end came
         self.flushed: set[int] = set()
-        self.narrations: dict[int, dict] = {}  # live narration reply → {reply, slide, said}
+        self.narrations: dict[int, dict] = {}  # live narration reply → {reply, slide, point, said}
         self.backup_plays = 0  # rendered chunks played while the server narrates live (the backup stepped in)
         self.slide: str | None = None
+        self.state: str | None = None
+        self.point: str | None = None  # a meeting's talking point (the state message's `talking_point`)
         self.mic_open = False
         self.auto_play = False
         self._player: asyncio.Task | None = None
@@ -131,8 +163,11 @@ class Deck:
             self.mic_open = bool(msg.get("open"))
         elif kind == "slide":
             self.slide = msg["slide"]
+        elif kind == "state":
+            self.state, self.point = msg.get("state"), msg.get("talking_point")
         elif kind == "reply_start" and msg.get("kind") == "narration":
-            self.narrations[msg["reply"]] = {"reply": msg["reply"], "slide": self.slide, "said": ""}
+            self.narrations[msg["reply"]] = {"reply": msg["reply"], "slide": self.slide, "point": self.point,
+                                             "said": ""}
         elif kind == "reply_end":
             self.ended.add(msg["reply"])
             self._spawn(self._drain(msg["reply"]))
@@ -350,27 +385,212 @@ async def run_rendered(deck: Deck, talk: dict, lines: dict[str, bytes]) -> list[
     return results
 
 
+# --- a meeting (On the Same Page) -------------------------------------------------------------------------------
+
+
+def inbound(deck: Deck, since: int) -> list[dict]:
+    return [m for _, d, m in deck.log[since:] if d == "in"]
+
+
+def answer_texts(deck: Deck, messages: list[dict]) -> list[str]:
+    """The facilitator's final words in `messages`, narrations left out."""
+    return [m["text"] for m in messages if m.get("type") == "caption" and m.get("role") == "assistant"
+            and m.get("final") and m.get("reply") not in deck.narrations]
+
+
+async def meeting_turn(deck: Deck, line: bytes, label: str, expect: str, *, reply: int | None = None,
+                       played: int | None = None) -> dict:
+    """One spoken turn to the facilitator: Space, the line into the open mic (the backend's segmenter ends the turn
+    after its silence), the answer and its follow-ups, and the tool that ends it (the model's, or "auto")."""
+    mark = deck.mark()
+    await deck.key("space", reply=reply, played=played)
+    await deck.until(lambda m: m.get("type") == "mic" and m.get("open"), f"{label}: mic open", mark, 10)
+    speaking = asyncio.create_task(deck.speak(line))
+    await deck.until(answer_start, f"{label}: reply started", mark, 30)
+    await speaking
+    try:
+        await deck.until(lambda m: m.get("type") == "tool" and m.get("name") == expect
+                         and m.get("status") in ("applied", "auto"), f"{label}: {expect}", mark, TURN_TIMEOUT_S)
+    except AssertionError as exc:
+        print(f"  !! {label}: {exc}")
+    await asyncio.sleep(0.5)
+    got = inbound(deck, mark)
+    tools_seen = [(m["name"], m["status"]) for m in got if m.get("type") == "tool"]
+    by_model = (expect, "applied") in tools_seen
+    by_watchdog = (expect, "auto") in tools_seen
+    return {"label": label, "expected": expect, "ok": by_model or by_watchdog,
+            "by": "model" if by_model else ("watchdog" if by_watchdog else "-"), "tools": tools_seen,
+            "heard": [m["text"] for m in got if m.get("type") == "caption" and m.get("role") == "user"][-1:],
+            "said": answer_texts(deck, got),
+            "evidence": [{"query": m["lookup"]["query"], "by": m["lookup"]["by"],
+                          "top": [r["source_id"] for r in m["lookup"]["results"]]} for m in got
+                         if m.get("type") == "evidence"],
+            "latency_ms": [m["value"] for m in got if m.get("type") == "metric"], "cut_at_ms": played}
+
+
+async def wait_state(deck: Deck, state: str, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while deck.state != state:
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for state {state} (now {deck.state})")
+        await asyncio.sleep(0.05)
+
+
+async def room_line(deck: Deck, line: bytes, speaker: str, label: str, expected: str) -> dict:
+    """One line of the discussion into the open room mic (never while the facilitator speaks: half duplex), with
+    the speaker selected; what the room heard (the transcript) and the alignment events it caused."""
+    await wait_state(deck, "ROOM", 60)
+    await asyncio.sleep(ROOM_PAUSE_S)
+    mark = deck.mark()
+    print(f"  -- {speaker}: {expected}")
+    await deck.send({"type": "speaker", "name": speaker})
+    await deck.speak(line, trailing_silence_s=1.5)
+    heard = None
+    try:
+        transcript = await deck.until(lambda m: m.get("type") == "transcript", f"{label}: transcribed", mark, 15)
+        heard = transcript["utterance"]["text"]
+    except AssertionError as exc:
+        print(f"  !! {label}: {exc}")
+    await asyncio.sleep(0.3)
+    events = [m["event"]["type"] for m in inbound(deck, mark) if m.get("type") == "alignment"]
+    return {"label": label, "speaker": speaker, "expected": expected, "heard": heard, "events": events}
+
+
+async def run_meeting(deck: Deck, lines: dict[str, bytes]) -> dict:
+    """The run of show of talks/rollout-review, live: see the module docstring."""
+    deck.auto_play = True  # should the backup step in (a narration that failed), it plays out by itself
+    out: dict = {"turns": [], "room": [], "phase_button": False}
+    print("1. opening (Alice)")
+    out["turns"].append(await meeting_turn(deck, lines["opening"], "opening", "set_presentation_state"))
+    print(f"2. the talking points, up to {INTERRUPT_AT}")
+    current = await deck.until(lambda m: narration_start()(m) and deck.narrations.get(m["reply"], {}).get("point")
+                               == INTERRUPT_AT, f"the narration of {INTERRUPT_AT}", 0, RUN_TO_QA_S)
+    await deck.into(current["reply"], CUT_AFTER_S)
+    played = deck.played_ms(current["reply"])
+    print(f"3. Alice's question, {played} ms into {INTERRUPT_AT}")
+    mark = deck.mark()
+    question = await meeting_turn(deck, lines["question"], "question", "set_presentation_state",
+                                  reply=current["reply"], played=played)
+    question["lookup_by_model"] = ("lookup_evidence", "applied") in question["tools"]
+    out["turns"].append(question)
+    resumed = await deck.until(narration_start(after=current["reply"]), "the presentation resumes", mark, 60)
+    out["resumed_at"] = deck.narrations[resumed["reply"]]["point"]
+    clarified = [m for m in inbound(deck, mark) if m.get("type") == "meeting" and m.get("clarifications")]
+    out["clarification"] = clarified[-1]["clarifications"][0] if clarified else None
+    print("4. the rest of the presentation, the hand-over")
+    await wait_state(deck, "ROOM", RUN_TO_QA_S)
+    print("5. the discussion")
+    mark = deck.mark()
+    for key in ("alice", "bob", "carol_confirm"):
+        _, speaker, text = MEETING_LINES[key]
+        mark = deck.mark()  # (the intervention follows the last of these lines)
+        out["room"].append(await room_line(deck, lines[key], speaker, key, text))
+    try:
+        spoke = await deck.until(lambda m: m.get("type") == "reply_start" and m.get("kind") == "intervention",
+                                 "the intervention", mark, 20)
+        await deck.until(lambda m: m.get("type") == "reply_end" and m.get("reply") == spoke["reply"],
+                         "the intervention's audio", mark, 30)
+        got = inbound(deck, mark)
+        out["intervention"] = {
+            "said": [m["text"] for m in got if m.get("type") == "caption" and m.get("final")
+                     and m.get("reply") == spoke["reply"]][-1:],
+            "evidence": [[r["source_id"] for r in m["lookup"]["results"]] for m in got
+                         if m.get("type") == "evidence" and m["lookup"]["by"] == "engine"][-1:]}
+    except AssertionError as exc:
+        print(f"  !! {exc}")
+        out["intervention"] = None
+    _, speaker, text = MEETING_LINES["carol_fix"]
+    mark = deck.mark()
+    out["room"].append(await room_line(deck, lines["carol_fix"], speaker, "carol_fix", text))
+    try:
+        saved = await deck.until(lambda m: m.get("type") == "meeting" and m.get("decisions"), "the decision",
+                                 mark, 30)
+        out["decision"] = saved["decisions"][0]
+    except AssertionError as exc:
+        print(f"  !! {exc}")
+        out["decision"] = None
+    print("6. wrap-up (Alice)")
+    await wait_state(deck, "ROOM", 60)
+    await asyncio.sleep(ROOM_PAUSE_S)
+    out["turns"].append(await meeting_turn(deck, lines["wrapup"], "wrapup", "set_presentation_state"))
+    mark = deck.mark()
+    try:
+        await deck.until(lambda m: m.get("type") == "reply_start" and m.get("kind") == "summary", "the summary", 0, 10)
+    except AssertionError:
+        print("  !! no wrap-up from the question: pressing the phase button (disclosed fallback)")
+        out["phase_button"] = True
+        await deck.key("phase")
+    await deck.until(lambda m: m.get("type") == "state" and m.get("banner") == "Meeting wrapped up",
+                     "wrapped up", mark, 60)
+    summaries = [m for m in inbound(deck, 0) if m.get("type") == "meeting" and m.get("phase") == "wrapup"]
+    out["notes"] = summaries[-1].get("notes") if summaries else None
+    out["summary"] = answer_texts(deck, inbound(deck, mark))[-1:]
+    return out
+
+
+def meeting_report(summary: dict) -> bool:
+    """Print the meeting's summary; True when the run of show went as the brief wants it."""
+    print("\nsummary (meeting):")
+    for r in summary["turns"]:
+        cut = f" cut in {r['cut_at_ms']} ms into the narration" if r["cut_at_ms"] is not None else ""
+        print(f"  {'ok ' if r['ok'] else 'MISS'} {r['label']:<9} expected {r['expected']:<22} by {r['by']:<8} "
+              f"tools {r['tools']} latency {r['latency_ms']}{cut}\n       heard {r['heard']}\n       said  {r['said']}"
+              f"\n       evidence {r['evidence']}")
+    question = next((r for r in summary["turns"] if r["label"] == "question"), {})
+    checks = {
+        "the question went through lookup_evidence": bool(question.get("lookup_by_model")),
+        f"resumed at {INTERRUPT_AT}": summary.get("resumed_at") == INTERRUPT_AT,
+        "a clarification was recorded": summary.get("clarification") is not None,
+        "the facilitator spoke up at the confirmation": summary.get("intervention") is not None,
+        "a decision with owner Bob": bool(summary.get("decision")) and summary["decision"].get("owner") == "Bob",
+        "the wrap-up came from the question (no button)": not summary.get("phase_button"),
+    }
+    for line in summary["room"]:
+        print(f"  room {line['label']:<13} {line['speaker']:<5} events {line['events']}\n       expected "
+              f"{line['expected']}\n       heard    {line['heard']}")
+    print(f"  clarification {summary.get('clarification')}")
+    print(f"  intervention  {summary.get('intervention')}")
+    print(f"  decision      {summary.get('decision')}")
+    print(f"  summary       {summary.get('summary')}")
+    for n in summary["narrations"]:
+        print(f"  narration {n['reply']:>2} {str(n['point']):<22} {n['audio_ms'] / 1000:5.1f} s"
+              f"{'  cut' if n['cut'] else ''}  {n['said'][:100]}")
+    for name, passed in checks.items():
+        print(f"  {'ok ' if passed else 'MISS'} {name}")
+    ok = all(r["ok"] for r in summary["turns"]) and all(checks.values())
+    if summary["backup_plays"]:
+        print(f"  MISS the backup narration played {summary['backup_plays']} chunk(s): a live narration failed")
+        ok = False
+    return ok
+
+
 async def run(port: int, talk: dict, lines: dict[str, bytes]) -> dict:
     async with websockets.connect(f"ws://127.0.0.1:{port}/ws", max_size=None) as ws:
         deck = Deck(ws, talk)
         hello = await deck.until(lambda m: m.get("type") == "hello", "the server's hello", 0, 10)
         mode = hello.get("narration_mode") or "rendered"
-        print(f"narration: {mode}")
+        meeting = hello.get("meeting")
+        print(f"narration: {mode}" + (f"; meeting: {meeting['title']}" if meeting else ""))
         await deck.send({"type": "hello", "client": "deck"})
         await deck.send({"type": "arm"})
         await deck.until(lambda m: m.get("type") == "connection" and m.get("status") == "ready", "Realtime ready", 0, 20)
-        turns = await (run_live(deck, lines) if mode == "live" else run_rendered(deck, talk, lines))
+        if meeting:
+            result = await run_meeting(deck, lines)
+        else:
+            result = {"turns": await (run_live(deck, lines) if mode == "live" else run_rendered(deck, talk, lines))}
         await asyncio.sleep(1.0)
         (OUT / "frames.jsonl").write_text("\n".join(json.dumps({"t": round(t, 3), "dir": d, **m})
                                                      for t, d, m in deck.log) + "\n")
         for reply, pcm in deck.audio.items():
             write_wav(OUT / f"reply_{reply}.wav", bytes(pcm))
-        return {"narration_mode": mode, "turns": turns, "narrations": deck.narration_report(),
+        return {"narration_mode": mode, "meeting": bool(meeting), **result, "narrations": deck.narration_report(),
                 "backup_plays": deck.backup_plays}
 
 
 def report(summary: dict) -> bool:
     """Print the summary; True when every turn ended as expected and no live narration needed the backup."""
+    if summary.get("meeting"):
+        return meeting_report(summary)
     print(f"\nsummary (narration {summary['narration_mode']}):")
     for r in summary["turns"]:
         cut = f" cut in {r['cut_at_ms']} ms into the narration" if r["cut_at_ms"] is not None else ""
@@ -399,7 +619,6 @@ def main() -> int:
     if not settings.api_key:
         print("BOSON_API_KEY missing in .env")
         return 2
-    lines = {key: tts_pcm(settings, voice, text) for key, (voice, text) in LINES.items()}
     port = args.port or free_port()
     command = [sys.executable, "-m", "relay", "serve", args.talk, "--port", str(port)]
     if args.narration:
@@ -417,6 +636,7 @@ def main() -> int:
                 time.sleep(0.2)
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/talk", timeout=5) as resp:
             talk = json.loads(resp.read())
+        lines = synthesize(settings, talk)
         summary = asyncio.run(run(port, talk, lines))
     except AssertionError as exc:
         print("FAIL:", exc)

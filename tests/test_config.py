@@ -64,3 +64,21 @@ def test_the_fake_accepts_both_realtime_models(model):
 
 def test_the_fake_still_rejects_unknown_models():
     assert check_session({"type": "realtime", "model": "whisper-1"}, first=True, url_model=None) is not None
+
+
+def test_turns_are_manual_by_default_and_server_vad_is_a_setting(clean_env):
+    """Contract v3: turn_detection null (the backend ends turns; it can't change mid-session); RELAY_TURN_DETECTION
+    brings server VAD back for the old path."""
+    assert config.DEFAULT_TURN_DETECTION is None
+    assert Settings().turn_detection is None and load_settings().turn_detection is None
+    assert Settings().session_turn_detection is None
+    clean_env.setenv("RELAY_TURN_DETECTION", '{"type": "semantic_vad", "silence_duration_ms": 700}')
+    settings = load_settings()
+    assert settings.turn_detection == config.VAD_TURN_DETECTION
+    assert settings.session_turn_detection == config.VAD_TURN_DETECTION
+    assert Settings(mic_mode="hold", turn_detection=dict(config.VAD_TURN_DETECTION)).session_turn_detection is None
+    clean_env.setenv("RELAY_TURN_DETECTION", "null")
+    assert load_settings().turn_detection is None
+    clean_env.setenv("RELAY_TURN_DETECTION", "[1]")
+    with pytest.raises(ValueError, match="RELAY_TURN_DETECTION must be a JSON object or null"):
+        load_settings()

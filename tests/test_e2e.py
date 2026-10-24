@@ -25,7 +25,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from relay import controller as controller_module
-from relay.config import ROOT, Settings
+from relay.config import ROOT, VAD_TURN_DETECTION, Settings
 from relay.controller import SUMMARY_PREFIX
 from relay.fake_realtime import FAKE_TRANSCRIPT, FakeConnector
 from relay.render import render_talk
@@ -129,12 +129,16 @@ def tool_applied(name: str):
 
 @asynccontextmanager
 async def running_app(tmp_path, connector: FakeConnector, *, talk_dir: Path = TALK_DIR, rendered: bool = False,
-                      narration: str = "rendered"):
+                      narration: str = "rendered", turn_detection: dict | None = VAD_TURN_DETECTION):
     """Real uvicorn on an ephemeral port. Narration: synthetic timings without audio, or (`rendered`) the renders in
-    `tmp_path/talks/<id>/`, loaded like `relay serve` loads them; presented live with `narration="live"`."""
+    `tmp_path/talks/<id>/`, loaded like `relay serve` loads them; presented live with `narration="live"`. Turns:
+    server VAD (the fake's speech events), the path these runs were written for; `turn_detection=None` = manual
+    turns (the default since contract v3: the backend's segmenter ends a turn)."""
     talk = load_talk(talk_dir)
-    app = create_app(talk_dir, Settings(fake_realtime=True, narration=narration), out_root=tmp_path,
-                     connect=connector, chunks=None if rendered else synthetic_chunks(talk))
+    settings = Settings(fake_realtime=True, narration=narration,
+                        turn_detection=dict(turn_detection) if turn_detection is not None else None)
+    app = create_app(talk_dir, settings, out_root=tmp_path, connect=connector,
+                     chunks=None if rendered else synthetic_chunks(talk))
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="on"))
     task = asyncio.create_task(server.serve())
     for _ in range(200):
@@ -209,11 +213,19 @@ def is_narration_request(event: dict) -> bool:
     return ((event.get("response") or {}).get("metadata") or {}).get("relay") == "narration"
 
 
+def brings_own_instructions(event: dict) -> bool:
+    """A narration request, or (a meeting) a follow-up after a tool round trip or one of the facilitator's own
+    responses: tagged, with per-response instructions (a follow-up answers a tool output on purpose)."""
+    response = event.get("response") or {}
+    return (response.get("metadata") or {}).get("relay") in (
+        "narration", "followup", "intervention", "decision", "handover", "summary") and bool(response.get("instructions"))
+
+
 def check_tool_outputs(connector: FakeConnector) -> None:
     """Design §5.2 / D6, per Realtime session: every function_call the server announced got exactly one
     function_call_output (a JSON string), and an output is never followed by response.create unless a new user item
-    (a question or a commit, not the reconnect summary) came in between, or it is a live narration request (it
-    carries its own instructions)."""
+    (a question or a commit, not the reconnect summary) came in between, or it is a request with its own
+    instructions (a live narration; a meeting's follow-up or facilitator response)."""
     for number, conn in enumerate(connector.connections, 1):
         announced = sorted(item["call_id"] for item in conn._items.values() if item.get("type") == "function_call")
         outputs = [event["item"] for event in conn.received if event["type"] == "conversation.item.create"
@@ -229,7 +241,7 @@ def check_tool_outputs(connector: FakeConnector) -> None:
                 armed = item["content"][0]["text"].startswith(SUMMARY_PREFIX)
             elif event["type"] == "input_audio_buffer.commit":
                 armed = False
-            elif event["type"] == "response.create" and not is_narration_request(event):
+            elif event["type"] == "response.create" and not brings_own_instructions(event):
                 assert not armed, f"session {number}: response.create right after a function_call_output"
 
 
@@ -658,3 +670,148 @@ async def test_live_narration_end_to_end(tmp_path):
     assert [e["slide"] for e in entries if e["kind"] == "narration_start"] == ["how", "how", "qa"]
     assert [e["played_ms"] for e in entries if e["kind"] == "narration_cut"] == [1000]
     assert not any(e["kind"] == "narration_failed" for e in entries)
+
+
+# --- On the Same Page: a whole meeting (contract v3) ------------------------------------------------------------
+
+SILENCE = FRAME
+
+
+def state_is(state: str, **fields):
+    return lambda m: m.get("type") == "state" and m.get("state") == state and all(m.get(k) == v
+                                                                                    for k, v in fields.items())
+
+
+async def meeting_run(deck: Deck, connector: FakeConnector, question: str, *, talk_dir: Path) -> None:
+    """The whole meeting from the deck's side: presentation with a spoken interruption, the room (typed lines),
+    the intervention, the decision, the wrap-up and a restart."""
+    from tests.test_meeting_flow import BOB_LINE, CAROL_CONFIRM, CAROL_FIX, TONE
+
+    deck.auto_speak = False  # it speaks below, with a voice the segmenter can hear
+    deck.hold_narration = True
+    hello = next(m for m in deck.log if m.get("type") == "hello")
+    assert hello["meeting"]["title"] == "Release 4.3 rollout review"
+    link = connector.connections[-1]
+    assert link.session["audio"]["input"]["turn_detection"] is None  # manual turns for the whole meeting
+    assert "lookup_evidence" in [tool["name"] for tool in link.session["tools"]]
+
+    # 1. The presentation: one talking point per narration; Alice interrupts the first one, by voice.
+    mark = deck.mark()
+    await deck.key("relay")
+    shown = await deck.until(is_type("slide", slide="plan"), "the plan slide", mark)
+    assert shown["fragment"] == 1
+    first = await deck.until(is_type("reply_start", kind="narration"), "the friday-beta talking point", mark)
+    await deck.until(is_type("reply_end", reply=first["reply"]), "its audio is in", mark)
+    mark = deck.mark()
+    await deck.key("space", reply=first["reply"], played=1000)
+    await deck.until(is_type("mic", open=True), "the mic opens", mark)
+    for frame in [TONE] * 5 + [SILENCE] * 9:  # half a second of voice, then silence: the segmenter ends the turn
+        await deck.send({"type": "mic", "pcm": frame})
+    await deck.until(is_type("mic", open=False), "the turn ended by itself", mark)
+    heard = await deck.until(lambda m: m.get("type") == "caption" and m.get("role") == "user", "the transcript", mark)
+    assert heard["text"] == question
+    evidence = await deck.until(is_type("evidence"), "the facilitator looked it up", mark)
+    assert (evidence["lookup"]["query"], evidence["lookup"]["by"]) == (question, "model")
+    source = evidence["lookup"]["results"][0]["source_id"]
+    answer = await deck.until(lambda m: m.get("type") == "caption" and m.get("role") == "assistant" and m.get("final")
+                              and "From the documents" in (m.get("text") or ""), "the answer", mark)
+    assert f"[{source}]" in answer["text"]
+    await deck.until(tool_applied("set_presentation_state"), "resume applied", mark)
+    clarified = await deck.until(lambda m: m.get("type") == "meeting" and m.get("clarifications"), "clarified", mark)
+    assert (clarified["clarifications"][0]["question"], clarified["clarifications"][0]["by"]) == (question, "auto")
+    resumed = await deck.until(lambda m: is_type("reply_start", kind="narration")(m) and m["reply"] > first["reply"],
+                               "the talking point resumes", mark)
+    request = [e for e in link.received if is_narration_request(e)][-1]["response"]
+    assert request["metadata"]["talking_point"] == "friday-beta"
+    assert 'Start with a short bridge like "As I was saying"' in request["instructions"]
+
+    # 2. The rest of the presentation, then the hand-over and the room.
+    current = resumed
+    points = [chunk.id for slide in load_talk(talk_dir).relay_slides for chunk in slide.chunks]
+    assert points[0] == "friday-beta"
+    for point in points[1:]:
+        await deck.until(is_type("reply_end", reply=current["reply"]), f"before {point}")
+        mark = deck.mark()
+        await deck.drain(current["reply"])
+        current = await deck.until(is_type("reply_start", kind="narration"), point, mark)
+        assert [e for e in link.received if is_narration_request(e)][-1]["response"]["metadata"]["talking_point"] \
+            == point
+    await deck.until(is_type("reply_end", reply=current["reply"]), "the last point's audio")
+    mark = deck.mark()
+    await deck.drain(current["reply"])
+    await deck.until(is_type("reply_start", kind="handover"), "the hand-over", mark)
+    await deck.until(state_is("ROOM", agenda_phase="discussion"), "listening to the room", mark)
+
+    # 3. The discussion (typed lines): silent at the conflict, speaking up at the confirmation.
+    mark = deck.mark()
+    for speaker, line in (("Bob", BOB_LINE), ("Carol", CAROL_CONFIRM)):
+        await deck.send({"type": "speaker", "name": speaker})
+        await deck.send({"type": "typed", "text": line, "at": None, "reply": None, "reply_played_ms": None})
+    await deck.until(lambda m: m.get("type") == "alignment" and m["event"]["type"] == "intervene", "the gate", mark)
+    await deck.until(lambda m: m.get("type") == "evidence" and m["lookup"]["by"] == "engine", "its evidence", mark)
+    spoke = await deck.until(is_type("reply_start", kind="intervention"), "the intervention", mark)
+    await deck.until(is_type("reply_end", reply=spoke["reply"]), "its audio", mark)
+    await deck.until(state_is("ROOM"), "listening again", deck.mark() - 1)
+    lines = [m["utterance"]["text"] for m in deck.log if m.get("type") == "transcript"]
+    assert lines == [BOB_LINE, CAROL_CONFIRM]
+    mark = deck.mark()
+    await deck.send({"type": "typed", "text": CAROL_FIX, "at": None, "reply": None, "reply_played_ms": None})
+    await deck.until(is_type("reply_start", kind="decision"), "the decision", mark)
+    await deck.until(tool_applied("save_decision"), "save_decision validated and applied", mark)
+    saved = await deck.until(lambda m: m.get("type") == "meeting" and m.get("decisions"), "the notes", mark)
+    assert (saved["decisions"][0]["owner"], saved["decisions"][0]["by"]) == ("Bob", "model")
+    await deck.until(state_is("ROOM"), "listening again", mark)
+
+    # 4. The wrap-up.
+    mark = deck.mark()
+    await deck.key("phase")
+    notes = await deck.until(lambda m: m.get("type") == "meeting" and m.get("phase") == "wrapup", "wrap-up", mark)
+    assert notes["notes"]["decisions"][0]["owner"] == "Bob"
+    await deck.until(is_type("reply_start", kind="summary"), "the summary", mark)
+    await deck.until(state_is("IDLE", banner="Meeting wrapped up"), "wrapped up", mark)
+    check_tool_outputs(connector)
+
+    # 5. Restart: a fresh session and an empty meeting.
+    mark = deck.mark()
+    sessions = len(connector.connections)
+    await deck.key("reset")
+    await deck.until(lambda m: m.get("type") == "connection" and m.get("status") == "reconnecting", "restarting", mark)
+    await deck.until(lambda m: m.get("type") == "connection" and m.get("status") == "ready", "a fresh session", mark)
+    assert len(connector.connections) == sessions + 1
+    fresh = await deck.until(lambda m: m.get("type") == "meeting" and m.get("phase") == "presentation", "reset", mark)
+    assert fresh["decisions"] == [] and fresh["clarifications"] == []
+    assert not [e for e in connector.connections[-1].received if e["type"] == "conversation.item.create"]
+
+
+async def test_a_meeting_end_to_end(tmp_path):
+    """On the Same Page over the real stack (uvicorn, server, controller, RealtimeLink, the fake Realtime): the
+    brief's two milestones in one session, then a restart."""
+    from tests.test_meeting_flow import write_meeting
+
+    talk_dir = write_meeting(tmp_path / "talks" / "meeting")
+    question = "Is Friday beta or production?"
+    connector = FakeConnector(think_s=0.05, speed=50.0, transcripts=(question,))
+    async with running_app(tmp_path, connector, talk_dir=talk_dir, narration="live", turn_detection=None) as \
+            (app, port), armed_deck(port) as deck:
+        await meeting_run(deck, connector, question, talk_dir=talk_dir)
+    entries = [json.loads(line) for path in sorted((tmp_path / "logs").glob("meeting-*.jsonl"))
+               for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [e["n"] for e in entries if e["kind"] == "followup"] == [1]
+    assert not any(e["kind"] in ("narration_failed", "controller_error") for e in entries)
+
+
+DEMO_DIR = ROOT / "talks" / "rollout-review"
+
+
+@pytest.mark.skipif(not (DEMO_DIR / "agenda.yaml").is_file(), reason="the demo meeting is not there")
+async def test_the_demo_meeting_end_to_end(tmp_path):
+    """The same run over the demo package (talks/rollout-review, synthetic timings) with the brief's §3 lines and
+    the run of show's question."""
+    question = "Wait, I thought Friday was production. Which one is it?"
+    connector = FakeConnector(think_s=0.05, speed=50.0, transcripts=(question,))
+    async with running_app(tmp_path, connector, talk_dir=DEMO_DIR, narration="live", turn_detection=None) as \
+            (app, port), armed_deck(port) as deck:
+        await meeting_run(deck, connector, question, talk_dir=DEMO_DIR)
+    entries = [json.loads(line) for path in sorted((tmp_path / "logs").glob("rollout-review-*.jsonl"))
+               for line in path.read_text(encoding="utf-8").splitlines()]
+    assert not any(e["kind"] in ("narration_failed", "controller_error") for e in entries)

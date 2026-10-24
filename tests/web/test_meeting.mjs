@@ -92,6 +92,17 @@ async function run() {
   eq("Relay tile before anything: waiting for the presenter", status(), "Waiting for Ken");
   eq("live badge before the server says", [$(".live-badge").dataset.status, $(".live-text").textContent], ["offline", "Higgs Realtime offline"]);
   eq("speaker labels on the captions", [$(".cap-live .cap-speaker").textContent, $(".cap-narration .cap-speaker").textContent, $(".cap-user .cap-speaker").textContent], ["Relay", "Relay", "You"]);
+
+  // ---- a talk without a meeting looks exactly as before On the Same Page (contract v3 §7)
+  eq("plain talk: Relay's names", [$(".brand-name").textContent, $(".tile-relay .name").textContent, $(".tile-relay .role").textContent, $(".viewing-text").textContent, $(".tile-you .name").textContent], ["Relay", "Relay", "AI co-presenter", "You are viewing Relay's screen", "You"]);
+  eq("…Relay in the menu, the keys and the left card", [...doc.querySelectorAll(".ai-name"), ...doc.querySelectorAll(".ai-name-cap")].map((e) => e.textContent), ["Relay", "Relay", "Relay", "Relay", "Relay", "Relay"]);
+  eq(
+    "…no agenda strip, tabs, callout, speaker picker or Restart meeting",
+    [$(".agenda").hidden, $(".tabs").hidden, $(".callout").hidden, $(".speakers").hidden, $(".menu-reset").hidden, $(".meeting").classList.contains("has-agenda")],
+    [true, true, true, true, true, false],
+  );
+  eq("…the chat is the chat", [$(".chat").hidden, $(".chat-title").hidden, $(".chat-log").hidden, $(".chat-button .tb-label").textContent, $(".chat-input").getAttribute("placeholder")], [true, false, false, "Chat", "Ask Relay a question…"]);
+  eq("…the typed box asks Relay", [$(".typed-label").textContent, $(".typed-input").getAttribute("placeholder")], ["Ask Relay", "Type a question · Enter sends · Esc cancels"]);
   $(".mic-button").fire("click");
   eq("mic button before joining: no key", sent("key").length, 0);
   check("…the join dialog is what it shows", !$(".overlay").hidden);
@@ -396,6 +407,20 @@ async function run() {
   talk(1300);
   check("…but on the Q&A slide, waiting for a question: the hint", !$(".tile-hint").hidden);
   state("IDLE", { phase: "presenting" });
+
+  // ---- a plain talk ignores the meeting's messages (an odd server): nothing shows, nothing breaks
+  const before = doc.querySelectorAll(".chat-line").length;
+  server({ type: "meeting", phase: "discussion", decisions: [{ id: "D1", decision: "x", owner: "Bob" }] });
+  server({ type: "evidence", lookup: { id: "E1", query: "q", results: [{ source_id: "REQ-1", excerpt: "x" }] } });
+  server({ type: "transcript", utterance: { id: "U1", text: "hello", speaker: null } });
+  server({ type: "alignment", event: { id: "AL1", type: "intervene", utterance_id: "U1" } });
+  server({ type: "reply_start", reply: 40, kind: "intervention" });
+  eq(
+    "plain talk: the meeting's messages change nothing",
+    [$(".agenda").hidden, $(".callout").hidden, [".lookup", ".utt", ".align-card", ".note"].reduce((n, sel) => n + doc.querySelectorAll(sel).length, 0), doc.querySelectorAll(".chat-line").length, $(".tabs").hidden],
+    [true, true, 0, before, true],
+  );
+  server({ type: "reply_flush", reply: 40 });
 
   // ---- our own server drops: the topbar says so
   sock().drop(1006);

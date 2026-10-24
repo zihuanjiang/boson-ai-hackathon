@@ -5,6 +5,7 @@ Chrome can't start inside Claude Code's sandbox, so run this yourself (the `!` p
     ! uv run --with playwright python scripts/e2e_chrome.py                         # live narration, headless, ~1 min
     ! uv run --with playwright python scripts/e2e_chrome.py --headed                # watch it happen
     ! uv run --with playwright python scripts/e2e_chrome.py --narration rendered    # the pre-rendered narration flow
+    ! uv run --with playwright python scripts/e2e_chrome.py --talk talks/rollout-review   # On the Same Page, ~2 min
 
 Flow (brief §12 on talks/test): fake-render (the backup) → `python -m relay serve talks/test --fake-realtime
 --narration <mode>` on a free port → open the meeting with a fake microphone → Join with Computer Audio → tap Space on
@@ -14,10 +15,23 @@ the title slide (opening turn → start_presentation) → then, by mode:
     carries on presenting the same slide live (a new narration reply) → … slide by slide to the Q&A slide;
   rendered: narration from the renders (`play`) → tap mid-sentence (cut → reply → resume_script → resume from the
     sentence start) → narration reaches the Q&A slide;
-then tap on the Q&A slide (question → handoff_to_human). Asserts on deck-socket frames and on the meeting window
-(Relay's tile status, no scrollbars, the slides 16:9), and fails on any console error. Artifacts in out/e2e/:
-server.log, frames.jsonl, console.log, and screenshots of each stage (overlay, armed, narrating, live, qa, final;
-fail.png when a step fails) for checking the layout.
+then tap on the Q&A slide (question → handoff_to_human).
+
+A meeting talk (one with agenda.yaml, e.g. talks/rollout-review: On the Same Page, brief_updated §3/§13; live
+narration only) runs the meeting instead: the window's names and agenda strip → Join → tap Space on the agenda slide
+(the opening; set_presentation_state start) → the facilitator presents a talking point live (checkpoint on screen) →
+a question typed mid-presentation ("Wait, I thought Friday was production…") → a lookup_evidence round trip: the
+`evidence` frame, its card in the Evidence tab and the callout over the share (source id + excerpt) → the answer →
+the presentation resumes → the phase button (Start discussion) → the hand-over → listening to the room (the room mic
+streams, then is muted here) → the brief §3 lines typed with the speaker picker (Alice, Bob, Carol) → claim chips and
+Bob's two conflicts, no reply → Carol's confirmation → the intervention: the alignment card (asked) and its evidence →
+Carol's correction → resolved, a save_decision, the decision with owner Bob in the Notes → Wrap up → the summary and
+the meeting notes.
+
+Asserts on deck-socket frames and on the meeting window (the AI's tile status, no scrollbars, the slides 16:9), and
+fails on any console error. Artifacts in out/e2e/: server.log, frames.jsonl, console.log, and screenshots of each stage
+(overlay, armed, narrating, live, qa, final; the meeting: m-presenting, m-evidence, m-discussion, m-intervention,
+m-decision, m-notes; fail.png when a step fails) for checking the layout.
 """
 
 from __future__ import annotations
@@ -37,6 +51,15 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "out" / "e2e"
 QUIET = {("out", "mic"), ("in", "reply_audio")}  # high-volume audio frames: counted, not stored
 JOIN = "Join with Computer Audio"
+
+# The meeting (brief_updated §3): the interruption, then the discussion lines and who says them.
+QUESTION = "Wait, I thought Friday was production. Which one is it?"
+DISCUSSION = [
+    ("Alice", "Production is next Wednesday, right?"),
+    ("Bob", "I'll draft the announcement for Friday's production launch to all customers."),
+    ("Carol", "Sounds good. Let's finalize that."),
+]
+CORRECTION = ("Carol", "Yes, beta users only. Bob owns the announcement.")
 
 
 def free_port() -> int:
@@ -129,6 +152,25 @@ def tool_ran(name: str):
     return lambda m: m.get("type") == "tool" and m.get("name") == name and m.get("status") in ("applied", "auto")
 
 
+def is_kind(kind: str):
+    """A reply_start of exactly this kind (a meeting: narration, answer, handover, intervention, decision, summary)."""
+    return lambda m: m.get("type") == "reply_start" and m.get("kind") == kind
+
+
+def is_state(**fields):
+    return lambda m: m.get("type") == "state" and all(m.get(k) == v for k, v in fields.items())
+
+
+def alignment(kind: str):
+    """An `alignment` frame whose event is of this type (claim, conflict, intervene, suggestion, resolved, …)."""
+    return lambda m: m.get("type") == "alignment" and (m.get("event") or {}).get("type") == kind
+
+
+def utterance_of(text: str):
+    """The `transcript` frame of a line of the discussion."""
+    return lambda m: m.get("type") == "transcript" and (m.get("utterance") or {}).get("text") == text
+
+
 # The meeting window in real Chrome: no scrollbars, the slides a visible 16:9 box inside the shared screen.
 LAYOUT_JS = """() => {
   const doc = document.documentElement;
@@ -145,12 +187,13 @@ LAYOUT_JS = """() => {
 
 
 class Run:
-    """One Chrome run against one server: the shared steps, and the two narration flows."""
+    """One Chrome run against one server: the shared steps, the two narration flows, and the meeting."""
 
     def __init__(self, page, frames: Frames, problems: list[str], talk: dict) -> None:
         self.page, self.frames, self.problems = page, frames, problems
         relay = [s for s in talk["slides"] if s["speaker"] == "relay"]
         self.first = relay[0]["id"]  # the first slide Relay presents
+        self.meeting = talk.get("meeting")  # On the Same Page: the agenda, participants and documents (else None)
 
     async def shot(self, name: str) -> None:
         await self.page.screenshot(path=str(OUT / f"{name}.png"))
@@ -192,8 +235,188 @@ class Run:
         mic = await frames.wait("in", is_type("mic", open=True), "mic opened", 5, mark)
         print(f"  tap → mic open {1000 * (frames.at(mic) - frames.at(key)):.0f} ms (socket round trip)")
         await frames.wait("in", is_reply_start("answer"), "opening reply started", 20, mark)
-        await frames.wait("in", tool_ran("start_presentation"), "start_presentation applied", 25, mark)
+        start = "set_presentation_state" if self.meeting else "start_presentation"
+        await frames.wait("in", tool_ran(start), f"{start} applied", 25, mark)
         return mark
+
+    # ---- the meeting (On the Same Page)
+
+    async def text_of(self, selector: str) -> str:
+        """The first match's text, whitespace collapsed ("" when nothing matches); hidden panes work too."""
+        loc = self.page.locator(selector)
+        if not await loc.count():
+            return ""
+        return " ".join((await loc.first.text_content() or "").split())
+
+    async def expect_text(self, selector: str, want: str, *, contains: bool = False) -> None:
+        got = await self.text_of(selector)
+        if (want not in got) if contains else (got != want):
+            self.problems.append(f"{selector} says {got!r}, expected {'…' + want + '…' if contains else repr(want)}")
+
+    async def expect_visible(self, selector: str, what: str) -> None:
+        loc = self.page.locator(selector)
+        if not await loc.count() or not await loc.first.is_visible():
+            self.problems.append(f"{what} ({selector}) is not on screen")
+
+    async def expect_tab(self, tab: str) -> None:
+        selected = await self.page.locator(f'.tab[data-tab="{tab}"]').get_attribute("aria-selected")
+        if selected != "true":
+            self.problems.append(f"the side panel should show the {tab} tab")
+
+    async def type_line(self, text: str) -> None:
+        """T opens the typed box; Enter sends (a question to the facilitator, or in the discussion a line of the room)."""
+        await self.page.keyboard.press("t")
+        await self.page.locator(".typed-input").fill(text)
+        await self.page.keyboard.press("Enter")
+
+    async def say_as(self, who: str, line: str) -> None:
+        """Pick the speaker, then type their line: the `typed` frame carries the speaker."""
+        frames = self.frames
+        mark = len(frames.items)
+        await self.page.get_by_role("radio", name=who, exact=True).click()
+        await frames.wait("out", lambda m: m.get("type") == "speaker" and m.get("name") == who, f"speaker {who}", 5, mark)
+        await self.type_line(line)
+        await frames.wait("out", lambda m: m.get("type") == "typed" and m.get("text") == line and m.get("speaker") == who,
+                          f"{who}'s line sent", 5, mark)
+
+    async def meeting_names(self) -> None:
+        """Before joining: the window is On the Same Page's, with the agenda strip and the facilitator's tile."""
+        await self.expect_text(".brand-name", "On the Same Page")
+        await self.expect_text(".tile-relay .name", "Facilitator")
+        await self.expect_visible(".agenda", "the agenda strip")
+        await self.expect_text(".phase-button", "Start discussion")
+        await self.expect_visible(".tabs", "the side panel's tabs")
+        await self.expect_text(".panel-title", self.meeting.get("title") or "")
+        statements = sum(len(d.get("statements") or []) for d in self.meeting.get("documents") or [])
+        if await self.page.locator(".docs-list .statement").count() != statements:
+            self.problems.append(f"the Documents list should show all {statements} statements")
+
+    async def meeting_flow(self, mark: int) -> None:
+        frames, page = self.frames, self.page
+        await frames.wait("in", is_kind("narration"), "the facilitator presents a talking point live", 30, mark)
+        cp = await frames.wait("in", lambda m: m.get("type") == "state" and m.get("state") == "NARRATING"
+                               and (m.get("checkpoint") or {}).get("talking_point_id"),
+                               "the checkpoint names the talking point", 10, mark)
+        point = frames.msg(cp)["checkpoint"]["talking_point_id"]
+        await asyncio.sleep(0.6)
+        await self.expect_text(".checkpoint-where", point, contains=True)
+        await self.expect_status("Presenting")
+        await self.layout("presenting")
+        await self.shot("m-presenting")
+
+        print("3. A question typed mid-presentation: lookup_evidence → the evidence on screen → answer → resume")
+        mark = len(frames.items)
+        await self.type_line(QUESTION)
+        await frames.wait("out", lambda m: m.get("type") == "typed" and m.get("text") == QUESTION,
+                          "deck sent the typed question", 5, mark)
+        ev = await frames.wait("in", is_type("evidence"), "an evidence lookup (lookup_evidence ran)", 20, mark)
+        results = (frames.msg(ev).get("lookup") or {}).get("results") or []
+        if not results:
+            self.problems.append("lookup_evidence found nothing for the Friday question")
+        await page.wait_for_selector(".lookup .src-chip", timeout=5_000)
+        await self.expect_visible(".callout", "the evidence callout")
+        if results:
+            await self.expect_text(".callout .src-chip", results[0]["source_id"])
+            await self.expect_text(".lookup .src-chip", results[0]["source_id"])
+        await self.expect_tab("evidence")
+        await self.shot("m-evidence")
+        resumed = await frames.wait("in", is_kind("narration"), "the presentation resumes", 30, ev)
+        answers = [m for _, d, m in frames.items[ev:resumed] if d == "in" and m.get("type") == "caption"
+                   and m.get("role") == "assistant" and m.get("final") and m.get("text")]
+        if not answers:
+            self.problems.append("no answer was spoken between the lookup and the resume")
+        await frames.wait("in", lambda m: m.get("type") == "meeting" and m.get("clarifications"),
+                          "the clarification is in the meeting state", 15, ev)
+
+        print("4. Start discussion: the hand-over, then the facilitator listens to the room")
+        mark = len(frames.items)
+        await page.locator(".phase-button").click()
+        await frames.wait("out", is_type("key", key="phase"), "deck sent key phase", 5, mark)
+        await frames.wait("in", is_kind("handover"), "the hand-over", 20, mark)
+        await frames.wait("in", is_state(state="ROOM", agenda_phase="discussion"), "listening to the room", 30, mark)
+        await frames.wait("in", is_type("mic", open=True), "the room mic is open", 10, mark)
+        await asyncio.sleep(1.0)
+        await self.expect_text(".phase-button", "Wrap up")
+        await self.expect_status("Listening to the room")
+        await self.expect_text(".mic-button .tb-label", "Room mic on")
+        await self.expect_tab("transcript")
+        await self.expect_visible(".speakers", "the speaker picker")
+        before = frames.counts.get("out:mic", 0)
+        await asyncio.sleep(0.6)
+        if frames.counts.get("out:mic", 0) <= before:
+            self.problems.append("the room mic sends no frames in the discussion")
+        await page.locator(".mic-button").click()  # muted here: the fake mic's tone must not become utterances
+        await self.expect_text(".mic-button .tb-label", "Room mic off")
+        await asyncio.sleep(0.3)
+        muted = frames.counts.get("out:mic", 0)
+        await asyncio.sleep(0.8)
+        if frames.counts.get("out:mic", 0) != muted:
+            self.problems.append("the room mic, muted here, still sends frames")
+        await self.layout("discussion")
+        await self.shot("m-discussion")
+
+        print("5. The discussion (brief §3): Alice asks, Bob claims, Carol confirms → the facilitator speaks up")
+        first = len(frames.items)
+        confirm = first
+        for who, line in DISCUSSION:
+            mark = len(frames.items)
+            confirm = mark
+            await self.say_as(who, line)
+            await frames.wait("in", utterance_of(line), f"{who}'s line in the transcript", 10, mark)
+            if who == "Bob":
+                await frames.wait("in", alignment("conflict"), "Bob's line conflicts with the sources", 5, mark)
+                await asyncio.sleep(0.5)
+        early = frames.find("in", lambda m: m.get("type") == "reply_start", first)
+        if early is not None and early < confirm:
+            self.problems.append("the facilitator spoke before the group confirmed anything (silent by default)")
+        await frames.wait("in", alignment("intervene"), "the gate: intervene before it is confirmed", 10, confirm)
+        await frames.wait("in", lambda m: m.get("type") == "evidence"
+                          and (m.get("lookup") or {}).get("purpose") == "intervention",
+                          "the intervention's evidence", 10, confirm)
+        asked = await frames.wait("in", is_kind("intervention"), "the facilitator speaks up", 20, confirm)
+        await asyncio.sleep(0.5)
+        card = '.align-card[data-kind="intervention"]'
+        await self.expect_visible(card, "the alignment card")
+        await self.expect_text(f"{card} .align-status", "Asked")
+        await self.expect_text(f"{card} .align-heard .align-quote", DISCUSSION[1][1], contains=True)
+        if await page.locator(f"{card} .align-ref .src-chip").count() < 1:
+            self.problems.append("the alignment card cites no source")
+        await self.expect_visible('.callout[data-kind="intervention"]', "the intervention's evidence callout")
+        await self.expect_status("Speaking up")
+        await self.layout("intervention")
+        await self.shot("m-intervention")
+        await frames.wait("out", is_type("reply_drained", reply=frames.msg(asked).get("reply")),
+                          "the intervention played to its end", 30, asked)
+        await frames.wait("in", is_state(state="ROOM"), "back to listening to the room", 10, asked)
+
+        print("6. Carol corrects it: resolved → save_decision → the decision and its owner in the notes")
+        mark = len(frames.items)
+        await self.say_as(*CORRECTION)
+        await frames.wait("in", alignment("resolved"), "the conflict is resolved", 10, mark)
+        await frames.wait("in", is_kind("decision"), "the facilitator confirms the decision", 20, mark)
+        await frames.wait("in", lambda m: m.get("type") == "meeting"
+                          and any(d.get("owner") == "Bob" for d in m.get("decisions") or []),
+                          "a decision owned by Bob in the meeting state", 20, mark)
+        await asyncio.sleep(0.4)
+        await self.expect_text(f"{card} .align-status", "Resolved")
+        await page.locator('.tab[data-tab="notes"]').click()
+        await self.expect_text('.notes-pane [data-section="decisions"] .owner-chip', "Owner: Bob")
+        await self.layout("decision")
+        await self.shot("m-decision")
+
+        print("7. Wrap up: the summary and the meeting notes")
+        mark = len(frames.items)
+        await page.locator(".phase-button").click()
+        await frames.wait("out", is_type("key", key="phase"), "deck sent key phase", 5, mark)
+        await frames.wait("in", is_kind("summary"), "the summary", 20, mark)
+        await frames.wait("in", lambda m: m.get("type") == "meeting" and m.get("phase") == "wrapup" and m.get("notes"),
+                          "the meeting notes", 20, mark)
+        await asyncio.sleep(0.6)
+        await self.expect_tab("notes")
+        await self.expect_visible(".notes-head", "the Meeting notes header")
+        await self.expect_text(".phase-button", "Done")
+        await self.layout("wrap-up")
+        await self.shot("m-notes")
 
     async def live_flow(self, mark: int) -> int:
         frames, first = self.frames, self.first
@@ -324,14 +547,19 @@ async def run(port: int, headed: bool, narration: str) -> list[str]:
             print(f"  [{frames.now():6.2f}s] page loaded")
             await frames.wait("in", is_type("hello"), "controller greeted the deck", 15)
             await asyncio.sleep(0.5)
+            if steps.meeting:
+                await steps.meeting_names()
             await steps.shot("overlay")
             await steps.join()
             mark = await steps.opening()
-            if narration == "live":
+            if steps.meeting:
+                await steps.meeting_flow(mark)
+            elif narration == "live":
                 await steps.live_flow(mark)
             else:
                 await steps.rendered_flow(mark)
-            await steps.qa()
+            if not steps.meeting:
+                await steps.qa()
         except Exception as exc:  # keep the evidence, then report
             problems.append(f"{type(exc).__name__}: {exc}")
             try:
@@ -369,9 +597,14 @@ def main() -> int:
         server = subprocess.Popen([sys.executable, "-m", "relay", "serve", args.talk, "--fake-realtime",
                                    "--narration", args.narration, "--port", str(port)],
                                   cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
+    meeting = False
     try:
         wait_http(f"http://127.0.0.1:{port}/healthz", 20)
         print(f"server on http://127.0.0.1:{port} (log: {OUT / 'server.log'}), narration {args.narration}")
+        meeting = bool(get_json(f"http://127.0.0.1:{port}/api/talk").get("meeting"))
+        if meeting and args.narration != "live":
+            print("a meeting talk runs with live narration only (the facilitator presents through Higgs Realtime)")
+            return 2
         problems = asyncio.run(run(port, args.headed, args.narration))
     finally:
         server.terminate()
@@ -385,7 +618,11 @@ def main() -> int:
         for problem in problems:
             print("  -", problem)
         return 1
-    if args.narration == "live":
+    if meeting:
+        print("PASS: the facilitator presents → a typed question → lookup_evidence on screen → resume → discussion → "
+              "silent until the confirmation → intervention with the alignment card → the corrected decision with "
+              "owner Bob in the notes → wrap-up, in Chrome")
+    elif args.narration == "live":
         print("PASS: Relay presents live → tap mid-narration → live answer → carries on presenting → Q&A handoff, "
               "in Chrome")
     else:
