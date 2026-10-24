@@ -61,6 +61,12 @@ Speak at a normal pace, close to your microphone; pause under about half a secon
 the line early — the backend ends an utterance after 0.7 s of silence). Don't talk over each other: the facilitator
 hears one mixed stream.
 
+**Zoom display names must be exactly the agenda's names** — `Alice`, `Bob`, `Carol` (rename yourself in Zoom before
+the demo: Participants → More → Rename). The bot reads the active speaker from Zoom's display and the backend labels a
+line only with a participant it knows from `agenda.yaml`; any other name, or no match, leaves the line unlabelled.
+The alignment check and the decision work without labels, but the Transcript and Notes read better with them (the
+decision's owner comes from the words "Bob owns…", not from who spoke).
+
 ## The run (about 3 minutes; re-time after the first rehearsal)
 
 | ~Time | What happens | The facilitator should (live) | Judges see on the shared screen |

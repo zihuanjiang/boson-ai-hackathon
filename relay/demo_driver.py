@@ -1,6 +1,11 @@
 """A scripted deck that runs a talk's demo script (demo.yaml) the way the page's Demo Audio Controller does (contract
 v3.1 §4), for tests/test_e2e.py and scripts/live_check.py. No browser: it speaks the deck protocol over the /ws socket.
 
+`Deck` is the protocol-speaking base every scripted deck shares (contract v5 §2: the Zoom bot's `ZoomDeck` in
+scripts/zoom_bot.py adds ears and a mouth to it): the socket reader, the replies and their position, the backup
+narration, the handshake, `until`, and the page's bookkeeping of what is audible. Where the audio actually goes is a
+hook: `DemoDeck` "plays" every reply on the wall clock, a subclass can hand it to a real player.
+
 - **Facilitator playback**: every reply (narration, answer, intervention, …) "plays" in real time from its first
   audio; once all of it has played after `reply_end`, `reply_drained` goes out (never for a flushed reply). Like the
   page's ReplyPlayer there is one current reply (the newest): from its `reply_start` until it drains or is flushed,
@@ -33,7 +38,7 @@ import io
 import json
 import time
 import wave
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 RATE = 24_000
@@ -46,6 +51,7 @@ QUIET_STATES = ("ROOM", "IDLE")  # a quiet_ms cue: the facilitator is not speaki
 PRESENTING = ("presenting", "resuming")  # a talking_point cue: the checkpoint statuses of presenting that point
 ACTION_KEYS = {"start": "relay", "phase": "phase"}
 FACILITATOR_KINDS = ("intervention", "decision", "summary", "handover")  # web/js/facilitator.js
+LOGGED_KINDS = ("barge_in", "reply_start", "tool", "evidence", "transcript", "error")
 
 
 def pcm_from_wav(body: bytes) -> bytes:
@@ -102,34 +108,30 @@ class StepResult:
         return {key: (round(value, 3) if isinstance(value, float) else value) for key, value in self.__dict__.items()}
 
 
-@dataclass
-class DemoDeck:
-    """The deck side of one demo run. `clips`: step id → PCM16 mono 24 kHz samples (the very bytes /clips serves)."""
+class Deck:
+    """The deck side of one socket: what the page knows (contract v3.1 §4, v5 §2), without a browser.
 
-    ws: Any
-    demo: dict
-    clips: dict[str, bytes]
-    talk: dict | None = None  # /api/talk (backup narration durations)
-    log: Callable[[str], None] | None = None
-    strict: bool = False
-    timeout_scale: float = 1.0
-    keep_audio: bool = False  # keep every reply's PCM in `audio` (the live check saves it)
-    audio: dict[int, bytearray] = field(default_factory=dict)
-    t0: float = field(default_factory=time.monotonic)
-    messages: list[tuple[float, str, dict]] = field(default_factory=list)  # (t, "in"/"out", msg); no audio payloads
-    replies: dict[int, Reply] = field(default_factory=dict)
-    state: dict = field(default_factory=dict)  # the latest `state` message
-    connection: str = "offline"  # the Realtime link's status (`connection` messages)
-    results: list[StepResult] = field(default_factory=list)
+    Subclasses decide where the facilitator's audio goes through four hooks: `_on_audio` (a reply's PCM arrived),
+    `_played_out` (wait until the reply has been heard to its end), `_cut` (the reply stops playing here) and
+    `_play_chunk` (a backup narration chunk). The defaults play everything on the wall clock, silently.
+    """
 
-    def __post_init__(self) -> None:
+    def __init__(self, ws: Any, *, talk: dict | None = None, log: Callable[[str], None] | None = None,
+                 keep_audio: bool = False) -> None:
+        self.ws = ws
+        self.talk = talk  # /api/talk (backup narration durations)
+        self.log = log
+        self.keep_audio = keep_audio  # keep every reply's PCM in `audio` (the live check saves it)
+        self.audio: dict[int, bytearray] = {}
+        self.t0 = time.monotonic()
+        self.messages: list[tuple[float, str, dict]] = []  # (t, "in"/"out", msg); no audio payloads
+        self.replies: dict[int, Reply] = {}
+        self.state: dict = {}  # the latest `state` message
+        self.connection: str = "offline"  # the Realtime link's status (`connection` messages)
         self._new = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
-        self._player: asyncio.Task | None = None  # the clip being streamed (or its silent tail)
         self._chunk_player: asyncio.Task | None = None
         self._chunk: dict | None = None  # the backup narration chunk playing: play_id, slide, chunk, offset, start
-        # step id → monotonic time the step ended (a clip's audio played out, an action sent, a missing clip skipped)
-        self._ended: dict[str, float] = {}
         self._quiet_since: float | None = time.monotonic()  # the facilitator inaudible since (None: audible now)
         self._send_lock = asyncio.Lock()
         self._reader = asyncio.create_task(self._read())
@@ -165,11 +167,13 @@ class DemoDeck:
             reply.audio_bytes += len(pcm)
             if self.keep_audio:
                 self.audio.setdefault(msg["reply"], bytearray()).extend(pcm)
+            self._on_audio(reply, pcm)
             return
         self.messages.append((self.now(), "in", msg))
         if kind == "reply_start":
             self.replies.setdefault(msg["reply"], Reply(msg["reply"], msg.get("kind"))).kind = msg.get("kind")
             self._stop_chunk()  # (the page stops a backup narration for a reply)
+            self._on_reply_start(self.replies[msg["reply"]])
         elif kind == "mic" and msg.get("open"):
             # the page silences everything when the backend opens the mic, unless the facilitator is speaking up
             reply = self.current_reply()
@@ -184,6 +188,7 @@ class DemoDeck:
             reply = self.replies.setdefault(msg["reply"], Reply(msg["reply"], None))
             if reply.flushed_at is None and reply.drained_at is None:
                 reply.flushed_at = now
+                self._cut(reply)
         elif kind == "state":
             self.state = msg
         elif kind == "connection":
@@ -194,8 +199,10 @@ class DemoDeck:
             self._chunk_player = asyncio.create_task(self._play_chunk(msg))
         elif kind == "stop":
             self._stop_chunk()
-        if kind in ("barge_in", "reply_start", "tool", "evidence", "transcript", "error") or (
-                kind == "state" and msg.get("state") is not None) or (
+        self._log_inbound(kind, msg)
+
+    def _log_inbound(self, kind: str | None, msg: dict) -> None:
+        if kind in LOGGED_KINDS or (kind == "state" and msg.get("state") is not None) or (
                 kind == "alignment" and (msg.get("event") or {}).get("type") in ("intervene", "resolved")) or (
                 kind == "caption" and msg.get("final")):
             brief = {k: v for k, v in msg.items() if k not in ("type", "snapshot")}
@@ -212,10 +219,25 @@ class DemoDeck:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _drain(self, reply: Reply) -> None:
-        """The reply player ran empty: all of the reply was heard."""
+    # --- the player hooks -------------------------------------------------------------------------------------
+
+    def _on_audio(self, reply: Reply, pcm: bytes) -> None:
+        """A reply's audio arrived (a subclass plays it)."""
+
+    def _on_reply_start(self, reply: Reply) -> None:
+        """A reply began: the page's player resets for it (a subclass stops what an older reply still plays)."""
+
+    async def _played_out(self, reply: Reply) -> None:
+        """Wait until the reply has been heard to its end: on the wall clock from its first audio."""
         start = reply.first_audio if reply.first_audio is not None else time.monotonic()
         await asyncio.sleep(max(0.0, start + reply.audio_ms / 1000 - time.monotonic()))
+
+    def _cut(self, reply: Reply) -> None:
+        """The reply stops playing here (a subclass drops what its player still holds)."""
+
+    async def _drain(self, reply: Reply) -> None:
+        """The reply player ran empty: all of the reply was heard."""
+        await self._played_out(reply)
         # (a newer reply started meanwhile: the page's player dropped this one, which never drains)
         if reply.flushed_at is None and self.current_reply() is reply:
             reply.drained_at = time.monotonic()
@@ -236,19 +258,33 @@ class DemoDeck:
             self._chunk_player = None
         self._chunk = None
 
-    async def _play_chunk(self, play: dict) -> None:
+    def chunk_duration_ms(self, slide: str | None, chunk: int | None) -> int:
         durations = {(s["id"], c["index"]): c["duration_ms"] for s in (self.talk or {}).get("slides", [])
                      for c in s["chunks"]}
+        return durations.get((slide, chunk), 0)
+
+    def _start_chunk(self, play: dict) -> dict:
+        """Book-keeping of a backup chunk that starts playing now (its position rides along as `at`)."""
         offset = play.get("offset_ms") or 0
         chunk = {"play_id": play["play_id"], "slide": play.get("slide"), "chunk": play.get("chunk"), "offset": offset,
                  "start": time.monotonic()}
         self._chunk = chunk
         self._observe_quiet()
-        await asyncio.sleep(max(0, durations.get((play["slide"], play["chunk"]), 0) - offset) / 1000)
+        return chunk
+
+    def _end_chunk(self, chunk: dict) -> None:
         if self._chunk is chunk:
             self._chunk = None
             self._observe_quiet()
             self._new.set()
+
+    async def _play_chunk(self, play: dict) -> None:
+        """The backup narration player: the chunk plays from its offset to its end (on the wall clock here), then
+        chunk_ended."""
+        chunk = self._start_chunk(play)
+        await asyncio.sleep(max(0, self.chunk_duration_ms(play.get("slide"), play.get("chunk")) - chunk["offset"])
+                            / 1000)
+        self._end_chunk(chunk)
         await self.send({"type": "chunk_ended", "play_id": play["play_id"]})
 
     def narration_position(self) -> dict | None:
@@ -269,7 +305,7 @@ class DemoDeck:
         return hello
 
     async def close(self) -> None:
-        for task in [self._reader, self._player, self._chunk_player, *self._tasks]:
+        for task in [self._reader, self._chunk_player, *self._tasks]:
             if task is not None:
                 task.cancel()
 
@@ -327,7 +363,16 @@ class DemoDeck:
         """The page's cutReply(): the reply stops playing here (it never drains)."""
         if reply is not None and reply.flushed_at is None and reply.drained_at is None:
             reply.flushed_at = time.monotonic()
+            self._cut(reply)
             self._observe_quiet()
+
+    def silence(self) -> dict:
+        """The page's silence() before a key that cuts the facilitator: stop the backup narration and flush the
+        current reply; returns the position taken just before (what the key carries)."""
+        where = self.position(time.monotonic())
+        self._stop_chunk()
+        self._flush_locally(self.current_reply())
+        return where
 
     def audible(self, now: float) -> bool:
         """The page's relayAudible(): the backup narration plays, or the current reply plays and has audio."""
@@ -342,55 +387,89 @@ class DemoDeck:
             return 0.0
         return (now - self._quiet_since) * 1000
 
+
+# --- the demo script's cues (web/js/demo.js cueStatus), on any Deck -----------------------------------------------
+
+
+def cue_holds(deck: Deck, when: dict, armed: float, now: float, ended: dict[str, float]) -> bool:
+    """web/js/demo.js `cueStatus` (ready or not) against what `deck` knows: `armed` = when the previous step ended
+    (its prevAt), `ended` = step id → monotonic time that step ended."""
+    state = deck.state
+    gap_ms = when.get("gap_ms", 0)
+    if "talking_point" in when:
+        if state.get("talking_point") != when["talking_point"] or state.get("status") not in PRESENTING:
+            return False
+        reply = deck.current_reply()  # that point's narration (not the one before it)
+        if reply is not None:
+            if reply.kind != "narration" or reply.played_ms(now) < when.get("heard_ms", 0):
+                return False
+        else:  # the backup narration presenting that point's slide, while Realtime is up to hear the clip
+            at = deck.narration_position()
+            slide = (state.get("checkpoint") or {}).get("slide_id", state.get("slide"))
+            if (at is None or deck.connection != "ready" or at["slide"] != slide
+                    or at["t_ms"] < when.get("heard_ms", 0)):
+                return False
+    if "phase" in when:
+        if state.get("agenda_phase") != when["phase"]:
+            return False
+        if "quiet_ms" in when and (state.get("state") not in QUIET_STATES
+                                   or deck.quiet_ms(now) < when["quiet_ms"]):
+            return False
+    if "after" in when:
+        done = ended.get(when["after"])
+        if done is None or (now - done) * 1000 < gap_ms:
+            return False
+    if "after_reply" in when:
+        # (no kind known: the page says answer; a reply with no audio, a silent tool call, was never heard and
+        # never counts, as on the page: its spoken follow-up is the next reply)
+        drained = [reply.drained_at for reply in deck.replies.values()
+                   if (reply.kind or "answer") == when["after_reply"] and reply.drained_at is not None
+                   and reply.drained_at >= armed and reply.audio_bytes > 0]
+        if not drained or (now - min(drained)) * 1000 < gap_ms:
+            return False
+    return True
+
+
+def describe_cue(when: dict) -> str:
+    parts = []
+    if "talking_point" in when:
+        parts.append(f"the facilitator presents {when['talking_point']} ({when.get('heard_ms', 0)} ms heard)")
+    if "phase" in when:
+        parts.append(f"phase {when['phase']}" + (f", quiet {when['quiet_ms']} ms" if "quiet_ms" in when else ""))
+    if "after" in when:
+        parts.append(f"{when.get('gap_ms', 0)} ms after {when['after']}")
+    if "after_reply" in when:
+        parts.append(f"{when.get('gap_ms', 0)} ms after the {when['after_reply']} reply")
+    return " and ".join(parts) or "the previous step"
+
+
+class DemoDeck(Deck):
+    """The deck side of one demo run. `clips`: step id → PCM16 mono 24 kHz samples (the very bytes /clips serves)."""
+
+    def __init__(self, ws: Any, demo: dict, clips: dict[str, bytes], talk: dict | None = None,
+                 log: Callable[[str], None] | None = None, strict: bool = False, timeout_scale: float = 1.0,
+                 keep_audio: bool = False) -> None:
+        super().__init__(ws, talk=talk, log=log, keep_audio=keep_audio)
+        self.demo = demo
+        self.clips = clips
+        self.strict = strict
+        self.timeout_scale = timeout_scale
+        self.results: list[StepResult] = []
+        self._player: asyncio.Task | None = None  # the clip being streamed (or its silent tail)
+        # step id → monotonic time the step ended (a clip's audio played out, an action sent, a missing clip skipped)
+        self._ended: dict[str, float] = {}
+
+    async def close(self) -> None:
+        await super().close()
+        if self._player is not None:
+            self._player.cancel()
+
     def cue_holds(self, when: dict, armed: float, now: float) -> bool:
         """web/js/demo.js `cueStatus` (ready or not): `armed` = when the previous step ended (its prevAt)."""
-        state = self.state
-        gap_ms = when.get("gap_ms", 0)
-        if "talking_point" in when:
-            if state.get("talking_point") != when["talking_point"] or state.get("status") not in PRESENTING:
-                return False
-            reply = self.current_reply()  # that point's narration (not the one before it)
-            if reply is not None:
-                if reply.kind != "narration" or reply.played_ms(now) < when.get("heard_ms", 0):
-                    return False
-            else:  # the backup narration presenting that point's slide, while Realtime is up to hear the clip
-                at = self.narration_position()
-                slide = (state.get("checkpoint") or {}).get("slide_id", state.get("slide"))
-                if (at is None or self.connection != "ready" or at["slide"] != slide
-                        or at["t_ms"] < when.get("heard_ms", 0)):
-                    return False
-        if "phase" in when:
-            if state.get("agenda_phase") != when["phase"]:
-                return False
-            if "quiet_ms" in when and (state.get("state") not in QUIET_STATES
-                                       or self.quiet_ms(now) < when["quiet_ms"]):
-                return False
-        if "after" in when:
-            ended = self._ended.get(when["after"])
-            if ended is None or (now - ended) * 1000 < gap_ms:
-                return False
-        if "after_reply" in when:
-            # (no kind known: the page says answer; a reply with no audio, a silent tool call, was never heard and
-            # never counts, as on the page: its spoken follow-up is the next reply)
-            drained = [reply.drained_at for reply in self.replies.values()
-                       if (reply.kind or "answer") == when["after_reply"] and reply.drained_at is not None
-                       and reply.drained_at >= armed and reply.audio_bytes > 0]
-            if not drained or (now - min(drained)) * 1000 < gap_ms:
-                return False
-        return True
+        return cue_holds(self, when, armed, now, self._ended)
 
     def describe(self, step: dict) -> str:
-        when = step.get("when") or {}
-        parts = []
-        if "talking_point" in when:
-            parts.append(f"the facilitator presents {when['talking_point']} ({when.get('heard_ms', 0)} ms heard)")
-        if "phase" in when:
-            parts.append(f"phase {when['phase']}" + (f", quiet {when['quiet_ms']} ms" if "quiet_ms" in when else ""))
-        if "after" in when:
-            parts.append(f"{when.get('gap_ms', 0)} ms after {when['after']}")
-        if "after_reply" in when:
-            parts.append(f"{when.get('gap_ms', 0)} ms after the {when['after_reply']} reply")
-        return " and ".join(parts) or "the previous step"
+        return describe_cue(step.get("when") or {})
 
     # --- running the script -----------------------------------------------------------------------------------
 
@@ -424,8 +503,7 @@ class DemoDeck:
                 self.say(f"-> {step['id']}: key {key} (the script's {step['action']} action)")
                 where = self.position(time.monotonic())  # (taken before the page silences anything)
                 if key == "phase":  # the page's phase key silences the facilitator first
-                    self._stop_chunk()
-                    self._flush_locally(self.current_reply())
+                    self.silence()
                 await self.send({"type": "key", "key": key, "at": where["at"], "reply": where["reply"],
                                  "reply_played_ms": where["played_ms"]})
                 self._ended[step["id"]] = time.monotonic()

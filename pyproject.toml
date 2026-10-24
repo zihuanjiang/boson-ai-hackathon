@@ -28,3 +28,4 @@ pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = "-q"
+markers = ["slow: a long end-to-end run (the Zoom bot's dry run, ~1 min); deselect with -m 'not slow'"]

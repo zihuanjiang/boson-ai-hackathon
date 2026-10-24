@@ -549,7 +549,7 @@ async def test_input_voice_listens_in_every_state_and_barges_in_like_a_clip(mk):
         await voice(h, reply=1, played=700)
     barge = h.b("barge_in")[-1]
     assert (barge["speaker"], barge["clip"], barge["played_ms"], barge["reply"]) == ("Alice", None, 700, 1)
-    assert h.c.state == LISTENING and h.c.turn.source == "clip" and h.c.turn.speaker == "Alice"
+    assert h.c.state == LISTENING and h.c.turn.source == "voice" and h.c.turn.speaker == "Alice"
     assert h.r("conversation.item.truncate")[0]["audio_end_ms"] == 700  # what the bot had played of it
     assert (h.c.cursor.slide, h.c.cursor.live, h.c.cursor.heard_ms) == ("plan", True, 700)
     assert h.c.cursor.heard.startswith("Release four point three")  # the words the bot had played, to resume after
@@ -572,7 +572,7 @@ async def test_input_voice_labels_a_room_line_by_the_frames_speaker_or_the_curre
     await h.ev("input_audio_buffer.committed", item_id="item_bob")
     await h.ev("conversation.item.input_audio_transcription.completed", item_id="item_bob", transcript=BOB_LINE)
     utterance = h.b("transcript")[0]["utterance"]
-    assert (utterance["speaker"], utterance["text"], utterance["source"]) == ("Bob", BOB_LINE, "clip")
+    assert (utterance["speaker"], utterance["text"], utterance["source"]) == ("Bob", BOB_LINE, "voice")
     assert h.c.state == ROOM
     await h.send({"type": "speaker", "name": "Carol"})  # the bot read Zoom's active-speaker UI
     for _ in range(3):

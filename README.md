@@ -62,6 +62,28 @@ uv run python -m relay.clips talks/submission-review    # the participants' clip
 uv run python -m relay serve talks/submission-review    # open http://localhost:8000, Join, then Run demo
 ```
 
+### Run it inside a Zoom meeting (the facilitator as a participant)
+
+The facilitator joins your Zoom meeting as its own participant, **Facilitator (AI)**, from your laptop, and real
+people speak: a separate, muted Chrome window joins the Zoom web client; its "microphone" is a stream fed with the
+facilitator's Higgs Realtime audio and its "ears" tap what the Zoom page plays. It never uses the laptop's microphone
+or speakers, and Zoom never plays a participant's audio back to that participant, so anyone who talks while the
+facilitator speaks interrupts it by voice. It shares a second tab — the meeting page in observer mode — as its screen.
+
+```bash
+uv run python -m relay.render talks/submission-review                                   # backup narration, once
+uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --passcode <passcode> --auto-start
+```
+
+The meeting must allow guests (your personal meeting with "Require authentication to join" off); be in it yourself
+first, with your real microphone. The bot starts `relay serve talks/submission-review --input voice` itself, joins,
+opens `http://localhost:8000/?view=observer` in its second tab and shares it. Keys in the bot's terminal: R start,
+Space send now, ← → slides, P pause, H the operator has the floor, N next phase, 0 restart, `t <text>` type a line,
+q leave. Rehearse without Zoom: `uv run python scripts/zoom_bot.py --dry-run` (a fake Zoom page plays the demo clips
+as the participants, over the fake Realtime). The lines your participants speak and every fallback are in
+[`talks/submission-review/run_of_show_zoom.md`](talks/submission-review/run_of_show_zoom.md); the proven spike behind it
+is [`doc/zoom_bot_spike.md`](doc/zoom_bot_spike.md).
+
 ### Run the meeting demo (On the Same Page, `talks/rollout-review`)
 
 The facilitator presents the rollout plan live, is interrupted by a participant's question, answers from the

@@ -443,6 +443,8 @@ class Controller:
         # (the Zoom bot, contract v5): nobody flags anything, so a line ends after the room segmenter's own silence.
         self._clip_seg: Segmenter | None = (Segmenter(end_ms=CLIP_END_MS) if self.input_mode == INPUT_CLIPS
                                             else Segmenter() if self.input_mode == INPUT_VOICE else None)
+        # what a participant's turn or line is labelled with: "clip" (prerecorded) or "voice" (a live stream)
+        self.participant_source = PARTICIPANT_SOURCES.get(self.input_mode, "clip")
         self._clip_on: str | None = None  # the clip id of the latest clip frame…
         self._clip_tail = False  # …and whether it was the silence after the clip (`tail`)
         self._clip_target: tuple | None = None  # the utterance being streamed: ("turn", Turn) · ("room", speaker,
@@ -1090,7 +1092,7 @@ class Controller:
         if self.state == NARRATING or self._replying:
             await self._barge_in(position, speaker, clip)
         turn = await self._take_floor(position)  # exactly the Space path: cut, truncate to what was heard
-        turn.source, turn.speaker, turn.clip = "clip", speaker, clip
+        turn.source, turn.speaker, turn.clip = self.participant_source, speaker, clip
         await self._open_clip_floor(turn)
         self._clip_target = ("turn", turn)
         await self._clip_turn_audio(turn, preroll)
@@ -1149,7 +1151,7 @@ class Controller:
         if target is None or target[0] == "drop":
             return
         if target[0] == "room":
-            await self._room_commit(target[1], "clip")
+            await self._room_commit(target[1], self.participant_source)
             return
         turn = target[1]
         if self.turn is not turn or self.state != LISTENING:
@@ -1167,7 +1169,7 @@ class Controller:
         target, self._clip_target = self._clip_target, None
         if target is not None and target[0] == "room":
             if commit:
-                await self._room_commit(target[1], "clip")
+                await self._room_commit(target[1], self.participant_source)
             else:
                 await self._rt({"type": "input_audio_buffer.clear"})
         if self._clip_seg is not None:
@@ -2642,7 +2644,7 @@ class Controller:
         if target is not None and target[0] == "room":
             self._clip_target = ("drop",)
             if commit:
-                await self._room_commit(target[1], "clip")
+                await self._room_commit(target[1], self.participant_source)
             else:
                 await self._rt({"type": "input_audio_buffer.clear"})
         seg = self._room_seg

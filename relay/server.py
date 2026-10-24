@@ -616,9 +616,10 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     if connect is None and settings.fake_realtime:
         from .fake_realtime import FakeConnector, fake_connect
         connect = fake_connect
-        if demo is not None and mode == "clips":
-            # Offline Run demo: the fake "hears" the participants' lines, in the order their clips are committed
-            # (the real model transcribes the audio; the fake can't).
+        if demo is not None and mode in ("clips", "voice"):
+            # Offline Run demo, or a Zoom rehearsal with the fake (`zoom_bot.py --fake-realtime`): the fake "hears"
+            # the participants' lines, in the order their audio is committed (the real model transcribes the audio;
+            # the fake can't).
             connect = FakeConnector(transcripts=tuple(step["say"] for step in demo["steps"] if step.get("say")))
     link = RealtimeLink(settings, session_config=ref.session_config, on_event=ref.on_event,
                         on_status=ref.on_status, connect=connect, log=log)
