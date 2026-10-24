@@ -48,6 +48,20 @@ No key? Everything runs offline with stand-ins: `uv run python -m relay.render t
 A re-render takes effect at the next server restart (the server serves the narration it loaded at startup); an open
 deck then reloads itself, and you click Arm again.
 
+### Run the self-introduction demo (`talks/submission-review`)
+
+The same pipeline, with a presentation the judges can follow without context: the facilitator introduces On the
+Same Page itself (background, the pipeline, live results, limitations) to a team reviewing the project before
+submission. Alice interrupts during the pipeline section ("does this work in a normal meeting room with one
+microphone?"); in the discussion about the limitations Bob proposes to write that it works in person, and the
+facilitator asks for a clarification before the team confirms it.
+
+```bash
+uv run python -m relay.render talks/submission-review   # backup narration (TTS 3)
+uv run python -m relay.clips talks/submission-review    # the participants' clips
+uv run python -m relay serve talks/submission-review    # open http://localhost:8000, Join, then Run demo
+```
+
 ### Run the meeting demo (On the Same Page, `talks/rollout-review`)
 
 The facilitator presents the rollout plan live, is interrupted by a participant's question, answers from the

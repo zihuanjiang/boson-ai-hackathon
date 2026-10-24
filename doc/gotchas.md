@@ -242,6 +242,15 @@ Add our own findings here as we hit them (date them).
     (vs ~1000 ms); the answer named both dates ("Friday the 24th is the beta release to the beta group, and production
     goes out Wednesday the 29th"); its save_decision wording was a plain sentence with the owner ("Friday's release
     stage is beta and Bob will announce it to beta users.").
+  - **`talks/submission-review` (the self-introduction demo, D74) live on 1.5-preview, 2026-10-24 ~02:30:** 8/8
+    checks on both runs. First run (211 words of notes): the model said ~1.4× its notes with added emphasis
+    ("remarkably responsive") and read the slide's source ids aloud ("RES-1 through RES-4 and LIM-7"); the discussion
+    opened at 2:50 and the run took ~3.5 min. After trimming to one sentence per point (190 words) and adding "Don't
+    add examples or emphasis, and never read source ids aloud" to the talking-point prompt: discussion at 2:20, wrap-up
+    at 2:54, no ids in the narration, answer latency 608 ms. The STT heard Carol's "Bob owns the write-up" as "Bob owns
+    the right up" both times; the ownership pattern (`owns` + a participant name) still resolved it. Intervention:
+    "One clarification before we confirm: the meeting was established as online per LIM-2 and CL-1. Does the plan
+    support online meetings only?"
   - With "at most thirty words … no dates", the intervention came down from ~40 words / 15 s to ~25 words, and it
     cited the earlier clarification ("…beta to beta users only, per CL-1. Does that align with the plan?"). Decisions
     read as plain sentences once asked for ("Friday's release is beta and the announcement goes to beta users

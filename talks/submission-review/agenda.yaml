@@ -1,0 +1,15 @@
+# The meeting around the deck (contract v4 §1). The team meets before submitting to the hackathon: the facilitator
+# (On the Same Page itself) introduces what was built, then the team decides which limitations go in the write-up.
+# Participants are fictional; in the demo they are prerecorded remote participants (demo.yaml: their clips, voices
+# and cues; run_of_show.md: the walkthrough).
+title: "On the Same Page: submission review"
+host: Alice
+participants:
+  - {name: Alice, role: Project lead}
+  - {name: Bob, role: Writes the submission}
+  - {name: Carol, role: Engineering lead}
+phases:
+  - {id: presentation, title: What we built}
+  - {id: discussion, title: Limitations for the write-up, prompt: "Which limitations go in the write-up, and who writes it?"}
+  - {id: wrapup, title: Decisions and next steps}
+discussion_slide: discussion
