@@ -145,6 +145,11 @@ SAVE_DECISION = "save_decision"
 SET_PRESENTATION_STATE = "set_presentation_state"
 MEETING_TOOL_NAMES = (LOOKUP_EVIDENCE, GET_PRESENTATION_STATE, GENERATE_MEETING_NOTES, RECORD_CLARIFICATION,
                       SAVE_DECISION, SET_PRESENTATION_STATE)
+# What the model is offered. get_presentation_state stays a local function (the STATE block of every turn already
+# carries the phase, slide and talking point) but is not declared: live 2026-10-24 the model called it twice after a
+# lookup instead of answering, and a per-response `tool_choice: "none"` did not stop it.
+MODEL_TOOL_NAMES = (LOOKUP_EVIDENCE, GENERATE_MEETING_NOTES, RECORD_CLARIFICATION, SAVE_DECISION,
+                    SET_PRESENTATION_STATE)
 # data: run at once, the output is what the model answers from (a follow-up response asks it to) · state: validated
 # and applied at once · flow: planned at response.done, applied once the reply has played (like Relay's deck tools)
 DATA, STATE, FLOW = "data", "state", "flow"
@@ -172,12 +177,14 @@ MEETING_DESCRIPTIONS = {
     GENERATE_MEETING_NOTES: "When someone asks for the meeting notes or a summary of what was decided so far.",
     RECORD_CLARIFICATION: "After you answered a question that settled a fact: store the question, your answer and "
                           "the source ids you answered from.",
-    SAVE_DECISION: "When the group has confirmed a decision: store it with its owner (a participant), the follow-up "
-                   "action and the source ids.",
-    SET_PRESENTATION_STATE: "After answering an interruption, call this with action resume to continue the "
-                            "presentation where you left off; next_slide or goto_slide to move; start when the host "
-                            "hands you the floor; end_presentation when the group wants to move on (to the "
-                            "discussion, or from the discussion to the wrap-up).",
+    SAVE_DECISION: "When the group has confirmed a decision: store it, as one plain sentence, with its owner (a "
+                   "participant), the follow-up action and the source ids.",
+    # Live 2026-10-24: "after answering, call this with action resume" made the model call it INSTEAD of answering;
+    # the controller resumes after an answer by itself (the countdown).
+    SET_PRESENTATION_STATE: "Only when someone asks to move: next_slide or goto_slide; start when the host hands you "
+                            "the floor; end_presentation when the group wants to move on (to the discussion, or from "
+                            "the discussion to the wrap-up). Never call it to continue after an answer: the "
+                            "presentation resumes by itself.",
 }
 
 MISSING_QUERY = "missing query"
@@ -197,8 +204,8 @@ def _ids_param(description: str) -> dict:
 
 
 def meeting_tool_specs(talk: Talk) -> list[dict]:
-    """The facilitator's six function tools (contract §4); set_presentation_state's slide_id is an enum of the relay
-    slide ids."""
+    """The function tools the facilitator is offered (contract §4, minus get_presentation_state: see
+    MODEL_TOOL_NAMES); set_presentation_state's slide_id is an enum of the relay slide ids."""
     relay_ids = [slide.id for slide in talk.relay_slides]
     parameters = {
         LOOKUP_EVIDENCE: {"type": "object", "properties": {
@@ -223,7 +230,7 @@ def meeting_tool_specs(talk: Talk) -> list[dict]:
             "required": ["action"]},
     }
     return [{"type": "function", "name": name, "description": MEETING_DESCRIPTIONS[name],
-             "parameters": parameters[name]} for name in MEETING_TOOL_NAMES]
+             "parameters": parameters[name]} for name in MODEL_TOOL_NAMES]
 
 
 def _text(value: Any, limit: int = TEXT_MAX_CHARS) -> str:

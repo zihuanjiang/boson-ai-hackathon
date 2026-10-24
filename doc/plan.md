@@ -4,6 +4,14 @@ Spec: `doc/brief.md`. Build contract (interfaces, protocol, state machine): `doc
 
 ## Status
 
+2026-10-24 (Sat) ~00:45 — **The online-meeting demo passes its definition of done live** (patch §8, all 8 checks of
+`scripts/live_check.py --talk talks/rollout-review`, twice in a row): voice barge-in by Alice's clip, a lookup-grounded
+answer, resume at the interrupted talking point, silence on Bob's line, a short neutral intervention citing CL-1,
+the corrected decision with owner Bob in the notes, wrap-up summary. Fixes from the live runs: tools withdrawn for
+speak-only responses, self-contained follow-ups, fused evidence search (D71–D73). 1600 tests pass. Still to do by
+Ken: Chrome checks (`tests/web/mock/meeting.html`, `scripts/e2e_chrome.py --talk talks/rollout-review`), listen to
+the clips, record the fallback video, fill in the team.
+
 2026-10-23 (Fri) ~20:45 — **Pivot to `doc/brief_updated.md` (On the Same Page, D58).** Done first: Relay presents
 live through Realtime with the TTS 3 renders as backup, voice `default`, and the deck is a Zoom-like meeting page
 (D52–D57, commit f89bd1a, 1154 tests). Gap analysis: `doc/discrepancies.md`. Build in progress (contract
@@ -103,6 +111,9 @@ start of its sentence for the resume. Details: `doc/design.md`.
 | D68 | A participant's line ends where its clip ends: the deck flags the silence after a clip (`tail: true`); the participant segmenter's own end (1.1 s) is only the fallback, and its onset already counts as talking (no intervention starts under it) | a recording's pause over 0.7 s split a line and barged in on its own answer; Bob → Carol merged below a 0.7 s gap; an intervention started in a clip's first 200 ms was cut unheard and never asked again |
 | D69 | `after_reply` counts only replies the room heard, and the `wrap` step also waits for 2 s of quiet back in the room | live, a decision is often a silent `save_decision` reply, then the spoken confirmation as its own reply: Wrap up fired 2 s after the silent one, cutting the confirmation |
 | D70 | Wrap-up waits (≤ 2 s) for the transcript of the room's last line, and saves a decision still waiting for the facilitator as drafted (`auto`) | Wrap up right after Carol's correction lost the decision and listed the settled conflict as an open question in the notes and the summary |
+| D71 | Speak-only responses (follow-ups, intervention, hand-over, summary) run with the session's tools withdrawn (`session.update {"tools": []}`), declared again before the next turn or the decision; `get_presentation_state` stays a local function, not offered to the model; the base prompt no longer asks for a resume call; a follow-up that still says nothing is asked again and its queued resume dropped | live 2026-10-24: per-response `tool_choice: "none"` was ignored and follow-ups called tools instead of answering (Alice unanswered, the decision never confirmed aloud) |
+| D72 | Follow-ups and the hand-over are self-contained: the question with the excerpts, or the saved decision and its owner | live: "confirm the decision" alone got "Hello! I'm ready to facilitate…"; per-response instructions replace the session's |
+| D73 | `lookup_evidence` for a question fuses the model's query with a search on the asker's own words (summed normalised BM25) | live: the model's "Release 4.3 rollout dates" missed REQ-2 and the answer said the documents didn't say |
 
 ## Decided earlier (Ken): the Relay voice was chloe (superseded by D54: `default`)
 

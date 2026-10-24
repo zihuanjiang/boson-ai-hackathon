@@ -193,8 +193,8 @@ FACILITATOR_BASE = (
     'You are the facilitator of the meeting "{title}" with {participants}. You present the first agenda item '
     "yourself, live, in your own words, from the notes given for each talking point. When anyone asks about the "
     "project (dates, release stages, audiences, owners, decisions), call lookup_evidence first and answer only from "
-    "what it returns, in one or two short spoken sentences; then call set_presentation_state with action resume. In "
-    "the discussion, stay silent unless someone asks you directly. Never tell anyone they are wrong; ask neutral "
+    "what it returns, in one or two short spoken sentences; the presentation then resumes by itself. In the "
+    "discussion, stay silent unless someone asks you directly. Never tell anyone they are wrong; ask neutral "
     "questions. No lists, markdown or URLs."
 )
 NO_TOOLS = "Don't call any tool."
@@ -323,9 +323,12 @@ def handover_instructions(meeting: Any) -> str:
     return "\n".join([
         f'You are the facilitator of the meeting "{meeting.title}". You just finished presenting '
         f'"{phase_title(meeting, "presentation")}".',
-        "Say one short sentence, without greeting: the presentation is done, the group now discusses "
-        f"{_quoted(discussion_prompt(meeting))}, and you will listen and only speak up if something doesn't match the "
-        "documents.",
+        f"The discussion question: {_quoted(discussion_prompt(meeting))}",
+        # live 2026-10-24 a sentence-shaped instruction came back word for word, quotes included, and a bare "hand
+        # the floor over for that question" was answered with the question alone
+        "The presentation is over. In one or two short spoken sentences of your own, without greeting: tell the "
+        "group it's their turn to discuss that question, and that you'll stay quiet and only speak up if something "
+        "doesn't match the documents.",
         f"{PLAIN_SPEECH} {NO_TOOLS}",
     ])
 
@@ -337,25 +340,44 @@ FOLLOWUP_KINDS = (FOLLOWUP_LOOKUP, FOLLOWUP_CONFIRM, FOLLOWUP_DECISION)
 
 
 def followup_instructions(kind: str, *, meeting: Any, agenda_phase: str = "presentation",
-                          question: str | None = None) -> str:
-    """The `instructions` of a follow-up `response.create` after a tool round trip (contract §5.3). Live
-    2026-10-23: a follow-up without new instructions repeated the tool call and said nothing."""
-    lines = [f'You are the facilitator of the meeting "{meeting.title}".']
+                          question: str | None = None, speaker: str | None = None, results: Iterable[dict] = (),
+                          decision: Any = None) -> str:
+    """The `instructions` of a follow-up `response.create` after a tool round trip (contract §5.3). They replace the
+    session's for that response, so they carry everything the answer needs: live 2026-10-23 a follow-up without new
+    instructions repeated the tool call; live 2026-10-24 one that only said "answer from these results" called
+    get_presentation_state twice, and one that only said "confirm the decision" greeted the room ("Hello! I'm ready
+    to facilitate…"). The resume after an answer is the controller's (the countdown), never a tool call here."""
+    lines = [f'You are the facilitator of the meeting "{meeting.title}" with {participants_text(meeting, roles=False)}.']
     if kind == FOLLOWUP_LOOKUP:
         if question and question.strip():
-            lines.append(f"The question: {_quoted(question)}")
-        answer = ("Answer the question now from these results in one or two short sentences. Use only what they "
-                  "say; if they don't answer it, say so")
-        if agenda_phase == "presentation":
-            lines.append(f"{answer}, then call set_presentation_state with action resume.")
+            lines.append(f"{speaker or 'Someone'} just asked: {_quoted(question)}")
+        found = [result for result in results if isinstance(result, dict)][:3]
+        if found:
+            lines.append("The documents say: " + " ".join(
+                f"[{result.get('source_id')}] {_clip_text(result.get('excerpt'), 220)}" for result in found))
         else:
-            lines.append(f"{answer}. {NO_TOOLS}")
+            lines.append("The documents had nothing on it.")
+        ending = ("then say you'll get back to the slide" if agenda_phase == "presentation" else "then stop")
+        lines.append(f"Answer now, in one or two short spoken sentences, only from what the documents say (if they "
+                     f"don't answer it, say so), {ending}.")
     elif kind == FOLLOWUP_DECISION:
-        lines.append(f"Confirm in one short sentence that the decision is in the meeting notes. {NO_TOOLS}")
+        text = _decision_field(decision, "decision")
+        owner = _decision_field(decision, "owner")
+        if text:
+            lines.append(f"You just saved this decision to the meeting notes: {_quoted(text)}"
+                         + (f", owned by {owner}." if owner else "."))
+        lines.append("Confirm it to the group in one short sentence that names the decision"
+                     + (f" and {owner}" if owner else "") + " and says it is in the notes.")
     else:
-        lines.append(f"Confirm it in one short sentence. {NO_TOOLS}")
-    lines.append(PLAIN_SPEECH)
+        lines.append("Confirm in one short sentence what you just stored.")
+    lines.append("Don't greet or introduce yourself.")
+    lines.append(f"{PLAIN_SPEECH} {NO_TOOLS}")
     return "\n".join(lines)
+
+
+def _decision_field(decision: Any, name: str) -> str:
+    value = decision.get(name) if isinstance(decision, dict) else getattr(decision, name, None)
+    return " ".join(str(value or "").split())
 
 
 def _results(lookup: Any) -> list[dict]:
@@ -400,9 +422,11 @@ def intervention_instructions(events: dict | list[dict], lookup: Any, *, meeting
                                                      else None)
         if answer:
             lines.append(f"Earlier in this meeting it was clarified ({cid}): {_quoted(_clip_text(answer, 220))}")
-    lines.append('Start with "One clarification before we confirm:", say what was established earlier (mention the '
-                 "earlier clarification if there is one, and the source id), then ask one neutral question about "
-                 "the plan. Never say anyone is wrong. At most two short sentences.")
+    # Live 2026-10-24 the earlier wording ("at most two short sentences") still gave ~40 words / 15 s with every date.
+    lines.append('Say at most thirty words: start with "One clarification before we confirm:", then one short '
+                 "sentence with what was established (the stage or the audience, naming the earlier clarification "
+                 "or the source id; no dates), then one short yes-or-no question about the plan. Never say anyone "
+                 "is wrong.")
     lines.append(f"{PLAIN_SPEECH} {NO_TOOLS}")
     return "\n".join(lines)
 
@@ -422,10 +446,11 @@ def decision_instructions(draft: dict, quotes: Iterable[tuple[str | None, str]],
         if text and text.strip():
             lines.append(f"{speaker or 'Someone'}: {_quoted(_clip_text(text, 240))}")
     lines.append(DRAFT_PREFIX + json.dumps(fields, ensure_ascii=False))
-    lines.append("Call save_decision with these values, correcting them only if the quotes say otherwise, and with "
-                 "follow_up: the owner's next step as a short instruction in your own words, eight words at most "
-                 '(like "Email the release notes to the beta group"). Then confirm in one short sentence that it is '
-                 "in the meeting notes, naming the decision and its owner.")
+    lines.append("Call save_decision with these values, correcting them only if the quotes say otherwise: write "
+                 "`decision` as one short plain sentence a person would say (the draft's facts, not its labels), and "
+                 "`follow_up` as the owner's next step in your own words, eight words at most (like \"Email the "
+                 'release notes to the beta group"). Then confirm in one short sentence that it is in the meeting '
+                 "notes, naming the decision and its owner. Don't greet.")
     lines.append(PLAIN_SPEECH)
     return "\n".join(lines)
 

@@ -128,12 +128,15 @@ def test_output_strings_are_exact_json_strings():
 # --- the meeting facilitator's tools (contract §4) --------------------------------------------------------------
 
 
-def test_a_meeting_gets_the_facilitators_six_tools(test_talk: Talk):
+def test_a_meeting_offers_the_facilitators_tools_but_not_get_presentation_state(test_talk: Talk):
     assert tool_specs(test_talk) == tool_specs(test_talk, None)  # a plain talk: Relay's five
     specs = tool_specs(test_talk, meeting=object())
-    assert [spec["name"] for spec in specs] == list(tools.MEETING_TOOL_NAMES) == [
-        "lookup_evidence", "get_presentation_state", "generate_meeting_notes", "record_clarification",
-        "save_decision", "set_presentation_state"]
+    # get_presentation_state stays a local function (TOOL_KINDS) but is not offered: live 2026-10-24 the model
+    # called it instead of answering after a lookup
+    assert [spec["name"] for spec in specs] == list(tools.MODEL_TOOL_NAMES) == [
+        "lookup_evidence", "generate_meeting_notes", "record_clarification", "save_decision",
+        "set_presentation_state"]
+    assert tools.GET_PRESENTATION_STATE in tools.MEETING_TOOL_NAMES and tools.GET_PRESENTATION_STATE in tools.TOOL_KINDS
     by_name = {spec["name"]: spec for spec in specs}
     for spec in specs:
         assert set(spec) == {"type", "name", "description", "parameters"} and spec["type"] == "function"

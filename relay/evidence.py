@@ -159,3 +159,28 @@ def search(query: str, entries: list[Entry], k: int = 3) -> list[dict]:
     order = sorted((i for i in range(n) if scores[i] > 0), key=lambda i: (-scores[i], _natural_key(entries[i].id)))
     return [{"source_id": entries[i].id, "kind": entries[i].kind, "title": entries[i].title,
              "excerpt": _excerpt(entries[i].text), "score": scores[i]} for i in order[:k]]
+
+
+QUERY_WEIGHT = 0.95  # the model's own query counts a little less than the asker's words when the two disagree
+
+
+def search_for_question(query: str, question: str | None, entries: list[Entry], k: int = 3) -> list[dict]:
+    """`lookup_evidence` for a question someone asked: the model's query and the asker's own words are searched
+    separately and fused by summing their normalised scores (each list divided by its best; the query's weighted by
+    QUERY_WEIGHT), so a vague query can't bury the statement the question is about, and a statement both point at
+    wins. Live 2026-10-24 the model looked up "Release 4.3 rollout dates" for "Wait, I thought Friday was
+    production. Which one is it?": alone that ranks DEC-1, DEC-3, REQ-1, and the answer said the documents didn't
+    say. Scores are the fused relevance scaled to (0, 1]. Without a question this is `search`."""
+    if not question or not question.strip():
+        return search(query, entries, k)
+    fused: dict[str, float] = {}
+    found: dict[str, dict] = {}
+    for results, weight in ((search(question, entries, len(entries)), 1.0),
+                            (search(query, entries, len(entries)), QUERY_WEIGHT)):
+        top = max((result["score"] for result in results), default=0.0) or 1.0
+        for result in results:
+            fused[result["source_id"]] = fused.get(result["source_id"], 0.0) + weight * result["score"] / top
+            found.setdefault(result["source_id"], result)
+    best = max(fused.values(), default=0.0) or 1.0
+    order = sorted(fused, key=lambda sid: (-round(fused[sid], 6), _natural_key(sid)))
+    return [{**found[sid], "score": round(fused[sid] / best, 4)} for sid in order[:k]]

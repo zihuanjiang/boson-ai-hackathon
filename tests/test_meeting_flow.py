@@ -249,7 +249,7 @@ def test_a_meeting_session_has_the_facilitators_tools_and_manual_turns(mk, meeti
     h = mk(settings=Settings(narration="live", turn_detection=dict(VAD_TURN_DETECTION)))
     config = h.c.session_config()
     assert config["audio"]["input"]["turn_detection"] is None  # a meeting needs manual turns, whatever the setting
-    assert [spec["name"] for spec in config["tools"]] == list(tools.MEETING_TOOL_NAMES)
+    assert [spec["name"] for spec in config["tools"]] == list(tools.MODEL_TOOL_NAMES)
     assert config["tools"] == tools.tool_specs(meeting_talk, h.c.meeting)
     instructions = config["instructions"]
     assert instructions.startswith(prompts.facilitator_prompt(h.c.meeting) + "\n\nPhase: opening\n")
@@ -351,10 +351,14 @@ async def test_milestone_1_a_question_is_answered_from_the_documents_and_the_poi
     assert h.tool_statuses() == [(call_id, "lookup_evidence", "applied")]
     followup = creates(h)[-1]
     assert followup == {"instructions": prompts.followup_instructions(
-        prompts.FOLLOWUP_LOOKUP, meeting=h.c.meeting, agenda_phase="presentation", question=ALICE_QUESTION),
-        "metadata": {"relay": "followup", "reply": "3"}}  # tools allowed: it should call resume
-    assert "then call set_presentation_state with action resume" in followup["instructions"]
-    assert h.realtime.types()[-2:] == ["conversation.item.create", "response.create"]  # the output, then the ask
+        prompts.FOLLOWUP_LOOKUP, meeting=h.c.meeting, agenda_phase="presentation", question=ALICE_QUESTION,
+        results=output["results"]), "metadata": {"relay": "followup", "reply": "3"}, "tool_choice": "none"}
+    # self-contained (live 2026-10-24: "answer from these results" alone made the model call get_presentation_state)
+    assert f'just asked: "{ALICE_QUESTION}"' in followup["instructions"]
+    assert "[REQ-2]" in followup["instructions"] and "set_presentation_state" not in followup["instructions"]
+    # the output, the tools withdrawn (a per-response tool_choice was ignored live), then the ask
+    assert h.realtime.types()[-3:] == ["conversation.item.create", "session.update", "response.create"]
+    assert h.r("session.update")[-1]["session"] == {"type": "realtime", "tools": []}
     await h.drained(reply=2)  # the silent first reply drains on the deck: the turn goes on
     assert (h.c.state, h.c.turn.reply, h.c.thinking) == (REPLYING, 3, True)
 
@@ -378,10 +382,36 @@ async def test_milestone_1_a_question_is_answered_from_the_documents_and_the_poi
     assert 'the room last heard you say: "Release four point three ships in"' in resumed["instructions"]
     assert h.last("state")["checkpoint"] == {"slide_id": "plan", "talking_point_id": "friday-beta",
                                              "status": "resuming"}
-    # the clarification is in the model's context from now on
+    # the clarification is in the model's context from now on, and the next question has the tools again
     await h.narration(audio_ms=300)
     await h.key("space", reply=4, played=100)
     assert "Clarified (CL-1): Friday is the beta release" in h.instructions()
+    restored = h.r("session.update")[-1]["session"]
+    assert [spec["name"] for spec in restored["tools"]] == list(tools.MODEL_TOOL_NAMES) and "instructions" in restored
+
+
+async def test_a_follow_up_that_says_nothing_is_asked_again_and_its_resume_dropped(h: Harness):
+    """Live 2026-10-24: the follow-up after a lookup called set_presentation_state resume and said nothing, so the
+    room went back to the slide without hearing the answer. It is asked again (the limit allows it), and the resume
+    it queued is dropped: the countdown resumes once the answer has been heard."""
+    await present_first_point(h)
+    await h.typed(ALICE_QUESTION, reply=1, played=500)
+    await respond(h, call("lookup_evidence", {"query": "Friday beta release"}), transcript="", audio_ms=0)
+    await h.drained(reply=2)
+    assert creates(h)[-1]["metadata"]["relay"] == "followup" and h.c.turn.followups == 1
+    await respond(h, call("set_presentation_state", {"action": "resume"}), transcript="", audio_ms=0)
+    assert h.c.turn.followups == 2 and creates(h)[-1]["metadata"]["relay"] == "followup"  # asked again
+    assert h.c.turn.queued is None and h.tool_statuses()[-1][1:] == ("set_presentation_state", "discarded")
+    assert 'just asked: "' in creates(h)[-1]["instructions"]
+    await h.drained(reply=3)
+    assert h.c.state == REPLYING  # still waiting for the answer
+    await respond(h, transcript=ANSWER, audio_ms=1200)
+    await h.drained(reply=4)
+    assert h.c.mstate.clarifications[0].answer == ANSWER  # the answer that was heard
+    assert (h.c.state, h.c.status) == (IDLE, "resuming")  # the countdown, not the dropped resume
+    await h.clock.advance(2)
+    assert h.last("tool")["name"] == "set_presentation_state" and h.last("tool")["status"] == "auto"
+    assert (h.c.state, creates(h)[-1]["metadata"]["talking_point"]) == (NARRATING, "friday-beta")
 
 
 async def test_without_a_tool_the_watchdog_resumes_the_talking_point_and_a_recorded_clarification_stays(h: Harness):
@@ -467,8 +497,7 @@ async def test_follow_ups_are_limited_per_turn(h: Harness):
     for n in range(MAX_FOLLOWUPS):
         await respond(h, call("lookup_evidence", {"query": f"Friday {n}"}), transcript="", audio_ms=0)
         assert creates(h)[-1]["metadata"]["relay"] == "followup" and h.c.turn.followups == n + 1
-        last = n + 1 == MAX_FOLLOWUPS  # the last one must speak: no tools
-        assert ("tool_choice" in creates(h)[-1]) == last
+        assert creates(h)[-1]["tool_choice"] == "none"  # a follow-up only speaks (the countdown resumes)
     await respond(h, call("lookup_evidence", {"query": "Friday again"}), transcript="", audio_ms=0)
     *_, (call_id, output) = outputs(h)
     assert json.dumps(output) == LIMIT_OUTPUT
@@ -617,7 +646,8 @@ async def test_milestone_2_the_facilitator_speaks_up_before_a_wrong_decision_and
     assert request["metadata"]["relay"] == "decision" and "tool_choice" not in request
     assert prompts.DRAFT_PREFIX + json.dumps({"decision": draft["decision"], "owner": "Bob",
                                              "source_ids": draft["source_ids"]}) in request["instructions"]
-    assert "follow_up: the owner's next step" in request["instructions"]  # (in its own words, not a quote)
+    assert "`follow_up` as the owner's next step" in request["instructions"]  # (in its own words, not a quote)
+    assert "`decision` as one short plain sentence" in request["instructions"]  # not the draft's labels
     # live 2026-10-23: the model may save an invented decision; it is rejected and the draft goes in instead
     await respond(h, call("save_decision", {"decision": "Use the new onboarding flow for the pilot program",
                                             "owner": "Alex", "follow_up": "Tell the pilot users"}),
@@ -667,7 +697,10 @@ async def test_a_valid_save_decision_is_kept_and_a_repeat_is_already_saved(h: Ha
                                                                                            ["REQ-2"], 1)
     confirm = creates(h)[-1]  # saved, nothing said: a confirmation follows
     assert confirm["metadata"]["relay"] == "followup" and confirm["tool_choice"] == "none"
-    assert "the decision is in the meeting notes" in confirm["instructions"]
+    # self-contained (live 2026-10-24: "confirm the decision" alone made the model greet the room)
+    assert ('You just saved this decision to the meeting notes: "Friday: beta release, announcement to beta users '
+            'only", owned by Bob.') in confirm["instructions"]
+    assert "Don't greet or introduce yourself." in confirm["instructions"]
     await respond(h, transcript="Saved: beta users only, Bob sends it.", audio_ms=400)
     assert h.b("reply_start")[-1]["kind"] == "decision"
     await h.drained()

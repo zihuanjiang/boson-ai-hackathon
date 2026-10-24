@@ -716,7 +716,9 @@ async def meeting_run(deck: Deck, connector: FakeConnector, question: str, *, ta
     answer = await deck.until(lambda m: m.get("type") == "caption" and m.get("role") == "assistant" and m.get("final")
                               and "From the documents" in (m.get("text") or ""), "the answer", mark)
     assert f"[{source}]" in answer["text"]
-    await deck.until(tool_applied("set_presentation_state"), "resume applied", mark)
+    # the follow-up only speaks; the countdown resumes (ticker `auto`)
+    await deck.until(lambda m: m.get("type") == "tool" and m.get("name") == "set_presentation_state"
+                     and m.get("status") in ("applied", "auto"), "resume applied", mark)
     clarified = await deck.until(lambda m: m.get("type") == "meeting" and m.get("clarifications"), "clarified", mark)
     assert (clarified["clarifications"][0]["question"], clarified["clarifications"][0]["by"]) == (question, "auto")
     resumed = await deck.until(lambda m: is_type("reply_start", kind="narration")(m) and m["reply"] > first["reply"],

@@ -464,6 +464,7 @@ class Controller:
         self.narration_source: str | None = None  # the current narration: live · backup (live mode) · rendered
         self._presented = False  # a live narration was heard since the presentation started (no greeting after it)
         self._echo = False  # Realtime echoes response metadata: a response without it is never a narration
+        self._tools_hidden = False  # a meeting session's tools are withdrawn for a speak-only response (see _hide_tools)
         self.fragment: int | None = 0 if self.current_slide.is_relay else None  # visible on the current slide
         self.banner: str | None = None
 
@@ -2334,6 +2335,14 @@ class Controller:
             turn.decision_saved = True
             state_ran = True
         confirm = prompts.FOLLOWUP_DECISION if turn.kind == KIND_DECISION else prompts.FOLLOWUP_CONFIRM
+        if (turn.kind in (KIND_ANSWER, KIND_DECISION) and turn.followups > 0 and turn.audio_bytes == 0
+                and not any(answer.strip() for answer in turn.answers) and turn.followups < MAX_FOLLOWUPS):
+            # a follow-up that said nothing (live 2026-10-24: it called set_presentation_state resume, or
+            # generate_meeting_notes, instead of answering): ask once more, and drop what it queued, so the room
+            # never goes back to the slide without hearing the answer
+            if turn.queued is not None:
+                await self._discard_queued("a silent follow-up: the answer is asked for again")
+            return prompts.FOLLOWUP_DECISION if turn.kind == KIND_DECISION else prompts.FOLLOWUP_LOOKUP
         if data_ran:
             return prompts.FOLLOWUP_DECISION if turn.kind == KIND_DECISION else prompts.FOLLOWUP_LOOKUP
         if state_ran and turn.audio_bytes == 0 and turn.followups < MAX_FOLLOWUPS:
@@ -2344,7 +2353,9 @@ class Controller:
         """A data tool, now: its output is what the follow-up answers from."""
         if call.name == tools.LOOKUP_EVIDENCE:
             query = call.args["query"]
-            results = evidence.search(query, evidence.entries(self.meeting, self.mstate))
+            # the asker's own words are searched too and fused with the model's query (evidence.search_for_question)
+            question = turn.user_text if turn.kind == KIND_ANSWER else None
+            results = evidence.search_for_question(query, question, evidence.entries(self.meeting, self.mstate))
             lookup = self.mstate.add_lookup(query, results, by="model",
                                             purpose="answer" if turn.kind == KIND_ANSWER else "other")
             turn.lookups.append(lookup)
@@ -2455,17 +2466,20 @@ class Controller:
         metadata = {"relay": KIND_FOLLOWUP, "reply": str(turn.reply)}
         turn.expect_tag = metadata
         phase = self.mstate.phase
+        lookup = turn.lookups[-1] if turn.lookups else None
+        decision = self.mstate.decisions[-1] if turn.decision_saved and self.mstate.decisions else None
+        # A follow-up only speaks: everything it needs is in its instructions (the question, the results, the saved
+        # decision), the resume is the controller's countdown, and tool_choice "none" goes along although live
+        # 2026-10-24 Higgs did not honour it (a follow-up called get_presentation_state anyway).
         response: dict[str, Any] = {
-            "instructions": prompts.followup_instructions(kind, meeting=self.meeting, agenda_phase=phase,
-                                                          question=turn.user_text),
-            "metadata": metadata}
-        if (kind != prompts.FOLLOWUP_LOOKUP or phase != PRESENTATION or turn.kind != KIND_ANSWER
-                or turn.followups >= MAX_FOLLOWUPS):
-            # only an answer in the presentation may call a tool (resume), and never the last follow-up: it speaks
-            response["tool_choice"] = "none"
+            "instructions": prompts.followup_instructions(
+                kind, meeting=self.meeting, agenda_phase=phase, question=turn.user_text, speaker=turn.speaker,
+                results=getattr(lookup, "results", None) or [], decision=decision),
+            "metadata": metadata, "tool_choice": "none"}
         self._cancel_timer("drain")
         self._start_timer("reply_wait", REPLY_WAIT_S, self._on_reply_wait)
         self._note("followup", {"reply": turn.reply, "kind": kind, "turn": turn.kind, "n": turn.followups})
+        await self._hide_tools()
         await self._request_events(turn, [{"type": "response.create", "response": response}])
 
     async def _finish_meeting_turn(self, turn: Turn) -> None:
@@ -2729,6 +2743,10 @@ class Controller:
         self._start_timer("reply_wait", REPLY_WAIT_S, self._on_reply_wait)
         self._set_state(state, None)
         self._note("facilitator_request", {"kind": turn.kind, "reply": turn.reply})
+        if tool_choice == "none":  # speak only (hand-over, intervention, summary): no tool to reach for
+            await self._hide_tools()
+        else:  # the decision: save_decision must be there
+            await self._show_tools()
         await self._request_events(turn, [{"type": "response.create", "response": response}])
 
     async def _enter_wrapup(self) -> None:
@@ -3280,6 +3298,7 @@ class Controller:
         self._call_items.clear()
         self._user_items.clear()
         self._stream_ms = 0.0
+        self._tools_hidden = False  # a new session starts from session_config(): every tool declared
         if self.turn is not None:
             self.turn.audio_item_id = None
         if self.live is not None:
@@ -3461,7 +3480,31 @@ class Controller:
         return build_instructions(self.talk, self._context(), self.meeting)
 
     def _turn_update(self) -> dict:
-        """Per-turn session.update: instructions only, or the full config with RELAY_FULL_SESSION_UPDATE=1."""
+        """Per-turn session.update: instructions only, or the full config with RELAY_FULL_SESSION_UPDATE=1. A turn
+        that opens while the tools are withdrawn (after a speak-only response) gets them back in the same update."""
         if self.settings.full_session_update:
+            self._tools_hidden = False
             return {"type": "session.update", "session": self.session_config()}
-        return {"type": "session.update", "session": {"type": "realtime", "instructions": self._instructions()}}
+        session: dict[str, Any] = {"type": "realtime", "instructions": self._instructions()}
+        if self._tools_hidden:
+            session["tools"] = tools.tool_specs(self.talk, self.meeting)
+            self._tools_hidden = False
+        return {"type": "session.update", "session": session}
+
+    async def _hide_tools(self) -> None:
+        """Withdraw a meeting session's tools before a response that must only speak (a follow-up, an intervention,
+        the hand-over, the summary). Live 2026-10-24: a per-response `tool_choice: "none"` was ignored, and such
+        responses called set_presentation_state / generate_meeting_notes instead of answering; a tool that isn't
+        declared can't be called. `tools` can change mid-session (only turn_detection is fixed)."""
+        if self.meeting is None or self._tools_hidden:
+            return
+        if await self._rt({"type": "session.update", "session": {"type": "realtime", "tools": []}}):
+            self._tools_hidden = True
+
+    async def _show_tools(self) -> None:
+        """Declare the tools again before a response that may call them (the decision's save_decision)."""
+        if self.meeting is None or not self._tools_hidden:
+            return
+        if await self._rt({"type": "session.update",
+                           "session": {"type": "realtime", "tools": tools.tool_specs(self.talk, self.meeting)}}):
+            self._tools_hidden = False

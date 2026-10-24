@@ -214,3 +214,25 @@ Add our own findings here as we hit them (date them).
     the conversation); the follow-up `response.create` without new instructions called `save_decision` again (this
     time right: beta users only, owner Bob) and said nothing. Validate decisions against the transcript; follow-ups
     after a tool result need explicit instructions and no tools.
+- 2026-10-24 ~00:30, first live runs of the whole online-meeting demo (`scripts/live_check.py --talk
+  talks/rollout-review`: real server + Higgs, TTS 3 participant clips streamed in real time, mic off):
+  - **Voice barge-in on the clip stream works**: Alice's clip cut the facilitator 1.70–1.72 s into
+    `rollback-trigger` in 4/4 runs (no tap; the facilitator's audio never reaches the input).
+  - **A per-response `tool_choice: "none"` is accepted but not honoured**: follow-ups sent with it still called
+    `set_presentation_state` (resume), `get_presentation_state` (twice) or `generate_meeting_notes` and said
+    nothing — so Alice's question went unanswered and the decision was never confirmed aloud. A per-response
+    `tools: []` was no better in a probe (0/3 spoke). What works: **withdraw the session's tools**
+    (`session.update {"tools": []}`) before a speak-only response and declare them again before the next turn that
+    may call them; drop the base-prompt line "then call set_presentation_state with action resume" (it made the model
+    call it *instead of* answering; the controller's countdown resumes anyway); make every follow-up self-contained
+    (the question, the excerpts, the saved decision): a bare "confirm the decision" got "Hello! I'm ready to
+    facilitate the Release 4.3 rollout review meeting."
+  - **The model's lookup query can miss**: "Release 4.3 rollout dates" ranks DEC-1, DEC-3, REQ-1 alone, and the
+    answer was "the documents don't specify". Fusing it with a search on the asker's own words
+    (`evidence.search_for_question`) puts REQ-2 first for every query the model sent; the answer was then right
+    ("Friday is the beta release, not production") in 2/2 runs.
+  - With "at most thirty words … no dates", the intervention came down from ~40 words / 15 s to ~25 words, and it
+    cited the earlier clarification ("…beta to beta users only, per CL-1. Does that align with the plan?"). Decisions
+    read as plain sentences once asked for ("Friday's release is beta and the announcement goes to beta users
+    only."). Facilitator silent on Bob's conflicting line alone; the question 0.3–0.5 s after Carol's "Great, let's
+    finalize that." End of speech → first audio ~1.0 s.

@@ -6,9 +6,10 @@ import time
 
 import pytest
 
-from relay.evidence import (CLARIFICATION_TITLE, DECISION_TITLE, MAX_EXCERPT_CHARS, Entry, entries, search, stem,
-                            tokens)
-from relay.meeting import MeetingState
+from relay.evidence import (CLARIFICATION_TITLE, DECISION_TITLE, MAX_EXCERPT_CHARS, Entry, entries, search,
+                            search_for_question, stem, tokens)
+from relay.meeting import MeetingState, load_meeting
+from relay.talk import load_talk
 from tests.test_meeting import ROLLOUT, FakeClock, meeting_package
 
 
@@ -103,6 +104,21 @@ def test_search_finds_the_friday_statement(package):
 ])
 def test_search_ranks_the_relevant_statement_first(package, query, top):
     assert ids(search(query, entries(package, None)))[0] == top
+
+
+def test_a_question_is_searched_with_the_askers_own_words_too():
+    """Live 2026-10-24 the model looked up "Release 4.3 rollout dates" for Alice's question; alone that misses REQ-2
+    and the facilitator said the documents didn't say. Fused with her words, REQ-2 comes first."""
+    corpus = entries(load_meeting(load_talk(ROLLOUT)), None)
+    question = "Wait, I thought Friday was production. Which one is it?"
+    assert "REQ-2" not in ids(search("Release 4.3 rollout dates", corpus))
+    for query in ("Release 4.3 rollout dates", "Friday rollout stage", "rollout schedule", "release stages"):
+        fused = search_for_question(query, question, corpus)
+        assert ids(fused)[0] == "REQ-2" and len(fused) == 3, (query, ids(fused))
+        assert all(0 < result["score"] <= 1 for result in fused)
+        assert set(fused[0]) == {"source_id", "kind", "title", "excerpt", "score"}
+    assert search_for_question("Friday rollout", None, corpus) == search("Friday rollout", corpus)
+    assert search_for_question("Friday rollout", "  ", corpus) == search("Friday rollout", corpus)
 
 
 def test_only_positive_scores_and_k(package):

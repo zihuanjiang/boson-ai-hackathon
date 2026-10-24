@@ -312,7 +312,9 @@ def test_the_facilitator_base_is_short_and_says_when_to_look_things_up(meeting_p
     assert base.startswith('You are the facilitator of the meeting "Release 4.3 rollout review" with Alice (Product '
                            "manager), Bob (Customer communications) and Carol (Engineering lead).")
     assert "call lookup_evidence first and answer only from what it returns" in base
-    assert "set_presentation_state with action resume" in base and "stay silent unless someone asks" in base
+    # no "then call set_presentation_state resume": live 2026-10-24 it made the model call it instead of answering
+    assert "set_presentation_state" not in base and "the presentation then resumes by itself" in base
+    assert "stay silent unless someone asks" in base
     instructions = build_instructions(talk, TurnContext(phase="presenting", slide_id="plan"), meeting)
     assert instructions.startswith(base + "\n\nPhase: presenting\n")
 
@@ -373,16 +375,32 @@ def test_talking_point_instructions(meeting_pair):
 
 def test_follow_up_handover_intervention_decision_and_wrapup_instructions(meeting_pair):
     talk, meeting = meeting_pair
-    lookup = prompts.followup_instructions(prompts.FOLLOWUP_LOOKUP, meeting=meeting, question="Is Friday beta?")
-    assert 'The question: "Is Friday beta?"' in lookup
-    assert ("Answer the question now from these results in one or two short sentences. Use only what they say; if "
-            "they don't answer it, say so, then call set_presentation_state with action resume.") in lookup
+    # follow-ups are self-contained and only speak (live 2026-10-24: get_presentation_state calls, a greeting)
+    results = [{"source_id": "REQ-2", "excerpt": "Friday 24 October: beta release to the beta group only."},
+               {"source_id": "DEC-2", "excerpt": "Announcements follow the stage."}, "not a result"]
+    lookup = prompts.followup_instructions(prompts.FOLLOWUP_LOOKUP, meeting=meeting, question="Is Friday beta?",
+                                           speaker="Alice", results=results)
+    assert 'Alice just asked: "Is Friday beta?"' in lookup
+    assert ("The documents say: [REQ-2] Friday 24 October: beta release to the beta group only. [DEC-2] "
+            "Announcements follow the stage.") in lookup
+    assert ("Answer now, in one or two short spoken sentences, only from what the documents say (if they don't "
+            "answer it, say so), then say you'll get back to the slide.") in lookup
+    assert "set_presentation_state" not in lookup and "Don't greet or introduce yourself." in lookup
+    assert lookup.endswith("No lists, markdown or URLs. Don't call any tool.")
+    nothing = prompts.followup_instructions(prompts.FOLLOWUP_LOOKUP, meeting=meeting, question="Who?")
+    assert 'Someone just asked: "Who?"' in nothing and "The documents had nothing on it." in nothing
     room = prompts.followup_instructions(prompts.FOLLOWUP_LOOKUP, meeting=meeting, agenda_phase="discussion")
-    assert "set_presentation_state" not in room and "Don't call any tool." in room
-    assert "Confirm it in one short sentence. Don't call any tool." in prompts.followup_instructions(
+    assert "then stop." in room and "set_presentation_state" not in room and "Don't call any tool." in room
+    assert "Confirm in one short sentence what you just stored." in prompts.followup_instructions(
         prompts.FOLLOWUP_CONFIRM, meeting=meeting)
+    saved = prompts.followup_instructions(prompts.FOLLOWUP_DECISION, meeting=meeting,
+                                          decision={"decision": "Friday is beta, for beta users only", "owner": "Bob"})
+    assert ('You just saved this decision to the meeting notes: "Friday is beta, for beta users only", owned by Bob.'
+            in saved)
+    assert "names the decision and Bob and says it is in the notes." in saved and "Don't greet" in saved
     handover = prompts.handover_instructions(meeting)
-    assert 'the group now discusses "What goes out on Friday, and who sends it?"' in handover
+    assert 'The discussion question: "What goes out on Friday, and who sends it?"' in handover
+    assert "tell the group it's their turn to discuss that question" in handover and "without greeting" in handover
     assert "only speak up if something doesn't match the documents" in handover and "Don't call any tool." in handover
     event = {"type": "intervene", "label": "Friday's release stage", "claimed_label": "production",
              "established_label": "beta", "source_ids": ["REQ-2"], "quote": "I'll draft the production launch.",
@@ -398,7 +416,9 @@ def test_follow_up_handover_intervention_decision_and_wrapup_instructions(meetin
     assert "Mismatch: Friday's audience: the group said all customers" in intervention
     assert "The documents say: [REQ-2] On Friday the beta release goes out." in intervention
     assert 'Earlier in this meeting it was clarified (CL-1): "Friday is beta."' in intervention
-    assert "Never say anyone is wrong. At most two short sentences." in intervention
+    assert 'Say at most thirty words: start with "One clarification before we confirm:"' in intervention
+    assert "no dates" in intervention and "one short yes-or-no question" in intervention
+    assert "Never say anyone is wrong." in intervention
     draft = {"decision": "Friday: beta", "owner": "Bob", "follow_up": "Bob notifies beta users",
              "source_ids": ["REQ-2"], "type": "decision_draft"}
     decision = prompts.decision_instructions(draft, [("Carol", "Yes, beta users only."), (None, "")],
@@ -407,8 +427,10 @@ def test_follow_up_handover_intervention_decision_and_wrapup_instructions(meetin
     # the follow-up (the action item) is the model's own words for the owner's next step, not a quote to keep
     assert (prompts.DRAFT_PREFIX + '{"decision": "Friday: beta", "owner": "Bob", "source_ids": ["REQ-2"]}'
             ) in decision.splitlines()
-    assert "Call save_decision with these values, correcting them only if the quotes say otherwise, and with " \
-           "follow_up: the owner's next step as a short instruction in your own words" in decision
+    assert ("Call save_decision with these values, correcting them only if the quotes say otherwise: write "
+            "`decision` as one short plain sentence a person would say (the draft's facts, not its labels), and "
+            "`follow_up` as the owner's next step in your own words") in decision
+    assert "Don't greet." in decision
     wrapup = prompts.wrapup_instructions("Meeting notes: D1 Friday beta (owner Bob).", meeting=meeting)
     assert "The meeting notes: Meeting notes: D1 Friday beta (owner Bob)." in wrapup
     assert "the decisions with their owners first, then the open questions" in wrapup and "Don't call any tool." in \

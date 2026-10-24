@@ -352,7 +352,11 @@ def _foreign_dirs(out_dir: Path, talk: Talk) -> list[str]:
     relay_ids = {slide.id for slide in talk.relay_slides}
     return [f"{_rel(path)}/ belongs to no relay slide of {talk.id!r} (left in place; delete it if unused)"
             for path in sorted(out_dir.iterdir())
-            if path.is_dir() and not path.name.startswith(".") and path.name not in relay_ids]
+            if path.is_dir() and not path.name.startswith(".") and path.name not in relay_ids
+            and path.name != CLIPS_DIR]
+
+
+CLIPS_DIR = "clips"  # out/talks/<id>/clips/: the demo's participant clips (relay.clips), not a slide
 
 
 def _default_synth(settings: Settings, fake: bool) -> Synth | None:
