@@ -8,7 +8,7 @@ Two days. One demo. A very tired room.
 <!-- .slide: id="name" -->
 # On the Same Page
 
-An AI facilitator for meetings
+AI meeting facilitator, built on Higgs Audio
 
 **Presents · answers · listens**
 
@@ -37,7 +37,7 @@ Interrupt: it looks up, cites, resumes <!-- .element: class="fragment" -->
 
 Higgs transcribes · Claude checks every line
 
-Conflict · hidden disagreement · unsettled detail
+Conflict · hidden disagreement · detail nobody settled
 
 ---
 
