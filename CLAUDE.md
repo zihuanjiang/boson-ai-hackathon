@@ -1,58 +1,56 @@
-# bosonai_hackathon — On the Same Page (built on Relay)
+# bosonai_hackathon: On the Same Page (final)
 
-Project for the **Higgs Audio Hackathon 2026** (Boson AI + UofT MScAC, Toronto, Fri Oct 23 – Sat Oct 24, 2026).
-We are building **On the Same Page**, a real-time AI meeting facilitator: it presents a short deck live through one
-Higgs Realtime session, answers interruptions from cited documents (`lookup_evidence`), listens to the discussion,
-speaks up only when a decision is about to contradict the sources or an earlier clarification, and keeps the
-decisions in meeting notes. It grew out of **Relay** (a live voice co-presenter); the Python package is still `relay`.
-The workspace-level `../CLAUDE.md` rules (uv only, scratch dir, git branches, sandbox) still apply.
+Project for the **Higgs Audio Hackathon 2026** (Boson AI + UofT MScAC, Toronto, Oct 23–24, 2026). **Alice (AI
+co-host)** joins a real Zoom call, presents a short deck live through one Higgs Realtime session from a script Claude
+wrote, answers interruptions from cited documents (`lookup_evidence`), listens to the discussion, asks one question
+before the group confirms a decision that contradicts the documents (Claude's alignment check), and keeps the
+decisions in notes. The Python package is still called `relay`. The workspace-level `../CLAUDE.md` rules (uv only,
+scratch dir, git, sandbox) still apply.
 
 ## Read first
 
-- `doc/brief_updated.md` — **the spec** since 2026-10-23 evening (a teammate's revision; product behaviour wins
-  here). `doc/discrepancies.md` maps it onto the code. `doc/brief.md` is the original Relay brief (history; its
-  Appendices still describe the narration and floor-control parts that carried over).
-- `doc/design.md` — interfaces, deck socket protocol, state machine, session config. Change it with the code.
-- `doc/plan.md` — status, decisions (D1…), milestones, live task list. Keep it current.
-- `doc/gotchas.md` — read before writing any API code. Add every new finding (dated).
-- `doc/README.md` — index of the API notes.
+- `README.md`: what it is, how to run it, the Higgs models, limits.
+- `doc/architecture.md`: how it works. Change it with the code.
+- `doc/gotchas.md`: dated live findings. Read before writing API code; add every new finding (dated).
+- `doc/brief_updated.md`: the product spec.
 
 ## Layout and commands
 
 ```text
-relay/      Python backend (FastAPI + raw websockets to Higgs)   web/     deck client, plain ES modules, no build
-talks/<id>/ talk/meeting packages (slides.md, script.yaml, agenda.yaml, sources/, checks.yaml)   tests/ pytest
-out/        renders, logs, smoke outputs (gitignored)            scripts/ smoke tests, vendoring, docs fetch
+relay/    the server (FastAPI + raw websockets to Higgs)     web/      the shared page, plain ES modules, no build
+scripts/  zoom_bot.py (Alice in Zoom)                         talks/project-overview/   the demo meeting
+doc/      architecture, findings, API notes                  out/      runs and logs (gitignored)
 ```
 
 ```bash
-uv run python -m relay.talk talks/test                    # validate a talk package
-uv run python -m relay.render talks/test [--fake]          # render narration (--fake: offline tone bursts)
-uv run python -m relay serve talks/test [--fake-realtime]  # http://localhost:8000 → click Arm
-uv run python -m relay.verify <check>                      # brief Appendix F checks on the live API
-uv run pytest                                              # all tests, no network
+uv sync
+uv run --with playwright python scripts/zoom_bot.py --url "<Zoom join link>" --talk talks/project-overview
+uv run python -m relay.talk talks/project-overview          # validate the meeting package
 ```
+
+## Rules for this branch (main, finalized 2026-10-24)
+
+- **Everything is live.** No offline tests, no fake Realtime, no recorded backup narration, no prerecorded
+  participants, no dry runs. Changes are verified by running the Zoom bot live (Ken does it). Don't add them back.
+- The facilitator is **Alice**, joins Zoom as "Alice (AI co-host)", default voice; Ken hosts.
+- The deck's words live in `talks/project-overview/script.yaml` (guided points) and `slides.md`; its look in
+  `talks/project-overview/deck/project/` (a Claude Slides deck's files). Keep ids, order and fragment counts in step.
+- Spoken lines: numbers as words, no source ids or acronyms read aloud.
 
 ## Key facts
 
 - Base URL `https://api.boson.ai/v1`, header `Authorization: Bearer $BOSON_API_KEY` (key format `bai-…`).
-- Model IDs: `higgs-realtime-1.5-preview` (WS `wss://api.boson.ai/v1/realtime`; `higgs-realtime` is the older id —
-  **the newest Higgs model is always the default**, Ken 2026-10-24), `higgs-tts-3` (`POST /v1/audio/speech`),
-  `higgs-avatar` (`POST /v1/videos`), `higgs-stt-3.1` (input transcription inside Realtime only).
-- Realtime is OpenAI-Realtime-compatible, WebSocket only, PCM16 24 kHz mono. Nothing arrives before the first
-  `session.update`; `turn_detection` defaults to null; tool outputs are JSON strings.
-- Key lives in `.env` (gitignored). Never in code, logs, the browser, or the public repo.
-- Allowed network hosts: `api.boson.ai`, `docs.boson.ai`, `www.boson.ai`, `raw.githubusercontent.com` (+ PyPI).
-  Node/npm are not installed (decision D1): the client has no build step.
-
-## Conventions
-
-- Python 3.12 via uv; tests offline (fakes for TTS and Realtime). Scratch work in `.scratch/<task>/`.
-- Talk text: numbers as words, ≤ 300 chars per chunk, delivery tags only at a chunk's start (`doc/design.md` §2).
-- When docs and live behaviour disagree, trust the live ack and record it in `doc/gotchas.md`.
+- Realtime: `wss://api.boson.ai/v1/realtime`, model `higgs-realtime-1.5-preview` (**the newest Higgs model is always
+  the default**; `higgs-realtime` is the older id). OpenAI-Realtime-compatible, PCM16 24 kHz mono, nothing arrives
+  before the first `session.update`, tool outputs are JSON strings. Transcription: `higgs-stt-3.1` inside Realtime.
+- Keys live in `.env` (gitignored): `BOSON_API_KEY`, `ANTHROPIC_API_KEY`. Never in code, logs, the browser, or the
+  public repo.
+- Allowed network hosts: `api.boson.ai`, `docs.boson.ai`, `www.boson.ai`, `api.anthropic.com` (the alignment check),
+  `raw.githubusercontent.com` (+ PyPI). Node/npm are not installed: the web client has no build step.
+- Chrome can't start inside Claude Code's sandbox: the user runs the Zoom bot with `!`.
 
 ## Hackathon constraints
 
 - Judging: Use of Higgs Audio 30%, UX 25%, Innovation 25%, Technical execution 20%. Higgs must be central.
 - Submission: public repo (setup, example inputs/outputs, pinned tag, **no keys**), 2–3 min public video,
-  ≤ 200-word write-up, per-model notes, team + limitations.
+  ≤ 200-word write-up (in README.md), per-model notes, team + limitations.

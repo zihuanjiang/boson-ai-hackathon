@@ -1,6 +1,6 @@
 # How it works
 
-The pipeline (doc/design.md §5–§7 and §12, doc/plan.md D53, D59–D61, D78–D84, D88).
+The pipeline (doc/architecture.md).
 
 - [HOW-1] One Higgs Realtime session runs the whole meeting, so what was clarified during the presentation stays in its context for the discussion.
 - [HOW-2] The facilitator presents one talking point per response, and performs the guidance Claude wrote for it in advance, before the meeting: what the point must do, the exact lines that must land, the delivery and the length.

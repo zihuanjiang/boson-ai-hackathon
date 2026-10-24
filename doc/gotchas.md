@@ -3,6 +3,10 @@
 Collected from the docs, the tutorial authors' live-session notes (Aug–Oct 2026), and the hackathon page.
 Add our own findings here as we hit them (date them).
 
+This is a dated log. Some entries name tools that were removed when `main` was finalized on 2026-10-24
+(`scripts/live_check.py`, `scripts/e2e_chrome.py`, the TTS 3 backup renders, the fake Realtime, the older decks):
+the findings and measurements still hold; the system they describe now is `doc/architecture.md`.
+
 ## Account / auth / billing
 
 - **Credit is not auto-claimed.** Until the banner is clicked, every call is `429 insufficient_quota` /

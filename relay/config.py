@@ -74,7 +74,6 @@ class Settings:
     turn_detection: dict | None = None  # None: manual turns (DEFAULT_TURN_DETECTION); a dict: server VAD
     temperature: float | None = None
     full_session_update: bool = False
-    fake_realtime: bool = False
     input: str | None = None  # INPUT_MODES; None: clips for a talk with demo.yaml, else mic
     host: str = "127.0.0.1"
     port: int = 8000
@@ -139,7 +138,6 @@ def load_settings(**overrides) -> Settings:
         "turn_detection": _turn_detection(env.get("RELAY_TURN_DETECTION")),
         "temperature": float(temperature) if temperature else None,
         "full_session_update": _flag(env.get("RELAY_FULL_SESSION_UPDATE")),
-        "fake_realtime": _flag(env.get("RELAY_FAKE_REALTIME")),
         "input": (env.get("RELAY_INPUT") or "").strip().lower() or None,
         "host": (env.get("RELAY_HOST") or "127.0.0.1").strip(),
         "port": int(env.get("RELAY_PORT") or 8000),

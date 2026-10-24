@@ -29,8 +29,8 @@ the Partner).
 3. Start the bot (`BOSON_API_KEY` and `ANTHROPIC_API_KEY` in `.env`; nothing to render: everything is live):
    `! uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --passcode <passcode> --talk talks/project-overview`
    Admit "Alice (AI co-host)" from the waiting room if Zoom asks. Wait until its screen share shows "Imagine…".
-   What to do when it can't join or share: `talks/submission-review/run_of_show_zoom.md` ("Starting the bot",
-   "Fallbacks"; the same bot).
+   If it can't join or share: finish that step by hand in the bot's Chrome window (it prints what it waits for);
+   to share, click Share in that window and pick the Chrome tab "On the Same Page".
 4. Keep the bot's terminal one click away: R, N and `t <text>` are typed there. (`--auto-start` presses R three
    seconds after the share begins: fine for a solo rehearsal, but then there is no time for the disclosure.)
 

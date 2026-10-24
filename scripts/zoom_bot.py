@@ -1,15 +1,14 @@
 """The facilitator in Zoom (contract v5 §2): the bot joins the meeting as its own participant from this computer, with
 no access to the computer's microphone or speakers, and IS the deck of `relay serve --input voice`.
 
-    ! uv run --with playwright python scripts/zoom_bot.py --url "<join link>" [--passcode …] [--talk talks/submission-review]
-                                                          [--server http://127.0.0.1:8000] [--no-serve]
-                                                          [--name "Alice (AI co-host)"] [--auto-start] [--fake-realtime]
-    uv run python scripts/zoom_bot.py --dry-run [--talk talks/submission-review]      # no Zoom, no Chrome, offline
+    uv run --with playwright python scripts/zoom_bot.py --url "<join link>" [--passcode …]
+                                                        [--talk talks/project-overview] [--server http://127.0.0.1:8000]
+                                                        [--no-serve] [--name "Alice (AI co-host)"] [--auto-start]
 
-Chrome can't start inside Claude Code's sandbox: run the live bot yourself with `!`, after joining the meeting on your
-own Zoom (real mic and speakers). The bot:
+Run it after joining the meeting on your own Zoom (real mic and speakers). The bot:
   · starts `relay serve <talk> --input voice` (unless --no-serve) and waits for /healthz;
-  · opens its own Chrome window (profile out/zoom_bot/profile, sound muted, Chrome's fake devices as a safety net):
+  · opens its own Chrome window (profile out/zoom_bot/profile, sound muted; inject.js gives Zoom the facilitator's
+    voice as its microphone, never the computer's):
     tab 1 joins through the Zoom web client as "Alice (AI co-host)" (best effort: anything it can't do, you do in the
     window; it prints what it waits for), tab 2 opens the observer page (<server>/?view=observer, titled
     "On the Same Page"), then clicks Share Screen: Chrome picks that tab by title (no picker);
@@ -19,20 +18,13 @@ own Zoom (real mic and speakers). The bot:
     frame's computed style, Zoom's captions, the only other person on the roster); speech with no name saves a DOM
     probe to out/zoom_bot/speaker-probe/ (≤ 1 per 5 s, 20 per run);
   · MOUTH: the facilitator's `reply_audio` is queued into the page's microphone stream; `reply_drained` goes out when
-    it has played out, `reply_flush` drops what is queued; a backup narration chunk (`play`) is fetched from /media
-    and played the same way (`chunk_ended` after);
+    it has played out, `reply_flush` drops what is queued;
   · KEYS in this terminal: Space, R, arrows, P, H, N (next phase), 0 (reset), `t <text>` + Enter (a typed line),
     q (leave and quit). --auto-start presses R three seconds after the share begins.
 Writes out/zoom_bot/: step screenshots, console.log (the page's `[bot]` lines: the speaker strategy that worked, each
 speaker change), server.log, heard.wav (everything the bot heard, 24 kHz mono), frames.jsonl (the deck messages without
 audio payloads), summary.json (with the speaker attribution: speaker_strategy, speaker_hows, speakers_seen,
 roster_seen, speech_unlabelled_ticks, speaker_probes), speaker-probe/probe-*.json.
-
---dry-run: no Zoom. A fake Zoom page with the same drain/push/flush surface whose "participants" are the talk's demo
-clips (demo.yaml), played on their cues (resampled 24→48→24 kHz on the way, as the real tap would be), against
-`relay serve --input voice` with the fake Realtime, in-process; then the §8 checks: a barge-in during the narration,
-an answer after a lookup, the resume at the interrupted point, the intervention after the confirming line, the
-decision with owner Bob, the notes. Renders and clips are generated as fake tones first if out/ lacks them.
 """
 
 from __future__ import annotations
@@ -386,94 +378,6 @@ class PlaywrightPage:
         pos = await self.page.evaluate("() => window.__bot ? window.__bot.position() : null")
         return pos if isinstance(pos, dict) else {"key": None, "played_ms": None, "total_ms": 0, "drained": True,
                                                   "playing": False}
-
-
-class FakeZoomPage:
-    """The dry run's Zoom (contract v5 §5): the same drain/push/flush surface. Its participants are clips: `speak`
-    plays one from now on, 24→48 kHz, and drain() returns the 48 kHz float32 audio due since the last drain, in real
-    time (silence when nobody speaks), with the clip's speaker as Zoom's active speaker. The mouth counts what it is
-    given and plays it on the wall clock, back to back, like the page's AudioBufferSource queue."""
-
-    def __init__(self, rate: int = 48000) -> None:
-        self.rate = rate
-        self._last: float | None = None
-        self._carry = 0.0  # fractional samples not yet emitted
-        self._clip: dict | None = None  # {"speaker", "samples", "pos", "step"}
-        self._player: dict | None = None  # {"key", "start", "end", "total_ms"}
-        self.spoken: list[dict] = []  # every clip played: step, speaker, start, end (monotonic)
-        self.pushed: dict[Any, int] = {}  # key → bytes queued
-        self.flushes: list[tuple[Any, int | None]] = []
-
-    def speak(self, step: str, speaker: str | None, pcm24: bytes) -> float:
-        """Play a 24 kHz PCM16 clip from now; returns when its audio will have played out."""
-        samples = upsample_2x(pcm24)
-        now = time.monotonic()
-        end = now + len(samples) / self.rate
-        self._clip = {"speaker": speaker, "samples": samples, "pos": 0, "step": step}
-        self.spoken.append({"step": step, "speaker": speaker, "start": now, "end": end})
-        return end
-
-    @property
-    def speaking(self) -> str | None:
-        clip = self._clip
-        return clip["speaker"] if clip is not None and clip["pos"] < len(clip["samples"]) else None
-
-    async def drain(self) -> dict:
-        now = time.monotonic()
-        if self._last is None:
-            self._last = now
-        due = (now - self._last) * self.rate + self._carry
-        n = int(due)
-        self._carry = due - n
-        self._last = now
-        out = bytearray(4 * n)
-        clip = self._clip
-        if clip is not None and clip["pos"] < len(clip["samples"]):
-            take = min(n, len(clip["samples"]) - clip["pos"])
-            piece = clip["samples"][clip["pos"]:clip["pos"] + take]
-            out[:4 * take] = piece.tobytes()
-            clip["pos"] += take
-        speaker = self.speaking
-        return {"events": [], "rate": self.rate, "pcm": base64.b64encode(bytes(out)).decode("ascii"),
-                "peak_db": -120, "others": {}, "position": self._position(), "speaker": speaker,
-                "speaker_how": "fake" if speaker else None, "counts": {}}
-
-    async def position(self) -> dict:
-        return self._position()
-
-    def _position(self) -> dict:
-        p = self._player
-        if p is None:
-            return {"key": None, "played_ms": None, "total_ms": 0, "drained": True, "playing": False}
-        now = time.monotonic()
-        played = max(0, min(p["total_ms"], round((now - p["start"]) * 1000)))
-        return {"key": p["key"], "played_ms": played, "total_ms": round(p["total_ms"]), "drained": now >= p["end"],
-                "playing": now < p["end"]}
-
-    async def push(self, b64: str, key: Any) -> dict:
-        n = len(base64.b64decode(b64))
-        now = time.monotonic()
-        if self._player is not None and self._player["key"] != key:
-            await self.flush(self._player["key"])
-        if self._player is None:
-            self._player = {"key": key, "start": now + 0.03, "end": now + 0.03, "total_ms": 0.0}
-        ms = n / BYTES_PER_MS
-        self._player["end"] = max(now, self._player["end"]) + ms / 1000
-        self._player["total_ms"] += ms
-        self.pushed[key] = self.pushed.get(key, 0) + n
-        return self._position()
-
-    async def flush(self, key: Any) -> dict:
-        p = self._player
-        if p is None or (key is not None and p["key"] != key):
-            return {"key": p["key"] if p else None, "played_ms": None, "flushed": False}
-        played = self._position()["played_ms"]
-        self.flushes.append((p["key"], played))
-        self._player = None
-        return {"key": p["key"], "played_ms": played, "flushed": True}
-
-
-# --- the deck: the bot ------------------------------------------------------------------------------------------
 
 
 class ZoomDeck(Deck):
@@ -846,256 +750,7 @@ def report(summary: dict, out_dir: Path) -> bool:
     return ok
 
 
-# --- the dry run (contract v5 §5) --------------------------------------------------------------------------------
-
-
-class DryRunParticipants:
-    """The demo script's human side against the fake Zoom page: each step waits for its cue (demo_driver.cue_holds on
-    the bot's own knowledge), then a clip plays into the fake Zoom (Zoom's active speaker = its speaker) or a key goes
-    out from the bot."""
-
-    def __init__(self, deck: ZoomDeck, page: FakeZoomPage, demo: dict, clips: dict[str, bytes], *,
-                 timeout_scale: float = 1.0, log: Callable[[str], None] = print) -> None:
-        self.deck, self.page, self.demo, self.clips = deck, page, demo, clips
-        self.timeout_scale, self.log = timeout_scale, log
-        self._ended: dict[str, float] = {}
-        self.results: list[dict] = []
-
-    async def run(self) -> list[dict]:
-        deck = self.deck
-        for step in self.demo.get("steps") or []:
-            armed = time.monotonic()
-            when = step.get("when") or {}
-            timeout = when.get("timeout_ms", 90_000) / 1000 * self.timeout_scale
-            result = {"id": step["id"], "speaker": step.get("speaker"), "action": step.get("action"),
-                      "armed_at": round(deck.now(), 3), "fired_at": None, "ended_at": None, "timed_out": False,
-                      "unavailable": False}
-            self.results.append(result)
-            deck.say(f"next: {step['id']} — waits for {describe_cue(when)}")
-            while not cue_holds(deck, when, armed, time.monotonic(), self._ended):
-                if time.monotonic() - armed > timeout:
-                    result["timed_out"] = True
-                    deck.say(f"!! {step['id']}: waited {timeout:.0f} s for {describe_cue(when)}: played by hand")
-                    break
-                await asyncio.sleep(0.02)
-            result["fired_at"] = round(deck.now(), 3)
-            if step.get("action"):
-                await deck.key(ACTION_KEYS.get(step["action"], step["action"]))
-                self._ended[step["id"]] = time.monotonic()
-                result["ended_at"] = round(deck.now(), 3)
-                continue
-            pcm = self.clips.get(step["id"])
-            if not pcm:
-                result["unavailable"] = True
-                deck.say(f"!! {step['id']}: no clip audio: skipped")
-                self._ended[step["id"]] = time.monotonic()
-                continue
-            ends = self.page.speak(step["id"], step.get("speaker"), pcm)
-            deck.say(f"-> {step['id']}: {step.get('speaker')} speaks into the fake Zoom ({len(pcm) // BYTES_PER_MS} ms)")
-            await asyncio.sleep(max(0.0, ends - time.monotonic()))
-            self._ended[step["id"]] = ends
-            result["ended_at"] = round(deck.now(), 3)
-        return self.results
-
-
-def ensure_fake_media(talk_dir: Path, out_root: Path, log: Callable[[str], None]) -> None:
-    """Fake renders (if the talk isn't rendered under out_root) and fake clips (cached), offline."""
-    from relay.clips import generate_clips
-    from relay.config import Settings
-    from relay.meeting import load_demo
-    from relay.render import render_talk
-    from relay.talk import load_talk
-    from relay.timeline import RenderMissing, load_rendered
-
-    talk = load_talk(talk_dir)
-    try:
-        load_rendered(talk, out_root)
-    except RenderMissing:
-        log(f"rendering {talk.id}'s narration as fake tones under {out_root} (offline)")
-        rendered = render_talk(talk, Settings(), fake=True, out_root=out_root)
-        if not rendered.ok:
-            raise SystemExit(f"fake render failed: {rendered.fatal or rendered.failed}")
-    demo = load_demo(talk)
-    if demo is None:
-        raise SystemExit("the dry run needs the talk's demo.yaml (the participants' lines)")
-    clips = generate_clips(talk, demo, Settings(), fake=True, out_root=out_root)
-    if not clips.ok:
-        raise SystemExit(f"fake clips failed: {clips.fatal or clips.failed}")
-
-
-# The dry run's stand-in for Claude (the fake Realtime can't call it, and the dry run is offline): what the analysis
-# should report on the demo's own discussion lines, per demo step, citing the talk's passages verbatim. A disclosed
-# fake like the fake transcripts: it proves the controller's model-based path through the voice input (issue → one
-# question at the confirmation → resolution → the decision with its owner), not the model's judgement
-# (scripts/alignment_eval.py measures that live).
-DRY_RUN_ANALYSIS: dict[str, dict[str, Any]] = {
-    "submission-review": {
-        "claim": "bob-claim", "confirm": "carol-finalize", "fix": "carol-correct",
-        "evidence": [("LIM-2", "built for online meetings, not hands-free in-person ones")],
-        "topic": "Where it works: online or in person",
-        "said": "The write-up says it works for in-person meetings too",
-        "question": "Before we finalize: didn't we establish it is built for online meetings only? Should the write-up "
-                    "say that?",
-        "decision": "The write-up says it works for online meetings only; in-person is future work",
-        "owner": "Bob", "follow_up": "Bob writes the limitations section",
-    },
-    "rollout-review": {
-        "claim": "bob-announce", "confirm": "carol-finalize", "fix": "carol-correct",
-        "evidence": [("REQ-2", "the beta release, not the production release, goes to the beta group only"),
-                     ("DEC-2", "The Friday 24 October beta is announced to beta users only")],
-        "topic": "Friday's release and its audience",
-        "said": "Announce Friday as a production launch to all customers",
-        "question": "Before we confirm: didn't we establish Friday is the beta? Should the announcement go to beta "
-                    "users only?",
-        "decision": "Friday is the beta release, announced to beta users only",
-        "owner": "Bob", "follow_up": "Bob announces the beta to beta users",
-    },
-}
-
-
-def dry_run_analyzer(talk: Any, demo: Any) -> Any:
-    """A `semantic.FakeAnalyzer` scripted from DRY_RUN_ANALYSIS for this talk's demo, or None when the talk has no
-    script (the dry run then needs `--alignment legacy`)."""
-    from relay import semantic
-
-    spec = DRY_RUN_ANALYSIS.get(talk.id)
-    if spec is None or demo is None:
-        return None
-
-    def norm(text: Any) -> str:
-        return " ".join(str(text or "").split())
-
-    says = {step.id: norm(step.say) for step in demo.clips}
-    lines = {role: says.get(spec[role]) for role in ("claim", "confirm", "fix")}
-    if None in lines.values():
-        return None
-    evidence = [{"kind": "source", "id": sid, "quote": quote} for sid, quote in spec["evidence"]]
-
-    def issue(**fields: Any) -> dict:
-        return {"existing_issue_id": None, "issue_type": "evidence_conflict", "topic": spec["topic"],
-                "claim": spec["said"], "claim_utterance_ids": [], "participant_views": [], "missing_details": [],
-                "evidence": evidence, "material_consequence": None, "commitment": "proposed",
-                "commitment_utterance_ids": [], "recommendation": "silent", "confidence": "high",
-                "explanation": "dry-run script", "question": spec["question"], **fields}
-
-    def answer(snapshot: Any) -> dict:
-        ids = {norm(u["text"]): u["id"] for u in snapshot.utterances}
-        new = {norm(snapshot.utterance(uid)["text"]) for uid in snapshot.new_utterance_ids if snapshot.utterance(uid)}
-        known = snapshot.issues[0]["id"] if snapshot.issues else None
-        claim_id = ids.get(lines["claim"])
-        if lines["fix"] in new and known is not None:
-            fix_id = ids[lines["fix"]]
-            return {"updates": [{"issue_id": known, "status": "resolved", "utterance_ids": [fix_id], "settled": [],
-                                 "note": spec["decision"]}],
-                    "decision_proposals": [{"decision": spec["decision"], "status": "confirmed", "owner": spec["owner"],
-                                            "owner_utterance_ids": [fix_id], "agreement_utterance_ids": [fix_id],
-                                            "follow_up": spec["follow_up"], "source_ids": [sid for sid, _ in spec["evidence"]],
-                                            "supersedes_decision_id": None, "resolves_issue_ids": [known],
-                                            "explanation": "dry-run script"}]}
-        if lines["confirm"] in new and claim_id is not None:
-            return {"issues": [issue(existing_issue_id=known, claim_utterance_ids=[claim_id],
-                                     commitment_utterance_ids=[ids[lines["confirm"]]], commitment="confirming",
-                                     recommendation="clarify")]}
-        if lines["claim"] in new and claim_id is not None:
-            return {"issues": [issue(claim_utterance_ids=[claim_id])]}
-        return {}
-
-    return semantic.FakeAnalyzer(answer, model="dry-run-script")
-
-
-async def dry_run(talk_dir: Path, *, out_root: Path, out_dir: Path, log: Callable[[str], None] = print,
-                  narration_s: float = 3.0, timeout_scale: float = 1.0, owner: str = "Bob",
-                  alignment: str = "claude") -> dict:
-    """The whole demo over the real server (`--input voice`, in-process uvicorn) with the fake Realtime hearing the
-    demo's lines in order, the fake Zoom page playing the clips on their cues, and the bot's ZoomDeck as the deck.
-    `alignment`: claude (the default: the model-based path, with DRY_RUN_ANALYSIS standing in for Claude), legacy
-    (checks.yaml) or off. Returns the summary (with the §8 checks); writes out_dir/{frames.jsonl, heard.wav,
-    summary.json}."""
-    import uvicorn
-    import websockets
-
-    from relay.clips import load_clips
-    from relay.config import Settings
-    from relay.fake_realtime import FakeConnector
-    from relay.meeting import load_demo
-    from relay.server import create_app
-    from relay.talk import load_talk
-
-    ensure_fake_media(talk_dir, out_root, log)
-    talk = load_talk(talk_dir)
-    demo = load_demo(talk)
-    audio, warnings = load_clips(talk, demo, out_root)
-    for line in warnings:
-        log(f"  !! {line}")
-    clips = {step: pcm_from_wav(clip.body) for step, clip in audio.items()}
-    lines = tuple(step.say for step in demo.clips)
-    participants = sorted({step.speaker for step in demo.clips if step.speaker})
-    # the fake Realtime can't transcribe: it "hears" the demo's lines in the order the turns are committed; replies
-    # arrive fast (speed 50×) and a narration lasts narration_s (the cues' heard_ms need real seconds of narration)
-    connector = FakeConnector(think_s=0.1, speed=50.0, narration_s=narration_s, reply_s=1.0, transcripts=lines)
-    # the model-based check through the voice input, with the scripted stand-in for Claude (offline: no key, no
-    # network); `alignment="legacy"` runs the checks.yaml engine instead
-    analyzer = None
-    if alignment == "claude":
-        analyzer = dry_run_analyzer(talk, demo)
-        if analyzer is None:
-            raise SystemExit(f"the dry run has no scripted analysis for {talk.id}: run it with --alignment legacy")
-        log("dry run: the alignment analysis is a scripted stand-in for Claude (no API call)")
-    settings = Settings(fake_realtime=True, input="voice", narration="live", turn_detection=None, alignment=alignment)
-    app = create_app(talk_dir, settings, out_root=out_root, connect=connector, analyzer=analyzer)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="on"))
-    serving = asyncio.create_task(server.serve())
-    for _ in range(300):
-        if server.started:
-            break
-        await asyncio.sleep(0.02)
-    if not server.started:
-        raise RuntimeError("uvicorn did not start")
-    port = server.servers[0].sockets[0].getsockname()[1]
-    base = f"http://127.0.0.1:{port}"
-    page = FakeZoomPage()
-    deck: ZoomDeck | None = None
-    try:
-        payload = json.loads(await fetch(f"{base}/api/talk"))
-        async with websockets.connect(f"ws://127.0.0.1:{port}/ws", max_size=None) as ws:
-            deck = ZoomDeck(ws, page, server=base, talk=payload, log=log)
-            hello = await deck.handshake()
-            if hello.get("input") != "voice":
-                raise AssertionError(f"the server runs with input {hello.get('input')!r}, not voice")
-            log(f"dry run: {(hello.get('meeting') or {}).get('title')}; input {hello['input']}; {len(clips)} clips as "
-                f"the participants ({', '.join(participants)}); the fake Realtime hears their lines in order")
-            ears = asyncio.create_task(deck.ears())
-            driver = DryRunParticipants(deck, page, payload.get("demo") or {"steps": [s.to_json() for s in demo.steps]},
-                                        clips, timeout_scale=timeout_scale, log=log)
-            steps = await driver.run()
-            try:
-                await deck.until(lambda m: m.get("type") == "state" and m.get("banner") == "Meeting wrapped up",
-                                 "the meeting wrapped up", 0, 120 * timeout_scale)
-            except AssertionError as exc:
-                log(f"  !! {exc}")
-            await asyncio.sleep(1.0)
-            deck.stopped.set()
-            await asyncio.wait_for(ears, 5)
-            frames = frames_of(deck)
-            checks = assess(frames, participants=participants, owner=owner)
-            summary = summarize(frames, dry_run=True, joined=None, shared=None, steps=steps, alignment=alignment,
-                                analyses=len(getattr(analyzer, "calls", [])),
-                                checks={name: {"ok": ok, "seen": seen} for name, (ok, seen) in checks.items()},
-                                heard_ms=len(deck.heard) // BYTES_PER_MS, frames_sent=deck.frames_sent,
-                                pushed_ms={str(k): v // BYTES_PER_MS for k, v in page.pushed.items()},
-                                flushes=[(str(k), p) for k, p in page.flushes], **deck.speaker_summary())
-            write_outputs(out_dir, deck, summary)
-            await deck.close()
-            return summary
-    finally:
-        server.should_exit = True
-        try:
-            await asyncio.wait_for(serving, 10)
-        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
-            pass
-
-
-# --- the live run: Zoom through Playwright ------------------------------------------------------------------------
+# --- Zoom page steps -------------------------------------------------------------------------------------------
 
 
 async def shot(page: Any, name: str, shots: list[str], out_dir: Path) -> None:
@@ -1216,8 +871,6 @@ def start_server(args: argparse.Namespace, out_dir: Path) -> tuple[subprocess.Po
     command = [sys.executable, "-m", "relay", "serve", args.talk, "--input", "voice",
                "--host", parts.hostname or "127.0.0.1", "--port", str(parts.port or 8000),
                "--alignment", args.alignment]
-    if args.fake_realtime:
-        command.append("--fake-realtime")
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     dotenv = main_checkout_env()
     if dotenv is not None:  # what the environment doesn't set yet (BOSON_API_KEY, ANTHROPIC_API_KEY, …), never printed
@@ -1444,37 +1097,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--url", help="the Zoom join link (or the meeting id)")
     parser.add_argument("--passcode", default=None, help="the meeting passcode, if the link doesn't carry one")
-    parser.add_argument("--talk", default="talks/submission-review")
+    parser.add_argument("--talk", default="talks/project-overview")
     parser.add_argument("--server", default="http://127.0.0.1:8000", help="the relay server (started unless --no-serve)")
     parser.add_argument("--no-serve", action="store_true", help="don't start relay serve: it is running already")
-    parser.add_argument("--fake-realtime", action="store_true", help="start the server with the fake Realtime (rehearsal)")
-    # claude (the model-based check, doc/design.md §12) needs ANTHROPIC_API_KEY; the dry run scripts its analysis
     parser.add_argument("--alignment", choices=("claude", "legacy", "off"), default="claude",
-                        help="who checks the discussion: claude (default; needs ANTHROPIC_API_KEY, the dry run uses a "
-                             "scripted stand-in), legacy (the checks.yaml patterns) or off")
+                        help="who checks the discussion: claude (default; needs ANTHROPIC_API_KEY), "
+                             "legacy (the checks.yaml patterns) or off")
     parser.add_argument("--name", default=BOT_NAME)
     parser.add_argument("--web-host", default="app.zoom.us", help="host of the Zoom web client")
     parser.add_argument("--join-wait", type=float, default=180, help="how long to wait for the join to finish (s)")
     parser.add_argument("--no-share", action="store_true", help="don't click Share Screen (share by hand)")
     parser.add_argument("--auto-start", action="store_true",
                         help=f"press R {AUTO_START_S:.0f} s after the share begins (or after joining)")
-    parser.add_argument("--dry-run", action="store_true", help="no Zoom, no Chrome: the demo over a fake Zoom page, offline")
-    parser.add_argument("--out-root", default=None, help="(dry run) where renders/clips live; default out/")
-    parser.add_argument("--timeout-scale", type=float, default=1.0, help="(dry run) scale every cue's timeout")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.dry_run:
-        from relay.__main__ import resolve_talk_dir
-
-        out_root = Path(args.out_root).expanduser().resolve() if args.out_root else ROOT / "out"
-        summary = asyncio.run(dry_run(resolve_talk_dir(args.talk), out_root=out_root, out_dir=OUT, log=print,
-                                      timeout_scale=args.timeout_scale, alignment=args.alignment))
-        return 0 if report(summary, OUT) else 1
     if not args.url:
-        build_parser().error("--url is required (or --dry-run)")
+        build_parser().error("--url is required")
     try:
         summary = asyncio.run(run_live(args))
     except KeyboardInterrupt:

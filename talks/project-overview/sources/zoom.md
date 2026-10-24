@@ -1,7 +1,6 @@
 # Online meetings
 
-How the facilitator takes part in an online meeting (doc/plan.md D65, D76, D77, D89; doc/zoom_bot_spike.md; README
-"Known limitations").
+How the facilitator takes part in an online meeting (doc/architecture.md "In Zoom"; README "Limits").
 
 - [ZOOM-1] The facilitator joins a Zoom meeting as its own participant, Facilitator (AI), and shares the meeting page as its screen.
 - [ZOOM-2] To interrupt the facilitator or get its attention in Zoom, people just speak up: anyone who talks while it speaks cuts it off by voice.

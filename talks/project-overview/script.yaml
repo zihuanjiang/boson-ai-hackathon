@@ -1,18 +1,15 @@
-# On the Same Page presents itself in a Zoom call (D88). Claude wrote this script before the meeting; Higgs Realtime
-# performs it live, one talking point per response. Every talking point has a `guide`: its job for the listener
-# (intent), its beats (verbatim lines that must land exactly, or a gist with key phrases), delivery, length, what to
-# avoid, and, where a cut is staged, the prepared `resume` line that picks it up. A `bridge` is the performer's own
-# words, so it goes only before a gist: a point that opens word for word has its bridge written into its line.
-# `say` is the Higgs TTS 3 backup line (what plays when the link is down); it is left out where every beat is
-# verbatim, and the beats joined are then the backup.
+# Alice (AI co-host) presents On the Same Page in a Zoom call. Claude wrote this script before the meeting; Higgs
+# Realtime performs it live, one talking point per response. Every talking point has a `guide`: its job for the
+# listener (intent), its beats (verbatim lines that must land exactly, or a gist with key phrases), delivery, length,
+# what to avoid, and, where a cut is staged, the prepared `resume` line that picks it up. A `bridge` is the
+# performer's own words, so it goes only before a gist. Everything is live: there is no recorded backup (a point
+# Higgs Realtime can't speak pauses the meeting until the host presses P). `say` is the talking point's plain text
+# (shown and logged); where every beat is verbatim it is left out and the beats joined are the text.
 #
-# Spoken rules for every line, live or backup: numbers as words; no source ids, URLs or acronyms read aloud ("text to
-# speech", never TTS; "Boson AI" is the one exception, a name); every line stays true while the backup plays it (the
-# answers, lookups, checks and notes are live either way; never "what you hear is live"). Pause and pace come from
-# punctuation and the delivery notes: there is no SSML. Facts: talks/project-overview/sources/ and doc/gotchas.md.
-# Length: ~245 words presented at ~2.6 words a second (the guides' seconds add up to ~1:45, RELAY_PACE shortens each
-# live point further); if a live run is long, run_of_show.md lists what to cut first. The real-people Zoom run:
-# run_of_show_people.md.
+# Spoken rules for every line: numbers as words; no source ids, URLs or acronyms read aloud ("Boson AI" is the one
+# exception, a name). Pause and pace come from punctuation and the delivery notes: there is no SSML. Facts:
+# talks/project-overview/sources/ and doc/gotchas.md. Length: ~245 words at ~2.6 words a second (the guides add up to
+# ~1:45; RELAY_PACE, default 1.15, shortens each live point). The run with real people: run_of_show_people.md.
 talk: project-overview
 voice: default
 presenter: Ken

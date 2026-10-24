@@ -1,15 +1,9 @@
-"""`python -m relay serve talks/<id>`: serve the deck, the narration and the Realtime bridge (design §11).
+"""`python -m relay serve talks/<id>`: serve the deck and the Higgs Realtime bridge. Everything is live.
 
-    uv run python -m relay serve talks/test --fake-realtime     # offline end to end (no key needed)
-    uv run python -m relay serve talks/test                     # live: open http://localhost:8000, click Join
-    uv run python -m relay serve talks/test --mic-mode hold     # noisy room: hold Space to talk
-    uv run python -m relay serve talks/test --narration rendered  # play the TTS 3 renders instead of presenting live
-    uv run python -m relay serve talks/rollout-review             # the online meeting: prerecorded participants
-    uv run python -m relay serve talks/rollout-review --input mic # in the room instead: the mic, tap Space to talk
-    uv run python -m relay serve talks/rollout-review --alignment legacy  # the regex check over checks.yaml
+    uv run python -m relay serve talks/project-overview --input voice   # what scripts/zoom_bot.py starts for Zoom
+    uv run python -m relay serve talks/project-overview --input mic     # in a browser instead: the mic, tap Space
 
-Flags override the environment / `.env` (RELAY_HOST, RELAY_PORT, RELAY_FAKE_REALTIME, MIC_MODE, RELAY_NARRATION,
-RELAY_INPUT, RELAY_ALIGNMENT).
+Flags override the environment / `.env` (RELAY_HOST, RELAY_PORT, MIC_MODE, RELAY_INPUT, RELAY_ALIGNMENT, RELAY_PACE).
 """
 
 from __future__ import annotations
@@ -19,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .config import ALIGNMENT_MODES, INPUT_MODES, MIC_MODES, NARRATION_MODES, ROOT, TALKS, Settings, load_settings
+from .config import ALIGNMENT_MODES, INPUT_MODES, MIC_MODES, ROOT, TALKS, Settings, load_settings
 from .talk import Talk, TalkError
 from .timeline import RenderedChunk, RenderMissing
 
@@ -42,17 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("talk", help="talk folder, e.g. talks/test")
     serve.add_argument("--host", default=None, help="bind address (default 127.0.0.1, or RELAY_HOST)")
     serve.add_argument("--port", type=int, default=None, help="port (default 8000, or RELAY_PORT)")
-    serve.add_argument("--fake-realtime", action="store_true", default=None,
-                       help="use the offline stand-in for Higgs Realtime (no key, no network)")
     serve.add_argument("--mic-mode", choices=MIC_MODES, default=None,
                        help="tap (default: tap Space, turn detection ends the turn) or hold (hold Space to talk)")
-    serve.add_argument("--narration", choices=NARRATION_MODES, default=None,
-                       help="live (default: Higgs Realtime presents every slide, the TTS 3 renders are the offline "
-                            "backup) or rendered (the renders play)")
     serve.add_argument("--input", choices=INPUT_MODES, default=None,
-                       help="clips (default for a talk with demo.yaml: an online meeting, the participants are "
-                            "prerecorded clips the page plays and streams, the mic stays off, voice barge-in) or mic "
-                            "(the room microphone, tap Space to talk); or RELAY_INPUT")
+                       help="voice (Zoom: the bot streams the call's audio) or mic (the room microphone, tap Space to "
+                            "talk); or RELAY_INPUT")
     serve.add_argument("--alignment", choices=ALIGNMENT_MODES, default=None,
                        help="how a meeting's discussion is checked: claude (default: the Claude API reads the "
                             "documents and the discussion; needs ANTHROPIC_API_KEY, else the check is unavailable), "
@@ -171,22 +159,9 @@ def startup_notes(talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], s
         notes.append("RELAY_TURN_DETECTION is ignored for a meeting: the discussion needs manual turns (a session "
                      "can't switch turn detection later)")
     notes.extend(alignment_warnings(settings, meeting, alignment))
-    fake = sum(1 for chunk in chunks.values() if chunk.fake)
-    if fake:
-        notes.append(f"fake narration audio ({fake}/{len(chunks)} chunks are placeholder tones): render it for real "
-                     f"with `uv run python -m relay.render talks/{talk.id}`")
-    estimated = sum(1 for chunk in chunks.values() if chunk.estimated)
-    if estimated:
-        notes.append(f"{estimated} chunk(s) have estimated word timings (TTS 3 gave no usable word timestamps): "
-                     "captions and cut points are approximate")
-    if settings.fake_realtime:
-        notes.append("fake Realtime (--fake-realtime): live replies are canned tones and captions, not Higgs")
-    elif not settings.api_key:
-        notes.append(f"live replies disabled: Space gives the floor to {talk.presenter} "
-                     "(BOSON_API_KEY missing: add it to .env, or use --fake-realtime)")
-        if settings.narration == "live":
-            notes.append("live narration needs Higgs Realtime too: Relay will play the backup narration (the TTS 3 "
-                         "renders) only")
+    if not settings.api_key:
+        notes.append("BOSON_API_KEY is missing: add it to .env. Everything the facilitator says is live Higgs "
+                     "Realtime, so without the key it stays silent")
     if settings.host not in LOOPBACK_HOSTS:
         notes.append(f"listening on {settings.host or 'all interfaces'}: the mic only works when the deck is opened "
                      "via localhost on this machine")
@@ -198,8 +173,7 @@ def startup_notes(talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], s
 
 def serve(args: argparse.Namespace) -> int:
     try:
-        settings = load_settings(host=args.host, port=args.port, fake_realtime=args.fake_realtime,
-                                 mic_mode=args.mic_mode, narration=args.narration, input=args.input,
+        settings = load_settings(host=args.host, port=args.port, mic_mode=args.mic_mode, input=args.input,
                                  alignment=args.alignment)
     except ValueError as exc:
         print(f"relay: bad setting: {exc}", file=sys.stderr)

@@ -126,7 +126,7 @@ SEND_NOW_MIN_FRAMES = 5  # tap mode: "send now" needs this many 100 ms mic frame
 COUNTDOWN_S = 1.5  # "Resuming…" / "Starting…" after a reply that called no tool (the deck shows whole seconds: ceil)
 DRAIN_GRACE_S = 2.0  # drain fallback = remaining reply audio + this
 NARRATION_WAIT_S = 6.0  # a live narration request → its first audio, else it failed (live: 0.26–0.55 s)
-NARRATION_RETRIES = 1  # a failed live narration is asked for once more, then the backup presents the slide
+NARRATION_RETRIES = 1  # a failed live narration is asked for once more, then the meeting pauses on it (no backup)
 NARRATION_MIN_S = 6  # the length a live narration is asked for: the slide's backup length, within these bounds
 NARRATION_MAX_S = 60
 CONTINUE_MIN_S = 5  # …and at least this for the rest of a slide that was cut

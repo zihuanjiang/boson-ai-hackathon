@@ -614,7 +614,7 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     """Build the app for one talk. Raises `TalkError` (invalid package) or `RenderMissing` (narration not rendered,
     or a wav that doesn't match its word timings).
 
-    `connect` replaces `websockets.connect` for the Realtime link (`fake_connect` when `settings.fake_realtime`);
+    `connect` replaces `websockets.connect` for the Realtime link (tests used a fake);
     `controller_factory(talk, chunks, settings, browser=, realtime=, log=, analyzer=)` replaces the real controller
     (tests); `chunks` replaces the rendered narration on disk (tests); `web_dir` replaces `web/` (tests); `analyzer`
     replaces the Claude analysis adapter (a `FakeAnalyzer` in tests; by default `ClaudeAnalyzer` when claude mode has
@@ -638,7 +638,7 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     if analyzer is None:
         analyzer = build_analyzer(settings, log)
     log("server_start", {"talk": talk.id, "root": str(talk.root), "voice": talk.voice, "mic_mode": settings.mic_mode,
-                         "narration": settings.narration, "fake_realtime": settings.fake_realtime,
+                         "narration": settings.narration,
                          "key_set": bool(settings.api_key),
                          "realtime_url": settings.realtime_url, "turn_detection": settings.turn_detection,
                          "temperature": settings.temperature, "full_session_update": settings.full_session_update,
@@ -653,14 +653,6 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
 
     hub = DeckHub(log)
     ref = _ControllerRef()
-    if connect is None and settings.fake_realtime:
-        from .fake_realtime import FakeConnector, fake_connect
-        connect = fake_connect
-        if demo is not None and mode in ("clips", "voice"):
-            # Offline Run demo, or a Zoom rehearsal with the fake (`zoom_bot.py --fake-realtime`): the fake "hears"
-            # the participants' lines, in the order their audio is committed (the real model transcribes the audio;
-            # the fake can't).
-            connect = FakeConnector(transcripts=tuple(step["say"] for step in demo["steps"] if step.get("say")))
     link = RealtimeLink(settings, session_config=ref.session_config, on_event=ref.on_event,
                         on_status=ref.on_status, connect=connect, log=log)
     factory = controller_factory or default_controller_factory

@@ -1,6 +1,6 @@
 # Limitations
 
-What it does not do yet (README "Known limitations", doc/online_meeting_patch.md §2 and §6, doc/design.md §12).
+What it does not do yet (doc/architecture.md "Limits").
 
 - [LIM-1] It is built for online meetings: in Zoom the call never plays the facilitator's own voice back to it.
 - [LIM-2] In a room with one shared microphone the facilitator would also hear itself, so in-person meetings need echo handling and possibly single-microphone diarization: future work, and an integration question for Boson rather than a known Higgs limitation.

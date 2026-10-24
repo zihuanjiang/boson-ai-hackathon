@@ -1,7 +1,7 @@
 [project]
 name = "relay"
 version = "0.1.0"
-description = "Relay: a live voice co-presenter on Boson AI Higgs Realtime + Higgs TTS 3 (Higgs Audio Hackathon 2026)"
+description = "On the Same Page: Alice, a live AI meeting facilitator in Zoom on Boson AI Higgs Realtime (Higgs Audio Hackathon 2026)"
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=2.3.0",
@@ -16,17 +16,3 @@ dependencies = [
 [tool.uv]
 package = false
 
-[dependency-groups]
-dev = [
-    "httpx>=0.27",
-    "pytest>=8.3",
-    "pytest-asyncio>=0.24",
-]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-addopts = "-q"
-markers = ["slow: a long end-to-end run (the Zoom bot's dry run, ~1 min); deselect with -m 'not slow'"]

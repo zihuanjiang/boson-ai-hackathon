@@ -85,11 +85,7 @@ class RealtimeLink:
                  sleep: SleepFn | None = None, backoff: tuple[float, ...] = BACKOFF_S,
                  created_timeout: float = CREATED_TIMEOUT_S, send_timeout: float = SEND_TIMEOUT_S) -> None:
         if connect is None:
-            if settings.fake_realtime:
-                from .fake_realtime import fake_connect
-                connect = fake_connect
-            else:
-                connect = websockets.connect
+            connect = websockets.connect
         self._settings = settings
         self._session_config = session_config
         self._on_event = on_event
@@ -143,7 +139,7 @@ class RealtimeLink:
         """
         if self._task is not None and not self._task.done():
             return
-        if not self._settings.api_key and not self._settings.fake_realtime:
+        if not self._settings.api_key:
             await self._set_status("error", MISSING_KEY)
             return
         self._task = asyncio.get_running_loop().create_task(self._run(), name="relay-realtime-link")

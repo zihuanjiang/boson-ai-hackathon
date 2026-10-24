@@ -342,4 +342,4 @@ an `error` event with `type: "insufficient_quota"`).
 ## 11. Integrations
 
 Pipecat (`pipecat-boson`, 24 kHz PCM, no STT/TTS services needed), LiveKit Agents plugin (in review upstream),
-and the official TS tutorial — see integrations.md.
+and the official TS tutorial (https://github.com/boson-ai/higgs-realtime-tutorial).
