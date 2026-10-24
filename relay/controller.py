@@ -127,7 +127,7 @@ REPLY_STALL_S = 8.0  # a bound reply with no event of its own this long (and no 
 ERROR_GRACE_S = 1.5  # after a non-benign `error` mid-reply: this long without an event of the reply → as a stall
 DOUBLE_SEND_S = 1.0  # tap mode: Space this soon after a spoken turn ended (still thinking) was a "send": ignored
 SEND_NOW_MIN_FRAMES = 5  # tap mode: "send now" needs this many 100 ms mic frames (a quick double tap sends nothing)
-COUNTDOWN_S = 1.5  # "Resuming…" / "Starting…" after a reply that called no tool (the deck shows whole seconds: ceil)
+COUNTDOWN_S = 0.8  # "Resuming…" / "Starting…" after a reply that called no tool (the deck shows whole seconds: ceil)
 DRAIN_GRACE_S = 2.0  # drain fallback = remaining reply audio + this
 NARRATION_WAIT_S = 6.0  # a live narration request → its first audio, else it failed (live: 0.26–0.55 s)
 NARRATION_RETRIES = 1  # a failed live narration is asked for once more, then it pauses and is tried every AUTO_RESUME_S

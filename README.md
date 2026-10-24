@@ -49,7 +49,7 @@ presentation three seconds after the share begins; Ctrl-C in the bot's terminal 
 run's summary (`out/zoom_bot/summary.json`). If it can't click something in Zoom, it says what it waits for: click it
 yourself in its window.
 
-Settings (`.env` or the environment, see `.env.example`): `RELAY_PACE` (default `1.15`: shorter, brisker points),
+Settings (`.env` or the environment, see `.env.example`): `RELAY_PACE` (default `1.3`: shorter, brisker points),
 `RELAY_ALIGNMENT` (`claude` default, `legacy` = the `checks.yaml` patterns, `off`), `BOSON_REALTIME_MODEL` (default
 `higgs-realtime-1.5-preview`; `higgs-realtime` is the older id).
 

@@ -69,7 +69,7 @@ tell her to thank the host in a few words and start the presentation (a watchdog
 
 ## Settings
 
-`.env` (gitignored; `.env.example` lists them): `BOSON_API_KEY`, `ANTHROPIC_API_KEY`, `RELAY_PACE` (1.15),
+`.env` (gitignored; `.env.example` lists them): `BOSON_API_KEY`, `ANTHROPIC_API_KEY`, `RELAY_PACE` (1.3; every response is also asked for a brisk pace, Higgs Realtime having no speed setting),
 `RELAY_ALIGNMENT` (claude | legacy | off), `RELAY_ALIGNMENT_MODEL` (claude-opus-5-5), `BOSON_REALTIME_MODEL`
 (higgs-realtime-1.5-preview). The newest Higgs model is always the default.
 

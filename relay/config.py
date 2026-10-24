@@ -48,7 +48,7 @@ class Settings:
     alignment_max_tokens: int = 4000
     realtime_url: str = "wss://api.boson.ai/v1/realtime"
     realtime_model: str = REALTIME_MODEL
-    pace: float = 1.15  # live talking points are asked for their length ÷ pace (RELAY_PACE)
+    pace: float = 1.3  # live talking points are asked for their length ÷ pace (RELAY_PACE)
     temperature: float | None = None
     full_session_update: bool = False
     host: str = "127.0.0.1"
@@ -92,9 +92,10 @@ def load_settings(**overrides) -> Settings:
         "alignment_max_tokens": int(max_tokens) if max_tokens else 4000,
         "realtime_url": (env.get("BOSON_REALTIME_URL") or "wss://api.boson.ai/v1/realtime").strip().rstrip("/"),
         "realtime_model": (env.get("BOSON_REALTIME_MODEL") or REALTIME_MODEL).strip(),
-        # Ken 2026-10-24: the facilitator spoke too slowly; Higgs Realtime has no speed setting, but it keeps to the
-        # length each point asks for, so a pace of 1.15 asks for points ~13% shorter
-        "pace": min(1.6, max(0.7, float((env.get("RELAY_PACE") or "1.15").strip()))),
+        # Ken 2026-10-24: the facilitator spoke too slowly and too long; Higgs Realtime has no speed setting, so each
+        # point is asked for its guide's seconds ÷ pace (1.3: ~23% shorter) and every response for a brisk pace
+        # (prompts.BRISK). Live at 1.15 she still ran 10–45% over what was asked.
+        "pace": min(1.6, max(0.7, float((env.get("RELAY_PACE") or "1.3").strip()))),
         "temperature": float(temperature) if temperature else None,
         "full_session_update": _flag(env.get("RELAY_FULL_SESSION_UPDATE")),
         "host": (env.get("RELAY_HOST") or "127.0.0.1").strip(),

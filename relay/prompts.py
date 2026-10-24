@@ -196,10 +196,13 @@ FACILITATOR_BASE = (
     "project (dates, release stages, audiences, owners, decisions), call lookup_evidence first and answer only from "
     "what it returns, in one or two short spoken sentences; the presentation then resumes by itself. In the "
     "discussion, stay silent unless someone asks you directly. Never tell anyone they are wrong; ask neutral "
-    "questions. No lists, markdown or URLs."
+    "questions. Speak briskly, with short pauses. No lists, markdown or URLs."
 )
 NO_TOOLS = "Don't call any tool."
-PLAIN_SPEECH = "No lists, markdown or URLs."
+# Higgs Realtime has no speed setting: Boson's docs say to prompt the pace ("Speak slowly and calmly"). Live
+# 2026-10-24 12:52 Alice spoke ~2 words a second and ran 10–45% over the seconds each point asked for.
+BRISK = "Speak briskly, like an upbeat host: a quick pace and short pauses, never slowing down for emphasis."
+PLAIN_SPEECH = f"{BRISK} No lists, markdown or URLs."
 MEETING_PHASE_LINES = {
     ("presentation", "opening"): "{host} is about to hand you the floor: greet the room in one line, then call "
                                  "set_presentation_state with action start.",
@@ -323,7 +326,7 @@ def talking_point_instructions(talk: Talk, meeting: Any, slide: Slide, chunk: Ch
     # live 2026-10-24: the model said ~1.4× its notes, added emphasis ("remarkably responsive") and read the slide's
     # source ids aloud ("RES-1 through RES-4 and LIM-7")
     lines.append(f"Use one to three sentences, about {seconds} seconds. Don't add examples or emphasis, and never read "
-                 "source ids aloud.")
+                 f"source ids aloud. {BRISK}")
     lines.append("If you haven't welcomed the room yet, open with one short welcome; otherwise go straight in."
                  if first else "Don't greet or introduce yourself: carry on naturally.")
     lines.append(f"Speak only this point. No lists, markdown, URLs or stage directions. {NO_TOOLS}")
@@ -413,7 +416,9 @@ def _beats_block(guide: Guide, items: list[BeatItem], *, intro: str, seconds: in
     lines.extend(beat_line(number, beat, how=how) for number, beat, how in items)
     if guide.delivery:
         lines.append(f"Delivery throughout: {guide.delivery.rstrip('.')}.")
-    lines.append(f"About {seconds} seconds in all." + (f" Avoid: {guide.avoid.rstrip('.')}." if guide.avoid else ""))
+    words = sum(beat.words for _, beat, _ in items)
+    lines.append(f"About {seconds} seconds in all ({_count(words, 'word') if words <= 10 else f'{words} words'}): "
+                 f"{BRISK}" + (f" Avoid: {guide.avoid.rstrip('.')}." if guide.avoid else ""))
     return lines
 
 
@@ -820,7 +825,7 @@ def wrapup_instructions(notes_text: str, *, meeting: Any) -> str:
     return "\n".join([
         f'You are Alice, the facilitator of the meeting "{meeting.title}", and the meeting is wrapping up.',
         f"The meeting notes: {' '.join((notes_text or 'nothing was recorded').split())}",
-        "Sum up in two or three short spoken sentences: the decisions with their owners first, then the open "
-        "questions. Don't read ids aloud.",
+        "Sum up in two short spoken sentences at most: the decisions with their owners first, then the open "
+        "questions in a few words. Don't read ids aloud.",
         f"{PLAIN_SPEECH} {NO_TOOLS}",
     ])
