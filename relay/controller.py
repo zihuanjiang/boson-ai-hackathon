@@ -2345,9 +2345,22 @@ class Controller:
             return prompts.FOLLOWUP_DECISION if turn.kind == KIND_DECISION else prompts.FOLLOWUP_LOOKUP
         if data_ran:
             return prompts.FOLLOWUP_DECISION if turn.kind == KIND_DECISION else prompts.FOLLOWUP_LOOKUP
-        if state_ran and turn.audio_bytes == 0 and turn.followups < MAX_FOLLOWUPS:
+        if state_ran and turn.followups < MAX_FOLLOWUPS and (
+                turn.audio_bytes == 0 or (turn.kind == KIND_DECISION and not self._decision_named_aloud(turn))):
             return confirm
         return None
+
+    def _decision_named_aloud(self, turn: Turn) -> bool:
+        """Whether a decision turn's speech so far tells the room what was decided: at least six words, and the
+        owner's name when the saved decision has one. Live 2026-10-24, higgs-realtime-1.5-preview said only "Let me
+        save that decision." before its save_decision call; the group must still hear the decision confirmed (brief
+        §3: "Confirmed. Friday: beta release. Bob: …"), so a confirm follow-up is asked for then."""
+        said = " ".join([*turn.answers, turn.assistant_text]).strip()
+        if len(said.split()) < 6:
+            return False
+        decision = self.mstate.decisions[-1] if turn.decision_saved and self.mstate.decisions else None
+        owner = (decision.owner if decision is not None else "").strip().lower()
+        return not owner or owner in said.lower()
 
     async def _run_data(self, call: tools.ToolCall, turn: Turn) -> str:
         """A data tool, now: its output is what the follow-up answers from."""
@@ -2478,7 +2491,8 @@ class Controller:
             "metadata": metadata, "tool_choice": "none"}
         self._cancel_timer("drain")
         self._start_timer("reply_wait", REPLY_WAIT_S, self._on_reply_wait)
-        self._note("followup", {"reply": turn.reply, "kind": kind, "turn": turn.kind, "n": turn.followups})
+        # ("kind" is the log entry's own field: the follow-up's kind goes under "followup")
+        self._note("followup", {"reply": turn.reply, "followup": kind, "turn": turn.kind, "n": turn.followups})
         await self._hide_tools()
         await self._request_events(turn, [{"type": "response.create", "response": response}])
 

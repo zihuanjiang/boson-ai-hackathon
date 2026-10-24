@@ -162,7 +162,7 @@ async def test_first_message_is_session_update_and_ready_only_after_session_crea
     await until(lambda: rec.events)
     assert rec.events[0]["type"] == "session.created"
     url, kwargs = connector.calls[0]
-    assert url == "wss://api.boson.ai/v1/realtime?model=higgs-realtime"
+    assert url == "wss://api.boson.ai/v1/realtime?model=higgs-realtime-1.5-preview"
     assert kwargs == {"additional_headers": {"Authorization": f"Bearer {KEY}"}, "max_size": None,
                       "open_timeout": 10.0}
 

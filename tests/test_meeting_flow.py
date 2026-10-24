@@ -661,6 +661,16 @@ async def test_milestone_2_the_facilitator_speaks_up_before_a_wrong_decision_and
     assert h.c.mstate.action_items[0].owner == "Bob"
     assert h.last("meeting")["decisions"][0]["by"] == "auto"
     await h.drained()
+    # "Confirmed. It's in the notes." names neither the decision nor Bob (live 2026-10-24, 1.5-preview said only
+    # "Let me save that decision."): a confirm follow-up tells the room what was decided before anything else happens
+    assert h.c.state == INTERVENING
+    confirm = creates(h)[-1]
+    assert confirm["metadata"]["relay"] == "followup" and confirm["tool_choice"] == "none"
+    assert "You just saved this decision to the meeting notes" in confirm["instructions"]
+    assert draft["decision"] in confirm["instructions"] and "owned by Bob" in confirm["instructions"]
+    await respond(h, transcript="Confirmed: Friday is beta, announced to beta users only; Bob owns it.", audio_ms=800)
+    assert h.b("reply_start")[-1]["kind"] == "decision"
+    await h.drained()
     assert h.c.state == ROOM
 
     await h.key("phase")  # wrap-up

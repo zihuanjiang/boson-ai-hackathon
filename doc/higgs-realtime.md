@@ -249,9 +249,11 @@ tools in the tutorial authors' experience. No MCP, no approvals.
 Never send a `function_call_output` or `response.create` for it; `web_search` is a reserved name. Handle only calls
 with `executor: "client"`.
 
-**Model versions.** `higgs-realtime` is the only Realtime model `GET /v1/models` lists (2026-10-23). The tutorial's
-`realtime-1.5-preview` branch uses `higgs-realtime-1.5-preview` on the same endpoint, but our key gets "Invalid model
-… not available on this endpoint". Relay reads the model from `BOSON_REALTIME_MODEL`.
+**Model versions.** `higgs-realtime-1.5-preview` (the tutorial's `realtime-1.5-preview` branch; same endpoint) became
+accessible with our key on 2026-10-24 and is the default since (`relay/config.py`; the rule is "always the newest
+model"). On 2026-10-23 the key still got "Invalid model … not available on this endpoint" and `GET /v1/models` listed
+only `higgs-realtime`. The 1.5 session ack resolves the same defaults (temperature 0.3, `turn_detection` as sent,
+transcription as sent). `BOSON_REALTIME_MODEL` overrides the model id.
 
 Python handler (from the docs):
 

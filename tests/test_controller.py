@@ -1693,7 +1693,7 @@ def test_session_config_tap_mode(h: Harness, test_talk):
     config = h.c.session_config()
     assert config == {
         "type": "realtime",
-        "model": "higgs-realtime",
+        "model": "higgs-realtime-1.5-preview",
         "instructions": config["instructions"],
         "output_modalities": ["audio"],
         "audio": {
