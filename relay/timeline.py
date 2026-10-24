@@ -1,6 +1,7 @@
-"""Rendered narration: per-chunk word timings, file layout, cache hash, and the cut/resume arithmetic.
+"""Word timings and the cut/resume arithmetic the controller uses, and the talk's version.
 
-Layout: `out/talks/<talk>/<slide>/<n>.wav` + `<n>.json` (design §2). Times are integer ms from the chunk start.
+Everything Alice says is live Higgs Realtime, so a talk has no recorded chunks: the controller is handed an empty
+mapping and these types only describe its (empty) word timings. Times are integer ms from the chunk start.
 """
 
 from __future__ import annotations
@@ -11,13 +12,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
-from .config import OUT, TTS_MODEL
-from .textutil import norm_word, sentence_words
-
 if TYPE_CHECKING:
     from .talk import Talk
-
-RENDER_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -48,107 +44,19 @@ class RenderedChunk:
         data.pop("wav_path")
         return data
 
-    @classmethod
-    def from_json(cls, data: dict, wav_path: Path | None = None) -> RenderedChunk:
-        return cls(
-            slide=data["slide"], index=int(data["index"]), say=data.get("say", data.get("text", "")),
-            text=data["text"], words=[Word(w["word"], int(w["start"]), int(w["end"]), int(w.get("sentence", 0)))
-                                      for w in data.get("words") or []],
-            sentences=list(data.get("sentences") or []), duration_ms=int(data["duration_ms"]), hash=data["hash"],
-            voice=data.get("voice", ""), fake=bool(data.get("fake", False)),
-            estimated=bool(data.get("estimated", False)), wav_path=wav_path,
-        )
-
-
-def chunk_hash(say: str, voice: str) -> str:
-    """Cache key of a rendered chunk: anything that changes the audio changes the hash."""
-    payload = json.dumps({"v": RENDER_VERSION, "model": TTS_MODEL, "voice": voice, "input": say,
-                          "format": "wav", "timestamps": True}, sort_keys=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-
-
-def talk_out_dir(talk_id: str, out_root: Path = OUT) -> Path:
-    return out_root / "talks" / talk_id
-
-
-def chunk_paths(talk_id: str, slide_id: str, index: int, out_root: Path = OUT) -> tuple[Path, Path]:
-    """(wav, json) paths of one rendered chunk."""
-    base = talk_out_dir(talk_id, out_root) / slide_id
-    return base / f"{index}.wav", base / f"{index}.json"
-
-
-class RenderMissing(Exception):
-    def __init__(self, talk_id: str, problems: list[str]):
-        self.problems = problems
-        super().__init__(f"talk {talk_id!r} is not fully rendered — run `uv run python -m relay.render talks/{talk_id}`"
-                         "\n" + "\n".join(f"  {problem}" for problem in problems))
-
-
-def load_rendered(talk: Talk, out_root: Path = OUT, *, allow_stale: bool = False,
-                  required: bool = True) -> dict[tuple[str, int], RenderedChunk]:
-    """Every relay chunk of `talk`, keyed by (slide id, chunk index). Raises RenderMissing if any is missing/stale,
-    unless not `required` (live narration: the backup is optional, Ken 2026-10-24): then only the usable ones."""
-    chunks: dict[tuple[str, int], RenderedChunk] = {}
-    problems: list[str] = []
-    for slide in talk.relay_slides:
-        for chunk in slide.chunks:
-            wav, meta = chunk_paths(talk.id, slide.id, chunk.index, out_root)
-            label = f"{slide.id}/{chunk.index}"
-            if not wav.is_file() or not meta.is_file():
-                problems.append(f"{label}: not rendered")
-                continue
-            try:
-                rendered = RenderedChunk.from_json(json.loads(meta.read_text(encoding="utf-8")), wav)
-            except (ValueError, KeyError, TypeError) as exc:
-                problems.append(f"{label}: unreadable {meta.name} ({exc})")
-                continue
-            if rendered.hash != chunk_hash(chunk.say, talk.voice) and not allow_stale:
-                problems.append(f"{label}: stale (script text or voice changed since it was rendered)")
-                continue
-            chunks[(slide.id, chunk.index)] = rendered
-    if problems and required:
-        raise RenderMissing(talk.id, problems)
-    return chunks
-
 
 def render_version(talk: Talk, chunks: dict[tuple[str, int], RenderedChunk]) -> str:
-    """Identity of what a server run presents: slides + every chunk's render (hash, fake flag, length).
+    """Identity of what a server run presents: the slides and the voice (and any chunk timings).
 
-    The server puts it in `/api/talk` and the controller in `hello`; a deck that sees a different version after a
-    reconnect knows its preloaded talk and audio are stale (design §3, §4).
+    The server puts it in `/api/talk` and the controller in `hello`; a page that sees a different version after a
+    reconnect knows its loaded talk is stale and reloads.
     """
-    # Word timings ride along: a forced re-render of the same text can keep every length but not its timings.
     payload = json.dumps({
         "talk": talk.id, "voice": talk.voice, "slides_md": talk.slides_md,
         "chunks": sorted((slide, index, c.hash, c.fake, c.duration_ms, [(w.start, w.end) for w in c.words])
                          for (slide, index), c in chunks.items()),
     }, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
-
-
-def synthetic_timing(text: str, *, lead_ms: int = 150, tail_ms: int = 250) -> tuple[list[Word], int]:
-    """Deterministic made-up word timings (fake renders, tests, fallback when TTS gives no timestamps).
-
-    Returns (words, duration_ms). Word length grows with the word; sentences get a longer pause between them.
-    """
-    pairs = sentence_words(text)
-    words: list[Word] = []
-    t = lead_ms
-    for k, (word, sentence) in enumerate(pairs):
-        duration = 120 + 45 * len(norm_word(word))
-        words.append(Word(word, t, t + duration, sentence))
-        t += duration
-        if k + 1 < len(pairs):
-            t += 350 if pairs[k + 1][1] != sentence else 90
-    return words, t + tail_ms
-
-
-def scale_timing(words: Sequence[Word], from_ms: int, to_ms: int) -> list[Word]:
-    """Stretch timings made for a `from_ms`-long chunk onto a real `to_ms` duration."""
-    if from_ms <= 0:
-        return list(words)
-    factor = to_ms / from_ms
-    return [Word(w.word, round(w.start * factor), round(w.end * factor), w.sentence) for w in words]
 
 
 @dataclass(frozen=True)

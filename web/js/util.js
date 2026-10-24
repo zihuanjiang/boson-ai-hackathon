@@ -1,7 +1,7 @@
 // @ts-check
 /**
  * Pure helpers for the deck client: no DOM, no Web Audio, so JavaScriptCore can unit-test them
- * (see .scratch/relay-build/web/). Units follow doc/design.md: ms integers, 0-based chunks, fragment = count.
+ * (see .scratch/relay-build/web/). Units: ms integers, 0-based chunks, fragment = count.
  */
 
 export const RATE = 24000; // Hz, PCM16 mono everywhere (narration, reply, mic)

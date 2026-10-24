@@ -32,6 +32,9 @@ uv run python -m relay.talk talks/project-overview          # validate the meeti
 
 - **Everything is live.** No offline tests, no fake Realtime, no recorded backup narration, no prerecorded
   participants, no dry runs. Changes are verified by running the Zoom bot live (Ken does it). Don't add them back.
+- **Everything happens in the Zoom call, by voice.** No keyboard shortcuts: someone hands Alice the floor to start
+  (or `--auto-start`), talking over her cuts in, "Alice, …?" in the discussion gets an answer, "let's wrap up" ends
+  it; a point Higgs doesn't answer is retried by itself. Ctrl-C in the bot's terminal leaves the meeting.
 - The facilitator is **Alice**, joins Zoom as "Alice (AI co-host)", default voice; Ken hosts.
 - The deck's words live in `talks/project-overview/script.yaml` (guided points) and `slides.md`; its look in
   `talks/project-overview/deck/project/` (a Claude Slides deck's files). Keep ids, order and fragment counts in step.

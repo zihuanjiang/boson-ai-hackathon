@@ -1,12 +1,13 @@
 # Boson AI API — orientation
 
-Everything here is from https://docs.boson.ai (read 2026-10-22). Details per product are in the sibling docs.
+Everything here is from https://docs.boson.ai (read 2026-10-22). This project uses Higgs Realtime only: its details
+are in higgs-realtime.md.
 
 ## The three products
 
 | Product | Model ID | Endpoint | Input → Output | Use when |
 | --- | --- | --- | --- | --- |
-| **Higgs Realtime** | `higgs-realtime` | `wss://api.boson.ai/v1/realtime` (WebSocket, OpenAI Realtime-compatible) | live audio/text ↔ streaming audio/text | conversation, barge-in, tool calling |
+| **Higgs Realtime** | `higgs-realtime-1.5-preview` (newest; `higgs-realtime` older) | `wss://api.boson.ai/v1/realtime` (WebSocket, OpenAI Realtime-compatible) | live audio/text ↔ streaming audio/text | conversation, barge-in, tool calling |
 | **Higgs TTS 3** | `higgs-tts-3` | `POST https://api.boson.ai/v1/audio/speech` | text → audio (file or raw PCM stream) | narration, voiceover, any speech playback |
 | **Higgs Avatar** | `higgs-avatar` | `POST /v1/videos` (async job) · `POST /v1/videos/stream` (fMP4) | still image + audio *or* TTS text → talking-head MP4 | presenters, characters |
 
@@ -19,12 +20,12 @@ Supporting pieces:
 
 ## Account, key, credit
 
-1. Sign in at https://www.boson.ai/workspace (Google or email code).
-2. Create a key at https://www.boson.ai/workspace/api-key → `bai-xxxx`. Store in `.env` as `BOSON_API_KEY`.
-3. **Claim credit** from the banner on that page (not automatic). Hackathon: $100 Realtime credit + general trial
+1. Sign in to the Boson AI workspace (Google or email code).
+2. Create an API key there → `bai-xxxx`. Store it in `.env` as `BOSON_API_KEY`.
+3. **Claim credit** from the banner on the key page (not automatic). Hackathon: $100 Realtime credit + general trial
    credit ($10 for new accounts, expires 12 months after claim). Until claimed: `429 insufficient_quota`
    (code `no_billing_account`).
-4. Billing is prepaid; top-ups $5–$100; optional auto-reload and monthly cap at https://www.boson.ai/workspace/billing/overview.
+4. Billing is prepaid; top-ups $5–$100; optional auto-reload and a monthly cap in the workspace's billing page.
 
 ## Authentication
 
@@ -84,9 +85,3 @@ For a hackathon this is negligible; the $100 Realtime credit ≈ 100+ hours of o
 
 Always branch on `error.type` before retrying a 429. Realtime sends the same shape as an `error` event, then closes
 `4429` for billing, `3000` for bad/expired key.
-
-## Open weights (if self-hosting comes up in the "model serving" tutorial)
-
-Hugging Face org https://huggingface.co/bosonai: `higgs-tts-3-4b` (TTS 3, research/non-commercial license),
-`higgs-audio-v3-stt` / `-8b-stt` (ASR), older `higgs-tts-2-3b-base`, `higgs-audio-v2-tokenizer`. SGLang cookbook:
-https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html. Not needed for the hosted API path.

@@ -1,17 +1,17 @@
-"""Talk packages: `talks/<id>/{slides.md, script.yaml, kb.md}` → `Talk`. Loader + validator (design §2).
+"""Talk packages: `talks/<id>/{slides.md, script.yaml}` → `Talk`. Loader + validator.
 
 A meeting package adds `agenda.yaml`, `sources/*.md` and `checks.yaml` (relay/meeting.py); their issues are part of
-`check_talk` / `load_talk` too, so a broken meeting blocks rendering and serving like a broken script.
+`check_talk` / `load_talk` too, so a broken meeting blocks serving like a broken script.
 
-Script guidance (design §2, D88): a talking point may carry a `guide:` — what the point must do for the listener
-(`intent`), the `bridge` from the point before, its `beats` (each one `verbatim` words that must land exactly, or a
-`gist` to say in the model's own words with key `phrases`, plus `delivery`), the point's length (`seconds`), what
-to `avoid`, and optionally a prepared `resume` line that picks the point up after a cut. Claude writes it, before the
-meeting; Higgs Realtime performs it (relay/prompts.py). `say` stays the TTS 3 backup line, and may be left out when
+Script guidance: a talking point may carry a `guide:` — what the point must do for the listener (`intent`), the
+`bridge` from the point before, its `beats` (each one `verbatim` words that must land exactly, or a `gist` to say in
+the model's own words with key `phrases`, plus `delivery`), the point's length (`seconds`), what to `avoid`, and
+optionally a prepared `resume` line that picks the point up after a cut. Claude writes it, before the meeting; Higgs
+Realtime performs it (relay/prompts.py). `say` is the point's plain text (shown and logged) and may be left out when
 every beat is verbatim (it is then the beats joined). A top-level `handover:` guides the meeting's hand-over to the
 discussion the same way.
 
-    uv run python -m relay.talk talks/test        # print issues and a summary; exit 1 on errors
+    uv run python -m relay.talk talks/project-overview     # print issues and a summary; exit 1 on errors
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ BEAT_MAX_S = 30
 GUIDE_WORDS_PER_SECOND = 2.6  # the length of a beat without `seconds`: its words at a speaking pace
 _URL_RE = re.compile(r"https?://|www\.|\b[\w-]+\.(?:com|org|net|io|ai|dev)\b", re.I)
 _STAGE_RE = re.compile(r"[()\[\]{}*_#<>]")  # brackets, markdown, tags: read aloud or broken by the live model
-# A line that is only true while Higgs Realtime speaks it: the TTS 3 backup would make it false (design §2).
+# A line that is only true while Higgs Realtime speaks it (a warning: a recorded take would make it false).
 LIVE_CLAIM_RE = re.compile(r"\b(?:what you(?:'re| are)? hear(?:ing)? is live|live right now|everything I say|"
                            r"I(?:'m| am) (?:speaking|talking) live|this voice is live)\b", re.I)
 
@@ -322,7 +322,7 @@ def _check_say(say: str, where: str, issues: list[Issue]) -> None:
 def _spoken(text, where: str, field_name: str, issues: list[Issue], *, limit: int,
             sentence: bool = False) -> str | None:
     """A guide field the facilitator says aloud (a verbatim line, a gist, a key phrase), checked against the spoken
-    rules (design §2): numbers as words, no TTS tags (Higgs Realtime would read them), no URLs, brackets, markdown or
+    rules: numbers as words, no TTS tags (Higgs Realtime would read them), no URLs, brackets, markdown or
     double quotes (the prompt quotes the line); acronyms and abbreviations are warnings. None when unusable."""
     here = f"{where}.{field_name}"
     if not isinstance(text, str) or not text.strip():
@@ -756,7 +756,7 @@ def main(argv: list[str] | None = None) -> int:
         live_s = sum(chunk.guide.seconds_from(0) for chunk in guided)
         print(f"guidance: {len(guided)} of {chunks} talking points guided, ~{live_s:.0f} s live by their guides"
               + (f"; the hand-over guided (~{talk.handover.seconds_from(0):.0f} s)" if talk.handover else ""))
-    from .meeting import load_demo, load_meeting  # see _parse
+    from .meeting import load_meeting  # see _parse
     meeting = load_meeting(talk)
     if meeting is not None:
         documents = len({statement.doc_id for statement in meeting.statements})
@@ -764,11 +764,6 @@ def main(argv: list[str] | None = None) -> int:
                      else "alignment: model-based (no checks.yaml)")
         print(f"meeting: {meeting.title}: host {meeting.host}, {len(meeting.participants)} participants, "
               f"{len(meeting.statements)} statements in {documents} document(s); {alignment}")
-        demo = load_demo(talk, meeting)
-        if demo is not None:
-            speakers = ", ".join(dict.fromkeys(step.speaker or "" for step in demo.clips))
-            print(f"demo: {len(demo.steps)} steps, {len(demo.clips)} prerecorded participant clips ({speakers}); "
-                  f"generate them with `uv run python -m relay.clips talks/{talk.id}`")
     return 0
 
 

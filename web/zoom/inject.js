@@ -1,5 +1,5 @@
 // The Zoom bot's browser side (contract v5 §2), injected before any page script of the bot's meeting tab
-// (scripts/zoom_bot.py, Playwright add_init_script). Evolved from the spike (doc/zoom_bot_spike.md).
+// (scripts/zoom_bot.py, Playwright add_init_script).
 // The bot is a separate meeting participant that never touches the computer's real audio devices:
 //   · its microphone (the MOUTH) is a stream the bot feeds: window.__bot.push(b64, key) queues PCM16 24 kHz chunks
 //     back to back on a 48 kHz AudioContext whose MediaStreamDestination Zoom gets from getUserMedia;

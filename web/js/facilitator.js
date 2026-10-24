@@ -437,7 +437,7 @@ export function checkpointText(cp, slides) {
 
 /** Who ran a lookup, as the evidence panel heads it. @param {Lookup} lookup */
 export function lookupBy(lookup) {
-  return lookup.by === "engine" || lookup.purpose === "intervention" ? "Alignment check" : "Facilitator looked up";
+  return lookup.by === "engine" || lookup.purpose === "intervention" ? "Alignment check" : "Alice looked up";
 }
 
 /** Meeting time of a backend timestamp (seconds since the meeting started): "01:12". @param {number|null} atS */

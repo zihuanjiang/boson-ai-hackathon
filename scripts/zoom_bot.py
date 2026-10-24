@@ -1,14 +1,14 @@
-"""The facilitator in Zoom (contract v5 §2): the bot joins the meeting as its own participant from this computer, with
-no access to the computer's microphone or speakers, and IS the deck of `relay serve --input voice`.
+"""Alice in Zoom: the bot joins the meeting as its own participant from this computer, with no access to the
+computer's microphone or speakers, and IS the deck of `relay serve`.
 
     uv run --with playwright python scripts/zoom_bot.py --url "<join link>" [--passcode …]
                                                         [--talk talks/project-overview] [--server http://127.0.0.1:8000]
                                                         [--no-serve] [--name "Alice (AI co-host)"] [--auto-start]
 
 Run it after joining the meeting on your own Zoom (real mic and speakers). The bot:
-  · starts `relay serve <talk> --input voice` (unless --no-serve) and waits for /healthz;
-  · opens its own Chrome window (profile out/zoom_bot/profile, sound muted; inject.js gives Zoom the facilitator's
-    voice as its microphone, never the computer's):
+  · starts `relay serve <talk>` (unless --no-serve) and waits for /healthz;
+  · opens its own Chrome window (profile out/zoom_bot/profile, sound muted; inject.js gives Zoom Alice's voice as its
+    microphone, never the computer's):
     tab 1 joins through the Zoom web client as "Alice (AI co-host)" (best effort: anything it can't do, you do in the
     window; it prints what it waits for), tab 2 opens the observer page (<server>/?view=observer, titled
     "On the Same Page"), then clicks Share Screen: Chrome picks that tab by title (no picker);
@@ -17,14 +17,15 @@ Run it after joining the meeting on your own Zoom (real mic and speakers). The b
     the speaker is read off the page by several strategies (inject.js: a class marker, an aria-label, the green
     frame's computed style, Zoom's captions, the only other person on the roster); speech with no name saves a DOM
     probe to out/zoom_bot/speaker-probe/ (≤ 1 per 5 s, 20 per run);
-  · MOUTH: the facilitator's `reply_audio` is queued into the page's microphone stream; `reply_drained` goes out when
-    it has played out, `reply_flush` drops what is queued;
-  · KEYS in this terminal: Space, R, arrows, P, H, N (next phase), 0 (reset), `t <text>` + Enter (a typed line),
-    q (leave and quit). --auto-start presses R three seconds after the share begins.
-Writes out/zoom_bot/: step screenshots, console.log (the page's `[bot]` lines: the speaker strategy that worked, each
-speaker change), server.log, heard.wav (everything the bot heard, 24 kHz mono), frames.jsonl (the deck messages without
-audio payloads), summary.json (with the speaker attribution: speaker_strategy, speaker_hows, speakers_seen,
-roster_seen, speech_unlabelled_ticks, speaker_probes), speaker-probe/probe-*.json.
+  · MOUTH: Alice's `reply_audio` is queued into the page's microphone stream; `reply_drained` goes out when it has
+    played out, `reply_flush` drops what is queued.
+Everything happens in the call, by voice: someone hands Alice the floor ("Alice, take it away") and she presents;
+talking over her cuts her off; a question put to her in the discussion ("Alice, …?") is answered; "let's wrap up"
+moves to the wrap-up. --auto-start starts the presentation three seconds after the share begins instead. Ctrl-C leaves
+the meeting and writes out/zoom_bot/: step screenshots, console.log (the page's `[bot]` lines: the speaker strategy
+that worked, each speaker change), server.log, heard.wav (everything the bot heard, 24 kHz mono), frames.jsonl (the
+deck messages without audio payloads), summary.json (with the speaker attribution: speaker_strategy, speaker_hows,
+speakers_seen, roster_seen, speech_unlabelled_ticks, speaker_probes), speaker-probe/probe-*.json.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ import base64
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -46,9 +48,8 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))  # `uv run python scripts/zoom_bot.py` from anywhere
-from relay.audio import FRAME_BYTES, Decimator, Framer, floats_from_bytes, upsample_2x  # noqa: E402
-from relay.demo_driver import (ACTION_KEYS, BYTES_PER_MS, RATE, Deck, Reply, cue_holds,  # noqa: E402
-                               describe_cue, pcm_from_wav)
+from relay.audio import FRAME_BYTES, Decimator, Framer, floats_from_bytes  # noqa: E402
+from relay.deck_client import BYTES_PER_MS, RATE, Deck, Reply  # noqa: E402
 
 OUT = ROOT / "out" / "zoom_bot"
 INJECT = ROOT / "web" / "zoom" / "inject.js"
@@ -57,13 +58,7 @@ OBSERVER_TITLE = "On the Same Page"  # the observer page's <title>: Chrome's sha
 EAR_TICK_S = 0.1
 DRAIN_GRACE_S = 1.5  # the page never said a reply drained: assume it this long after its audio should have ended
 AUTO_START_S = 3.0
-KEY_NAMES = {" ": "space", "r": "relay", "p": "pause", "h": "human", "n": "phase", "0": "reset"}
-ARROWS = {"\x1b[C": "next", "\x1b[D": "prev", "\x1b[B": "next", "\x1b[A": "prev"}
-STOPPING_KEYS = ("space", "next", "prev", "human", "phase", "reset", "pause")  # the page stops narration first
-CUTTING_KEYS = ("next", "prev", "human", "phase", "reset")  # …and flushes the reply (space: only an audible one)
-KEY_HELP = """keys (this terminal):  Space = send now (cut in)   R = start / resume   ← → = prev / next
-                       P = pause   H = hand over to a human   N = next agenda phase   0 = restart the meeting
-                       t <text> ⏎ = a typed line (a question, or a line of the discussion)   q = leave and quit"""
+STATUS_EVERY_S = 5.0
 UI_WORDS = re.compile(r"^(mute|unmute|more|video|audio|share|participants|chat|reactions|leave|you|me|host)$", re.I)
 NAME_SUFFIX = re.compile(r"\s*\((?:host|co-host|me|you|guest)(?:\s*,\s*(?:host|co-host|me|you|guest))*\)\s*$", re.I)
 # Speaker diagnostics (the live run): a drain this loud is somebody talking; when the page names nobody then, the bot
@@ -74,10 +69,10 @@ PROBE_EVERY_S = 5.0
 PROBE_MAX = 20
 PROBE_CHECKS = 3
 PROBE_CHECK_EVERY_S = 20.0
-HOW_RANK = {"class": 0, "aria": 0, "frame": 0, "captions": 0, "fake": 0, "only": 1}  # a fallback loses to a reading
+HOW_RANK = {"class": 0, "aria": 0, "frame": 0, "captions": 0, "only": 1}  # a fallback loses to a reading
 
 
-# --- pure helpers (tests/test_zoom_bot.py) --------------------------------------------------------------------------
+# --- pure helpers ---------------------------------------------------------------------------------------------------
 
 
 def meeting_target(url: str) -> tuple[str, str | None]:
@@ -123,17 +118,20 @@ def merge_speaker(merged: dict, drained: dict) -> None:
 
 
 def mic_frame(pcm: bytes, speaker: str | None, where: dict) -> dict:
-    """One 100 ms frame of what the bot hears, as the backend's voice path wants it (contract v5 §1)."""
+    """One 100 ms frame of what the bot hears, as the backend's voice path wants it."""
     return {"type": "mic", "source": "voice", "pcm": base64.b64encode(pcm).decode("ascii"), "speaker": speaker,
             "reply": where.get("reply"), "played_ms": where.get("played_ms"), "at": where.get("at")}
 
 
-def assess(frames: list[dict], *, participants: list[str], owner: str = "Bob",
+def assess(frames: list[dict], *, participants: list[str], owner: str | None = None,
            timely_s: float = 10.0) -> dict[str, tuple[bool, str]]:
-    """The §8 definition of done (doc/online_meeting_patch.md) read off a recorded run: `frames` = the deck messages
-    as frames.jsonl holds them ({t, dir, type, …}, no audio). name → (passed, what was seen). Like
-    DemoDeck.assess, from the messages alone: the participants' lines are what the backend transcribed (`transcript`),
-    the barge-in's talking point the state the room was in when it happened."""
+    """The demo's definition of done, read off a recorded run: `frames` = the deck messages as frames.jsonl holds
+    them ({t, dir, type, …}, no audio). name → (passed, what was seen). From the messages alone: the participants'
+    lines are what the backend transcribed (`transcript`), the barge-in's talking point the state the room was in when
+    it happened. `owner`: the decision's expected owner (None: anyone named)."""
+
+    def owned(decision: dict) -> bool:
+        return bool(decision.get("owner")) and (owner is None or decision.get("owner") == owner)
     entries = [(f["t"], f) for f in frames if f.get("dir") == "in"]
     kinds = {f.get("reply"): f.get("kind") for _, f in entries if f.get("type") == "reply_start"}
     checks: dict[str, tuple[bool, str]] = {}
@@ -195,14 +193,13 @@ def assess(frames: list[dict], *, participants: list[str], owner: str = "Bob",
                             f"the facilitator said {spoke or 'nothing'}")
     else:
         checks["silent"] = (False, "no discussion" if discussion is None else "no intervention")
-    decided = first(lambda m: m.get("type") == "meeting" and any(
-        (d.get("owner") == owner) for d in m.get("decisions") or []))
+    decided = first(lambda m: m.get("type") == "meeting" and any(owned(d) for d in m.get("decisions") or []))
     after_fix = decided is not None and correction is not None and decided[0] > correction
-    checks["decision"] = (after_fix, f"{[d.get('decision') for d in decided[1]['decisions']]}"
+    checks["decision"] = (after_fix, f"{[(d.get('decision'), d.get('owner')) for d in decided[1]['decisions']]}"
                           f"{'' if after_fix else ' (recorded before the correction)'}" if decided
-                          else f"no decision owned by {owner}")
+                          else f"no decision owned by {owner or 'anyone'}")
     notes = first(lambda m: m.get("type") == "meeting" and m.get("phase") == "wrapup" and m.get("notes"))
-    in_notes = bool(notes) and any(d.get("owner") == owner for d in notes[1]["notes"].get("decisions") or [])
+    in_notes = bool(notes) and any(owned(d) for d in notes[1]["notes"].get("decisions") or [])
     checks["notes"] = (in_notes, "in the wrapped-up notes" if in_notes else "not in the notes")
     lines = [m["utterance"] for _, m in entries if m.get("type") == "transcript"]
     labelled = [u for u in lines if u.get("speaker") in participants]
@@ -235,58 +232,12 @@ def summarize(frames: list[dict], **extra: Any) -> dict:
                      if f.get("type") == "evidence"],
         "tools": [(f.get("name"), f.get("status")) for f in inbound if f.get("type") == "tool"],
         "errors": [f.get("message") for f in inbound if f.get("type") == "error"],
-        "backup_plays": sum(1 for f in inbound if f.get("type") == "play"),
         "keys": [f.get("key") for f in frames if f.get("dir") == "out" and f.get("type") == "key"],
         "wrapped_up": any(f.get("type") == "state" and f.get("banner") == "Meeting wrapped up" for f in inbound),
         "notes": next((f.get("notes") for f in reversed(inbound) if f.get("type") == "meeting" and f.get("notes")),
                       None),
         **extra,
     }
-
-
-class KeyParser:
-    """The bot terminal's keys → events: ("key", name), ("typed", text), ("quit", None). Pure (tests): `feed` takes
-    whatever the terminal delivered (single keys, escape sequences, pasted text). `t` opens a typed line that Enter
-    sends and Esc drops; Ctrl-C and q quit."""
-
-    def __init__(self) -> None:
-        self.typing: str | None = None  # the typed line so far (None: not typing)
-        self._escape = ""
-
-    def feed(self, data: str) -> list[tuple[str, str | None]]:
-        events: list[tuple[str, str | None]] = []
-        for ch in data:
-            if self._escape:
-                self._escape += ch
-                if len(self._escape) >= 3:
-                    name = ARROWS.get(self._escape)
-                    self._escape = ""
-                    if name:
-                        events.append(("key", name))
-                continue
-            if self.typing is not None:
-                if ch in ("\r", "\n"):
-                    text, self.typing = self.typing.strip(), None
-                    if text:
-                        events.append(("typed", text))
-                elif ch == "\x1b":
-                    self.typing = None
-                elif ch in ("\x7f", "\b"):
-                    self.typing = self.typing[:-1]
-                elif ch == "\x03":
-                    events.append(("quit", None))
-                elif ch.isprintable():
-                    self.typing += ch
-                continue
-            if ch == "\x1b":
-                self._escape = ch
-            elif ch == "\x03" or ch in ("q", "Q"):
-                events.append(("quit", None))
-            elif ch in ("t", "T"):
-                self.typing = ""
-            elif ch.lower() in KEY_NAMES or ch in KEY_NAMES:
-                events.append(("key", KEY_NAMES.get(ch, KEY_NAMES.get(ch.lower()))))
-        return events
 
 
 def main_checkout_env() -> Path | None:
@@ -381,9 +332,9 @@ class PlaywrightPage:
 
 
 class ZoomDeck(Deck):
-    """The bot as the deck (contract v5 §2): `Deck`'s protocol handling with a real mouth and ears. The facilitator's
-    audio goes to the page's microphone stream in order (one queue); a reply drains when the page's clock has passed
-    the end of everything queued for it; the mic frames carry the page's own count of what has been heard."""
+    """The bot as the deck: `Deck`'s protocol handling with a real mouth and ears. Alice's audio goes to the page's
+    microphone stream in order (one queue); a reply drains when the page's clock has passed the end of everything
+    queued for it; the mic frames carry the page's own count of what has been heard."""
 
     def __init__(self, ws: Any, page: Any, *, server: str, talk: dict | None = None,
                  log: Callable[[str], None] | None = None, keep_audio: bool = False,
@@ -396,7 +347,7 @@ class ZoomDeck(Deck):
         self.speaker: str | None = None  # Zoom's active speaker, as last read
         self.speakers_seen: dict[str, int] = {}  # name → drains (100 ms ticks) it was the speaker
         # speaker diagnostics: which strategy named the speaker (ticks), the names Zoom showed, the speech heard
-        # with and without a name, and the DOM probes saved for the ticks without one (None: no probes, e.g. dry run)
+        # with and without a name, and the DOM probes saved for the ticks without one (None: no probes)
         self.speaker_hows: dict[str, int] = {}
         self.roster_seen: list[str] = []
         self.speech_ticks = 0
@@ -428,11 +379,6 @@ class ZoomDeck(Deck):
 
     def _cut(self, reply: Reply) -> None:
         self._mouth.put_nowait(("flush", reply.number, None))
-
-    def _stop_chunk(self) -> None:
-        if self._chunk is not None:
-            self._mouth.put_nowait(("flush", f"play:{self._chunk['play_id']}", None))
-        super()._stop_chunk()
 
     def _set_page_pos(self, pos: Any) -> None:
         if isinstance(pos, dict) and "key" in pos:
@@ -491,44 +437,12 @@ class ZoomDeck(Deck):
                 return
             await asyncio.sleep(0.05)
 
-    async def _play_chunk(self, play: dict) -> None:
-        """The backup narration: fetch the chunk's wav from the server, play it through the mouth, chunk_ended when
-        the page has played it out (or, without audio, after its duration)."""
-        chunk = self._start_chunk(play)
-        key = f"play:{play['play_id']}"
-        pcm = b""
-        try:
-            wav = await fetch(f"{self.server}/media/{quote(str(play.get('slide')), safe='')}/{play.get('chunk')}.wav")
-            pcm = pcm_from_wav(wav)[chunk["offset"] * BYTES_PER_MS:]
-        except Exception as exc:  # noqa: BLE001 - no audio: the chunk "plays" silently for its duration
-            self.say(f"!! backup narration {play.get('slide')}/{play.get('chunk')}: {exc!r}")
-        if pcm:
-            self._mouth.put_nowait(("push", key, pcm))
-            deadline = time.monotonic() + len(pcm) / BYTES_PER_MS / 1000 + DRAIN_GRACE_S
-            while self._chunk is chunk and time.monotonic() < deadline:
-                pos = await self.refresh_position()
-                if self._pushed.get(key, 0) >= len(pcm) and pos.get("key") == key and pos.get("drained"):
-                    break
-                await asyncio.sleep(0.05)
-        else:
-            duration = self.chunk_duration_ms(play.get("slide"), play.get("chunk"))
-            await asyncio.sleep(max(0, duration - chunk["offset"]) / 1000)
-        if self._chunk is not chunk:
-            return  # stopped meanwhile (never chunk_ended for a stopped chunk)
-        self._end_chunk(chunk)
-        await self.send({"type": "chunk_ended", "play_id": play["play_id"]})
-
     def position(self, now: float) -> dict:
         """The page's own count of what has been heard, when it concerns the current reply (else the wall clock)."""
         where = super().position(now)
         played = self._page_played_ms(where["reply"], now)
         if played is not None:
             where["played_ms"] = played
-        chunk = self._chunk
-        if chunk is not None and where["at"] is not None:
-            played = self._page_played_ms(f"play:{chunk['play_id']}", now)
-            if played is not None:
-                where["at"]["t_ms"] = chunk["offset"] + played
         return where
 
     # --- the ears ----------------------------------------------------------------------------------------------
@@ -637,25 +551,14 @@ class ZoomDeck(Deck):
                 "speaker_probes": list(self.probes),
                 "speaker_probe_dir": str(self.probe_dir) if self.probe_dir is not None else None}
 
-    # --- keys -------------------------------------------------------------------------------------------------
+    # --- the start ---------------------------------------------------------------------------------------------
 
-    async def key(self, name: str) -> None:
-        """A presenter key with the page's immediate actions first (design §4): stop the backup narration, flush the
-        reply (Space only an audible one: a silent reply is left to the backend)."""
+    async def start(self) -> None:
+        """--auto-start: start the presentation (the deck's start message; in the call, someone handing Alice the
+        floor does the same)."""
         where = self.position(time.monotonic())
-        reply = self.current_reply()
-        if name in STOPPING_KEYS:
-            self._stop_chunk()
-        if name in CUTTING_KEYS or (name == "space" and reply is not None and reply.first_audio is not None):
-            self._flush_locally(reply)
-        self.say(f"-> key {name}")
-        await self.send({"type": "key", "key": name, "at": where["at"], "reply": where["reply"],
-                         "reply_played_ms": where["played_ms"]})
-
-    async def typed(self, text: str) -> None:
-        where = self.silence()
-        self.say(f"-> typed {text!r}")
-        await self.send({"type": "typed", "text": text, "speaker": None, "at": where["at"], "reply": where["reply"],
+        self.say("-> start the presentation")
+        await self.send({"type": "key", "key": "relay", "at": None, "reply": where["reply"],
                          "reply_played_ms": where["played_ms"]})
 
     async def settle_probes(self) -> None:
@@ -711,7 +614,7 @@ def report(summary: dict, out_dir: Path) -> bool:
              "resumed": "the presentation resumed at the interrupted talking point",
              "intervention": "a timely intervention after the confirming line, before the correction",
              "silent": "silent in the discussion until then (not on the conflicting line alone)",
-             "decision": "the corrected decision with owner Bob, after the correction",
+             "decision": "the corrected decision with its owner, after the correction",
              "notes": "… in the wrapped-up notes",
              "labels": "the discussion lines labelled with the participants' names"}
     print("\nsummary:")
@@ -740,12 +643,9 @@ def report(summary: dict, out_dir: Path) -> bool:
     for name, check in (summary.get("checks") or {}).items():
         print(f"  {'ok ' if check['ok'] else 'MISS'} {names.get(name, name)}: {check['seen']}")
         ok = ok and check["ok"]
-    for problem, failed in (("a cue timed out (played by hand)", any(s.get("timed_out") for s in summary.get("steps", []))),
-                            ("the meeting did not wrap up", not summary.get("wrapped_up")),
-                            ("the backup narration played (a live narration failed)", bool(summary.get("backup_plays")))):
-        if failed:
-            print(f"  MISS {problem}")
-            ok = False
+    if not summary.get("wrapped_up"):
+        print("  MISS the meeting did not wrap up")
+        ok = False
     print(f"  outputs in {out_dir}")
     return ok
 
@@ -868,7 +768,7 @@ def start_server(args: argparse.Namespace, out_dir: Path) -> tuple[subprocess.Po
     """`relay serve <talk> --input voice` as a child process, its output in out_dir/server.log; the key from .env
     (this checkout's, else the main checkout's: a worktree has none) in its environment, never printed."""
     parts = urlsplit(args.server)
-    command = [sys.executable, "-m", "relay", "serve", args.talk, "--input", "voice",
+    command = [sys.executable, "-m", "relay", "serve", args.talk,
                "--host", parts.hostname or "127.0.0.1", "--port", str(parts.port or 8000),
                "--alignment", args.alignment]
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
@@ -899,53 +799,21 @@ async def wait_healthz(base: str, timeout_s: float = 60.0) -> dict:
     raise RuntimeError(f"{base}/healthz did not answer within {timeout_s:.0f} s")
 
 
-class TerminalKeys:
-    """Single keys from this terminal (raw mode) as events on an asyncio queue; a no-op when stdin is not a TTY."""
-
-    def __init__(self) -> None:
-        self.events: asyncio.Queue = asyncio.Queue()
-        self.parser = KeyParser()
-        self._fd: int | None = None
-        self._saved: Any = None
-
-    def start(self) -> bool:
-        if not sys.stdin.isatty():
-            return False
-        import termios
-        import tty
-
-        self._fd = sys.stdin.fileno()
-        self._saved = termios.tcgetattr(self._fd)
-        tty.setcbreak(self._fd)
-        asyncio.get_running_loop().add_reader(self._fd, self._readable)
-        return True
-
-    def _readable(self) -> None:
+def stop_on_signals(stop: asyncio.Event) -> Callable[[], None]:
+    """Ctrl-C (or a SIGTERM) sets `stop`, so the bot leaves the meeting and writes its outputs; returns the undo."""
+    loop = asyncio.get_running_loop()
+    installed = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            data = os.read(self._fd, 256).decode(errors="ignore")
-        except OSError:
-            return
-        was_typing = self.parser.typing
-        for event in self.parser.feed(data):
-            self.events.put_nowait(event)
-        if self.parser.typing is not None and was_typing is None:
-            print("  typed line (Enter sends, Esc drops): ", end="", flush=True)
-        elif self.parser.typing is not None:
-            print(f"\r  typed line (Enter sends, Esc drops): {self.parser.typing}\x1b[K", end="", flush=True)
-        elif was_typing is not None:
-            print()
-
-    def stop(self) -> None:
-        if self._fd is None:
-            return
-        import termios
-
-        try:
-            asyncio.get_running_loop().remove_reader(self._fd)
-        except Exception:  # noqa: BLE001
+            loop.add_signal_handler(sig, stop.set)
+            installed.append(sig)
+        except (NotImplementedError, RuntimeError, ValueError):
             pass
-        termios.tcsetattr(self._fd, termios.TCSADRAIN, self._saved)
-        self._fd = None
+
+    def undo() -> None:
+        for sig in installed:
+            loop.remove_signal_handler(sig)
+    return undo
 
 
 async def run_live(args: argparse.Namespace) -> dict:
@@ -982,7 +850,8 @@ async def run_live(args: argparse.Namespace) -> dict:
         flags = ["--autoplay-policy=no-user-gesture-required", "--mute-audio",
                  f"--auto-select-tab-capture-source-by-title={OBSERVER_TITLE}"]
         console = (out_dir / "console.log").open("w", encoding="utf-8")
-        keys = TerminalKeys()
+        stop = asyncio.Event()
+        undo_signals = stop_on_signals(stop)
         async with async_playwright() as p:
             try:
                 ctx = await p.chromium.launch_persistent_context(
@@ -1028,34 +897,29 @@ async def run_live(args: argparse.Namespace) -> dict:
                 except AssertionError as exc:
                     print(f"  !! {exc} (is the key in .env? the bot still listens)", flush=True)
                 ears = asyncio.create_task(deck.ears())
-                print(KEY_HELP, flush=True)
-                if not keys.start():
-                    print("  (stdin is not a terminal: no keys; Ctrl-C to leave)", flush=True)
+                print("Alice is in the call: hand her the floor by voice (\"Alice, take it away\")"
+                      + (f", or she starts {AUTO_START_S:.0f} s after the share" if args.auto_start else "")
+                      + ". Ctrl-C leaves the meeting.", flush=True)
                 auto_at = (shared_at or time.monotonic()) + AUTO_START_S if args.auto_start else None
                 last_line = time.monotonic()
                 try:
-                    while True:
+                    while not stop.is_set():
                         if auto_at is not None and time.monotonic() >= auto_at:
                             auto_at = None
-                            print("auto-start: R", flush=True)
-                            await deck.key("relay")
+                            print("auto-start: the presentation starts", flush=True)
+                            await deck.start()
                         try:
-                            event, value = await asyncio.wait_for(keys.events.get(), 0.5)
+                            await asyncio.wait_for(stop.wait(), 0.5)
                         except asyncio.TimeoutError:
-                            if time.monotonic() - last_line > 5:
-                                last_line = time.monotonic()
-                                level = max(deck.levels[-50:] or [-120])
-                                print(f"  t={deck.now():6.1f}s  hearing {level:>4} dBFS  speaker {deck.speaker!r}  "
-                                      f"state {deck.state.get('state')}  {deck.frames_sent} frames", flush=True)
-                            continue
-                        if event == "quit":
-                            break
-                        if event == "key" and value:
-                            await deck.key(value)
-                        elif event == "typed" and value:
-                            await deck.typed(value)
+                            pass
+                        if time.monotonic() - last_line > STATUS_EVERY_S:
+                            last_line = time.monotonic()
+                            level = max(deck.levels[-50:] or [-120])
+                            print(f"  t={deck.now():6.1f}s  hearing {level:>4} dBFS  speaker {deck.speaker!r}  "
+                                  f"state {deck.state.get('state')}  {deck.frames_sent} frames", flush=True)
+                    print("\nleaving the meeting…", flush=True)
                 finally:
-                    keys.stop()
+                    undo_signals()
                     deck.stopped.set()
                     try:
                         await asyncio.wait_for(ears, 3)
@@ -1121,7 +985,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\ninterrupted")
         return 130
-    ok = report(summary, OUT)
+    report(summary, OUT)
     print(f"  joined: {summary.get('joined')} · shared: {summary.get('shared')} · peak heard "
           f"{summary.get('peak_db')} dBFS")
     return 0 if summary.get("joined") else 1

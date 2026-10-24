@@ -1,19 +1,18 @@
-"""Meeting packages and the meeting state (contract §2, §3.1).
+"""Meeting packages and the meeting state.
 
 A meeting package is a talk package plus:
 
-    agenda.yaml     title, host, participants (2–6), phases (presentation → discussion → wrapup), discussion_slide
+    agenda.yaml     title, host, participants (1–6: in Zoom the others join the roster as they speak), phases
+                    (presentation → discussion → wrapup), discussion_slide
     sources/*.md    "# <document title>", then statements "- [REQ-1] text": the evidence corpus with stable ids; a file
                     without bracketed ids is a plain fact sheet: every line is a statement with an auto id (FACTS-1 …)
     checks.yaml     optional, legacy: what the regex alignment check extracts (slots, actions, confirmations,
                     ownership); model-based alignment (relay/semantic.py) needs none
-    demo.yaml       optional (contract v3.1, the online meeting): the prerecorded participant clips and the cue each
-                    one waits for; `relay.clips` generates their audio, the deck plays and streams them
 
-`load_meeting(talk)` → `MeetingPackage` (None without agenda.yaml); `load_demo(talk)` → `Demo` (None without
-demo.yaml); `validate_meeting(talk)` → issues of all of them, which `python -m relay.talk` reports too.
-`MeetingState` is what the meeting produced: transcript, evidence lookups, clarifications, decisions, action items,
-open questions, alignment alerts. Pure: no I/O beyond reading the package, no asyncio; the clock is injected.
+`load_meeting(talk)` → `MeetingPackage` (None without agenda.yaml); `validate_meeting(talk)` → its issues, which
+`python -m relay.talk` reports too. `MeetingState` is what the meeting produced: transcript, evidence lookups,
+clarifications, decisions, action items, open questions, alignment alerts. Pure: no I/O beyond reading the package, no
+asyncio; the clock is injected.
 """
 
 from __future__ import annotations
@@ -25,14 +24,13 @@ from typing import Any, Callable
 
 import yaml
 
-from .config import PRESET_VOICES
 from .talk import Issue, Slide, Talk, TalkError
 
 AGENDA_FILE = "agenda.yaml"
 CHECKS_FILE = "checks.yaml"
 SOURCES_DIR = "sources"
 PHASE_IDS = ("presentation", "discussion", "wrapup")
-MIN_PARTICIPANTS, MAX_PARTICIPANTS = 1, 6  # 1: in Zoom the others join the roster as they speak (D89)
+MIN_PARTICIPANTS, MAX_PARTICIPANTS = 1, 6  # 1: in Zoom the others join the roster as they speak
 MAX_STATEMENT_CHARS = 300
 DEFAULT_WINDOW = 3
 NOTES_MAX_CHARS = 1200
@@ -53,20 +51,6 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f]")
 
 AGENDA_KEYS = {"title", "host", "participants", "phases", "discussion_slide"}
 CHECKS_KEYS = {"slots", "actions", "confirmations", "ownership", "window_utterances"}
-
-# demo.yaml (contract v3.1 §1)
-DEMO_FILE = "demo.yaml"
-RECORDINGS_DIR = "clips"  # talks/<id>/clips/<step>.wav: a recording that overrides the generated clip
-DEMO_KEYS = {"voices", "steps"}
-STEP_KEYS = {"id", "speaker", "say", "action", "when"}
-STEP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
-DEMO_ACTIONS = ("phase", "start")  # the script presses the phase button / starts the presentation (disclosed)
-REPLY_KINDS = ("narration", "answer", "handover", "intervention", "decision", "summary")  # reply_start kinds
-WHEN_KEYS = ("talking_point", "heard_ms", "phase", "quiet_ms", "after", "gap_ms", "after_reply", "timeout_ms")
-WHEN_MS_KEYS = ("heard_ms", "quiet_ms", "gap_ms", "timeout_ms")
-DEFAULT_TIMEOUT_MS = 90_000
-MAX_CLIP_SAY_CHARS = 300  # TTS 3: longer input may come back garbled (doc/gotchas.md)
-DEFAULT_CLIP_VOICE = "default"
 
 
 # --- the package ------------------------------------------------------------------------------------------------------
@@ -174,7 +158,7 @@ class MeetingPackage:
         return list(docs.values())
 
     def to_json(self) -> dict:
-        """The `meeting` object of `hello` and /api/talk (contract §6)."""
+        """The `meeting` object of `hello` and /api/talk."""
         return {
             "title": self.title, "host": self.host,
             "participants": [asdict(participant) for participant in self.participants],
@@ -182,45 +166,6 @@ class MeetingPackage:
             "documents": self.documents(),
             "discussion_slide": self.discussion_slide,
         }
-
-
-@dataclass(frozen=True)
-class DemoStep:
-    """One step of the demo script: a participant's prerecorded clip (`say`, spoken by `speaker`) or an `action` of
-    the script (phase, start), and the cue it waits for (`when`: the keys given, plus the resolved `timeout_ms`)."""
-
-    id: str
-    speaker: str | None = None
-    say: str | None = None
-    action: str | None = None
-    when: dict = field(default_factory=dict)
-
-    @property
-    def is_clip(self) -> bool:
-        return self.say is not None
-
-    def to_json(self) -> dict:
-        return {"id": self.id, "speaker": self.speaker, "say": self.say, "action": self.action,
-                "when": dict(self.when)}
-
-
-@dataclass(frozen=True)
-class Demo:
-    """demo.yaml: the simulated online meeting's prerecorded participants (contract v3.1 §1)."""
-
-    voices: dict[str, str]  # participant → TTS 3 preset for clips without a recording
-    steps: tuple[DemoStep, ...]
-
-    def step(self, step_id: str) -> DemoStep | None:
-        return next((step for step in self.steps if step.id == step_id), None)
-
-    @property
-    def clips(self) -> list[DemoStep]:
-        return [step for step in self.steps if step.is_clip]
-
-    def voice(self, speaker: str | None) -> str:
-        """The TTS 3 preset a speaker's clips are generated with (`default` when demo.yaml names none)."""
-        return self.voices.get(speaker or "", DEFAULT_CLIP_VOICE)
 
 
 # --- loader and validator ---------------------------------------------------------------------------------------------
@@ -601,188 +546,21 @@ def _parse_checks(root: Path, issues: list[Issue]) -> Checks | None:
     return Checks(slots, actions, confirmations, ownership, window)
 
 
-def _ms(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _parse_when(raw: Any, where: str, k: int, positions: dict[str, int], points: set[str] | None,
-                issues: list[Issue]) -> dict | None:
-    """A step's cue (contract v3.1 §1), checked; None when it has an error (reported)."""
-    known = ", ".join(WHEN_KEYS)
-    if raw is None:
-        raw = {}
-    if not isinstance(raw, dict):
-        issues.append(Issue("error", where, f"must be a mapping of cues ({known})"))
-        return None
-    errors = len([issue for issue in issues if issue.level == "error"])
-
-    def error(message: str) -> None:
-        issues.append(Issue("error", where, message))
-
-    unknown = sorted(str(key) for key in set(raw) - set(WHEN_KEYS))
-    if unknown:
-        error(f"unknown cue(s) {', '.join(unknown)} (known: {known}): the script would wait for nothing")
-    for key in WHEN_MS_KEYS:
-        if key in raw and not _ms(raw[key]):
-            error(f"`{key}: {raw[key]!r}` must be a whole number of milliseconds ≥ 0")
-    if "timeout_ms" in raw and raw["timeout_ms"] == 0:
-        error("`timeout_ms` must be more than 0")
-    point = raw.get("talking_point")
-    if "talking_point" in raw:
-        if not isinstance(point, str) or not point.strip():
-            error("`talking_point` must be a talking point id")
-        elif points is not None and point not in points:
-            error(f"{point!r} is not a talking point of this talk ({', '.join(sorted(points)) or 'none'})")
-    if "heard_ms" in raw and "talking_point" not in raw:
-        error("`heard_ms` counts the facilitator's audio on a `talking_point`: name one")
-    if "phase" in raw and raw["phase"] not in PHASE_IDS:
-        error(f"`phase: {raw['phase']!r}` is not an agenda phase ({', '.join(PHASE_IDS)})")
-    if "quiet_ms" in raw and "phase" not in raw:
-        error("`quiet_ms` goes with a `phase` (the facilitator quiet in that phase)")
-    if "after" in raw:
-        after = raw["after"]
-        if not isinstance(after, str) or after not in positions:
-            error(f"`after: {after!r}` is not a step id of this script")
-        elif positions[after] >= k:
-            error(f"`after: {after}` names a later step (or this one): a step can only wait for an earlier one")
-    if "after_reply" in raw and raw["after_reply"] not in REPLY_KINDS:
-        error(f"`after_reply: {raw['after_reply']!r}` is not a reply kind ({', '.join(REPLY_KINDS)})")
-    if "gap_ms" in raw and "after" not in raw and "after_reply" not in raw:
-        error("`gap_ms` counts from `after` (a clip's end) or `after_reply`: name one")
-    if len([issue for issue in issues if issue.level == "error"]) > errors:
-        return None
-    when = {key: raw[key] for key in WHEN_KEYS if key in raw}
-    when.setdefault("timeout_ms", DEFAULT_TIMEOUT_MS)
-    return when
-
-
-def _parse_demo(root: Path, slides: list[Slide] | None, participants: tuple[Participant, ...],
-                issues: list[Issue]) -> Demo | None:
-    """demo.yaml (contract v3.1 §1), checked against the agenda's participants and the talk's talking points."""
-    path = root / DEMO_FILE
-    if not path.is_file():
-        return None
-    ok, data = _load_yaml(path, DEMO_FILE, issues)
-    if not ok:
-        return None
-    if not isinstance(data, dict):
-        issues.append(Issue("error", DEMO_FILE, "must be a mapping with voices and steps"))
-        return None
-    _unknown_keys(data, DEMO_KEYS, DEMO_FILE, issues)
-    names = {participant.name.casefold(): participant.name for participant in participants}
-    listed = ", ".join(participant.name for participant in participants) or "none"
-
-    def participant(name: Any) -> str | None:
-        return names.get(" ".join(name.split()).casefold()) if isinstance(name, str) else None
-
-    voices: dict[str, str] = {}
-    raw_voices = data.get("voices")
-    if raw_voices is not None and not isinstance(raw_voices, dict):
-        issues.append(Issue("error", f"{DEMO_FILE}: voices", "must map participants to TTS 3 presets "
-                                                            "({Alice: nora, …})"))
-    for name, voice in (raw_voices or {}).items() if isinstance(raw_voices, dict) else ():
-        here = f"{DEMO_FILE}: voices.{name}"
-        canonical = participant(name)
-        if canonical is None:
-            issues.append(Issue("error", here, f"{name!r} is not a participant of the agenda ({listed})"))
-        elif voice not in PRESET_VOICES:
-            issues.append(Issue("error", here, f"{voice!r} is not a TTS 3 preset ({', '.join(PRESET_VOICES)})"))
-        else:
-            voices[canonical] = voice
-    raw_steps = data.get("steps")
-    if not isinstance(raw_steps, list) or not raw_steps:
-        issues.append(Issue("error", f"{DEMO_FILE}: steps", "required: a list of steps ({id, speaker, say, when} "
-                                                            "or {id, action, when})"))
-        return Demo(voices, ())
-    positions: dict[str, int] = {}
-    for k, raw in enumerate(raw_steps):
-        step_id = raw.get("id") if isinstance(raw, dict) else None
-        if isinstance(step_id, str):
-            positions.setdefault(step_id, k)
-    points = {chunk.id for slide in slides for chunk in slide.chunks} if slides is not None else None
-    steps: list[DemoStep] = []
-    seen: set[str] = set()
-    unvoiced: set[str] = set()
-    for k, raw in enumerate(raw_steps):
-        here = f"{DEMO_FILE}: steps[{k}]"
-        if not isinstance(raw, dict):
-            issues.append(Issue("error", here, "each step is {id, speaker, say, when} or {id, action, when}"))
-            continue
-        step_id = raw.get("id")
-        if isinstance(step_id, str):
-            here = f"{here} ({step_id})"
-        _unknown_keys(raw, STEP_KEYS, here, issues)
-        if not isinstance(step_id, str) or not STEP_ID_RE.match(step_id):
-            issues.append(Issue("error", here, f"`id: {step_id!r}`: 1–40 lowercase letters, digits and -, starting "
-                                               "with a letter or digit (e.g. alice-question)"))
-            continue
-        if step_id in seen:
-            issues.append(Issue("error", here, f"step id {step_id!r} appears more than once"))
-            continue
-        seen.add(step_id)
-        say, action, speaker = raw.get("say"), raw.get("action"), None
-        if say is not None and action is not None:
-            issues.append(Issue("error", here, "has both `say` and `action`: a step is a clip or an action"))
-            continue
-        if say is None and action is None:
-            issues.append(Issue("error", here, "needs `say` (a participant's clip) or `action` "
-                                               f"({', '.join(DEMO_ACTIONS)})"))
-            continue
-        if say is not None:
-            if not isinstance(say, str) or not say.strip():
-                issues.append(Issue("error", here, "`say` must be the clip's words"))
-                continue
-            say = " ".join(say.split())
-            if len(say) > MAX_CLIP_SAY_CHARS:
-                issues.append(Issue("error", here, f"`say` is {len(say)} characters (max {MAX_CLIP_SAY_CHARS}, the "
-                                                   "TTS 3 limit): split the clip in two steps"))
-                continue
-            speaker = participant(raw.get("speaker"))
-            if speaker is None:
-                issues.append(Issue("error", here, f"`speaker: {raw.get('speaker')!r}` is not a participant of the "
-                                                   f"agenda ({listed})"))
-                continue
-            if speaker not in voices and not (root / RECORDINGS_DIR / f"{step_id}.wav").is_file():
-                unvoiced.add(speaker)
-        else:
-            if action not in DEMO_ACTIONS:
-                issues.append(Issue("error", here, f"`action: {action!r}` is not one of {', '.join(DEMO_ACTIONS)}"))
-                continue
-            if raw.get("speaker") is not None:
-                issues.append(Issue("warning", here, "`speaker` is ignored on an action step"))
-        when = _parse_when(raw.get("when"), f"{here}.when", k, positions, points, issues)
-        if when is None:
-            continue
-        steps.append(DemoStep(step_id, speaker, say, action, when))
-    for name in sorted(unvoiced):
-        issues.append(Issue("warning", f"{DEMO_FILE}: voices", f"no voice for {name}: their clips are generated "
-                                                              f"with `{DEFAULT_CLIP_VOICE}`, the facilitator's voice "
-                                                              "(name a preset, or record the clip)"))
-    return Demo(voices, tuple(steps))
-
-
-def _parse_all(root: Path, slides: list[Slide] | None) -> tuple[MeetingPackage | None, Demo | None, list[Issue]]:
+def _parse_meeting(root: Path, slides: list[Slide] | None) -> tuple[MeetingPackage | None, list[Issue]]:
     issues: list[Issue] = []
     if not (root / AGENDA_FILE).is_file():
         extras = [name for name, present in ((f"{SOURCES_DIR}/", (root / SOURCES_DIR).is_dir()),
-                                             (CHECKS_FILE, (root / CHECKS_FILE).is_file()),
-                                             (DEMO_FILE, (root / DEMO_FILE).is_file())) if present]
+                                             (CHECKS_FILE, (root / CHECKS_FILE).is_file())) if present]
         if extras:
             issues.append(Issue("warning", AGENDA_FILE, f"missing: {' and '.join(extras)} ignored (a meeting needs "
                                                         f"{AGENDA_FILE})"))
-        return None, None, issues
+        return None, issues
     agenda = _parse_agenda(root, slides, issues)
     statements = _parse_sources(root, issues)
     checks = _parse_checks(root, issues)
     if agenda is None:
-        return None, None, issues
-    demo = _parse_demo(root, slides, agenda["participants"], issues)
-    return MeetingPackage(statements=statements, checks=checks, **agenda), demo, issues
-
-
-def _parse_meeting(root: Path, slides: list[Slide] | None) -> tuple[MeetingPackage | None, list[Issue]]:
-    package, _, issues = _parse_all(root, slides)
-    return package, issues
+        return None, issues
+    return MeetingPackage(statements=statements, checks=checks, **agenda), issues
 
 
 def meeting_issues(root: Path, talk: Talk | None) -> list[Issue]:
@@ -815,23 +593,6 @@ def load_meeting(talk: Talk | Path | str) -> MeetingPackage | None:
     if any(issue.level == "error" for issue in issues):
         raise TalkError(root, issues)
     return package
-
-
-def load_demo(talk: Talk | Path | str, package: MeetingPackage | None = None) -> Demo | None:
-    """The demo script (demo.yaml), or None without one (or without a meeting: its speakers are the agenda's
-    participants). `package` = the talk's meeting, when the caller has it. Raises TalkError listing every error."""
-    root = _root_of(talk)
-    if not root.is_dir() or not (root / DEMO_FILE).is_file():
-        return None
-    slides = _slides_for(talk)
-    if package is None:
-        package, demo, issues = _parse_all(root, slides)
-    else:
-        issues = []
-        demo = _parse_demo(root, slides, package.participants, issues)
-    if any(issue.level == "error" for issue in issues):
-        raise TalkError(root, issues)
-    return demo if package is not None else None
 
 
 # --- meeting state ----------------------------------------------------------------------------------------------------
@@ -1227,7 +988,7 @@ class MeetingState:
         return lines
 
     def to_json(self) -> dict:
-        """The deck's `meeting` message body (contract §6)."""
+        """The deck's `meeting` message body."""
         package = self.package
         return {
             "title": self.title,

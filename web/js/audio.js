@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Web Audio for the deck (doc/design.md §8): one AudioContext at 24 kHz, made in the Join click (Arm); the narration
+ * Web Audio for the deck: one AudioContext at 24 kHz, made in the Join click (Arm); the narration
  * player (decoded wav chunks, the listener's exact position, chunk_ended on natural ends only); the live-reply player
  * (pcm-player worklet, played-sample count, drained), which also plays Relay's live narration; the microphone
  * (mic-capture worklet → 100 ms PCM16 frames + RMS); an analyser on both output buses for Relay's speaking ring.

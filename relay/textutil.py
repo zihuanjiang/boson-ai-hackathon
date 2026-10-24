@@ -6,7 +6,8 @@ import difflib
 import re
 from dataclasses import dataclass
 
-# Values accepted by Higgs TTS 3 inline tags (doc/higgs-tts.md, "Inline control tags").
+# Values accepted by Higgs TTS 3 inline tags ("Inline control tags" in Boson's TTS docs): the validator rejects them in
+# live lines, which Higgs Realtime would read aloud.
 TAG_VALUES: dict[str, frozenset[str]] = {
     "emotion": frozenset({
         "elation", "amusement", "enthusiasm", "determination", "pride", "contentment", "affection", "relief",

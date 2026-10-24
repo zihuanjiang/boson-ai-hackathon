@@ -1,57 +1,46 @@
-"""FastAPI app: the deck page, the talk and its narration audio, and the deck control socket (design §3–4).
+"""FastAPI app: the shared page, the talk, and the deck control socket.
 
-    app = create_app("talks/test", settings)        # served by `python -m relay serve talks/test`
+    app = create_app("talks/project-overview", settings)   # served by `python -m relay serve talks/project-overview`
 
-The talk, its word timings and every rendered wav are loaded once, at startup: `/media` serves that in-memory
-snapshot, never the file on disk, so the audio always matches the timings `/api/talk` and the controller use, whatever
-a render writes meanwhile. A re-render takes effect at the next server restart. `/api/talk` carries
-`version = timeline.render_version(talk, chunks)` (the controller's `hello` carries the same value), so an open deck
-can tell that a restarted server presents different narration. A wav whose length disagrees with its timings (a
-render still writing it) stops the server from starting.
-
-An online meeting (talks/<id>/demo.yaml, contract v3.1): the prerecorded participant clips (`relay.clips`) are read
-into memory at startup too and served at `/clips/<step>.wav`; `/api/talk` and the controller's `hello` carry the same
-`demo` object (the script, each clip's audio url or null when it is missing) and the `input` (clips · mic), resolved
-once here. With `--fake-realtime` and clips, the fake "hears" the clips' lines in the order they are committed.
+Everything Alice says is live Higgs Realtime: there is no recorded narration to serve. `/api/talk` carries
+`version = timeline.render_version(talk, {})` (the controller's `hello` carries the same value), so an open page can
+tell that a restarted server presents a changed talk.
 
 The app owns one `RealtimeLink` and one `Controller`, wired to each other, and a `DeckHub` (the controller's
-`BrowserPort`): one deck socket at a time; a new deck replaces the old one, which is closed with code 4000 (the
-client does not reconnect after it). A deck that stops reading for 5 s is dropped and closed with code 4001 (it
-reconnects once it reads again). The Realtime link starts with the server (a warm session); `start()` is idempotent,
-so the controller may call it again on `arm`.
+`BrowserPort`): one deck socket at a time (the Zoom bot); a new deck replaces the old one, which is closed with code
+4000 (the client does not reconnect after it). A deck that stops reading for 5 s is dropped and closed with code 4001
+(it reconnects once it reads again). `/ws/observe` is the read-only feed of the page the bot shares in Zoom. The
+Realtime link starts with the server (a warm session); `start()` is idempotent, so the controller may call it again on
+`arm`.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
 import json
 import logging
-import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Coroutine, Mapping
-from urllib.parse import quote
+from typing import Any, AsyncIterator, Callable, Coroutine
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi import FastAPI, Request, WebSocket
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .config import OUT, WEB, Settings, input_mode, load_settings
+from .config import OUT, WEB, Settings, load_settings
 from .eventlog import EventLog
 from .ports import LogFn, null_log
+from .prompts import spoken_text
 from .realtime import RealtimeLink
 from .talk import Talk, load_talk
-from .timeline import RenderedChunk, RenderMissing, load_rendered, render_version
-from .tts import wav_duration_ms
+from .timeline import render_version
 
 logger = logging.getLogger("relay.server")
 
-Chunks = Mapping[tuple[str, int], RenderedChunk]
 ControllerFactory = Callable[..., Any]
 
 REPLACED_CLOSE_CODE = 4000  # the client does not reconnect after this one
@@ -60,26 +49,22 @@ STALLED_CLOSE_CODE = 4001  # the client reconnects (any code but 4000)
 STALLED_REASON = "the deck stopped reading"
 DECK_SEND_TIMEOUT_S = 5.0
 DECK_CLOSE_TIMEOUT_S = 1.0  # closing the current deck at shutdown; a detached deck's close is never abandoned
-MEDIA_NAME_RE = re.compile(r"([0-9]{1,6})\.wav")
-CLIP_NAME_RE = re.compile(r"([a-z0-9][a-z0-9-]{0,39})\.wav")  # /clips/<step>.wav (demo.yaml step ids)
-WAV_MATCH_TOLERANCE_MS = 10  # the render takes `duration_ms` from these very bytes: a bigger gap is another take
-WAV_HEADER_BYTES = 44  # the render's guess for a wav header it can't read: PCM16 mono 24 kHz after 44 bytes
-WAV_BYTES_PER_MS = 48
+OBSERVER_VIEWS = ("observer", "zoom")  # web/js/socket.js isObserverView
 
 
-def default_controller_factory(talk: Talk, chunks: Chunks, settings: Settings, *, browser: Any, realtime: Any,
-                               log: LogFn, analyzer: Any = None) -> Any:
-    from .controller import Controller  # imported late: the controller is built separately (design §5)
+def default_controller_factory(talk: Talk, settings: Settings, *, browser: Any, realtime: Any, log: LogFn,
+                               analyzer: Any = None) -> Any:
+    from .controller import Controller  # imported late: FastAPI starts fast, the controller is the big import
 
-    return Controller(talk, chunks, settings, browser=browser, realtime=realtime, log=log, analyzer=analyzer)
+    return Controller(talk, {}, settings, browser=browser, realtime=realtime, log=log, analyzer=analyzer)
 
 
 _AUTO = object()
 
 
 def alignment_info(settings: Settings, meeting: Any, *, available: bool | None = None) -> dict:
-    """{mode, model, available}: how the discussion is checked (contract v5 §0). `available` is the controller's
-    word when it has one; else what the settings and the package say (claude needs the key, legacy a checks.yaml)."""
+    """{mode, model, available}: how the discussion is checked. `available` is the controller's word when it has
+    one; else what the settings and the package say (claude needs the key, legacy a checks.yaml)."""
     mode = settings.alignment
     if mode == "legacy" and (meeting is None or getattr(meeting, "checks", None) is None):
         mode = "off"
@@ -91,7 +76,7 @@ def alignment_info(settings: Settings, meeting: Any, *, available: bool | None =
 
 def build_analyzer(settings: Settings, log: LogFn = null_log) -> Any:
     """The Claude analysis adapter when claude mode has its key (ANTHROPIC_API_KEY), else None: claude mode without a
-    key is `unavailable`, never the legacy engine (contract v5 §0)."""
+    key is `unavailable`, never the legacy engine."""
     if settings.alignment != "claude" or not settings.anthropic_api_key:
         return None
     try:
@@ -103,122 +88,26 @@ def build_analyzer(settings: Settings, log: LogFn = null_log) -> Any:
         return None
 
 
-def demo_payload(talk: Talk, settings: Settings, out_root: Path = OUT) -> tuple[dict | None, str, dict, list[str]]:
-    """(the `demo` object of /api/talk and hello, the input mode, the clip snapshot, startup warnings) for a talk:
-    its demo script (demo.yaml) with the participant clips read into memory now (`/clips` serves them until the
-    server restarts)."""
-    from .clips import demo_json, load_clips
-    from .meeting import load_demo
-
-    demo = load_demo(talk)  # None without demo.yaml (or without a meeting)
-    mode = input_mode(settings, demo)
-    clips, warnings = load_clips(talk, demo, out_root)
-    if mode == "clips" and demo is None:
-        warnings.append("input clips without a demo.yaml: there are no participants to play (use --input mic)")
-    return demo_json(demo, clips, mode), mode, clips, warnings
-
-
-def talk_json(talk: Talk, chunks: Chunks, settings: Settings, *, demo: Any = _AUTO, alignment: Any = _AUTO) -> dict:
-    """The `GET /api/talk` payload (design §3). `meeting` is the meeting package as the deck shows it (title,
-    participants, agenda phases, documents with their statement ids, the discussion slide), null for a plain talk;
-    every chunk carries its talking point `id`. `demo` (contract v3.1 §2): the simulated participants' script and
-    clips, null without demo.yaml; `input`: clips (prerecorded participants, mic off) or mic; `alignment` (contract
-    v5): {mode, model, available} of the discussion check, null for a plain talk."""
+def talk_json(talk: Talk, settings: Settings, *, alignment: Any = _AUTO) -> dict:
+    """The `GET /api/talk` payload. `meeting` is the meeting package as the page shows it (title, participants, agenda
+    phases, documents with their statement ids, the discussion slide), null for a plain talk; every chunk carries its
+    talking point `id` and its text as spoken (a guided point's verbatim beats). `alignment`: {mode, model, available}
+    of the discussion check, null for a plain talk. There is no recorded narration, so the audio fields stay empty."""
     from .meeting import load_meeting
 
-    if demo is _AUTO:
-        demo = demo_payload(talk, settings)[0]
     meeting = load_meeting(talk)
     if alignment is _AUTO:
         alignment = alignment_info(settings, meeting) if meeting is not None else None
     slides = []
     for slide in talk.slides:
-        items = []
-        for chunk in slide.chunks:
-            rendered = chunks.get((slide.id, chunk.index))
-            items.append({
-                "index": chunk.index,
-                "id": chunk.id,
-                "text": rendered.text if rendered else chunk.text,
-                "fragment": chunk.fragment,
-                "duration_ms": rendered.duration_ms if rendered else 0,
-                "words": [{"word": w.word, "start": w.start, "end": w.end, "sentence": w.sentence}
-                          for w in rendered.words] if rendered else [],
-                "sentences": list(rendered.sentences) if rendered else [],
-                "audio": f"/media/{quote(slide.id, safe='')}/{chunk.index}.wav" if rendered else None,
-            })
+        items = [{"index": chunk.index, "id": chunk.id, "text": spoken_text(chunk), "fragment": chunk.fragment,
+                  "duration_ms": 0, "words": [], "sentences": [], "audio": None} for chunk in slide.chunks]
         slides.append({"id": slide.id, "index": slide.index, "speaker": slide.speaker, "mode": slide.mode,
                        "title": slide.title, "fragments": slide.fragments, "chunks": items})
     return {"id": talk.id, "presenter": talk.presenter, "voice": talk.voice, "mic_mode": settings.mic_mode,
-            "narration_mode": settings.narration, "fake_audio": any(chunk.fake for chunk in chunks.values()),
-            "version": render_version(talk, dict(chunks)), "slides": slides,
-            "meeting": meeting.to_json() if meeting is not None else None,
-            "demo": demo, "input": demo["input"] if isinstance(demo, dict) else input_mode(settings, None),
+            "narration_mode": "live", "fake_audio": False, "version": render_version(talk, {}), "slides": slides,
+            "meeting": meeting.to_json() if meeting is not None else None, "demo": None, "input": settings.input,
             "alignment": alignment}
-
-
-# --- the narration snapshot ---------------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class NarrationWav:
-    """One rendered wav, read into memory at startup: `/media` serves these bytes, never the file on disk."""
-
-    body: bytes
-    etag: str  # a strong validator (a hash of the bytes), quoted as HTTP wants it
-
-
-def wav_length_ms(data: bytes) -> int:
-    """How long a rendered wav lasts, measured like the render measures it (the header, else the size)."""
-    length = wav_duration_ms(data)
-    if length is None:
-        length = max(0, (len(data) - WAV_HEADER_BYTES) // WAV_BYTES_PER_MS)
-    return length
-
-
-def load_narration(talk: Talk, chunks: Chunks) -> dict[tuple[str, int], NarrationWav]:
-    """Read every rendered wav of `chunks` into memory: the snapshot `/media` serves until the server restarts.
-
-    Raises `RenderMissing` when a wav can't be read or its length disagrees with its word timings: a render was
-    writing that chunk while the server started, or the wav was swapped by hand. Chunks without a `wav_path`
-    (synthetic test chunks) have no audio: `/media` answers 404 and the deck plays their captions silently.
-    """
-    narration: dict[tuple[str, int], NarrationWav] = {}
-    problems: list[str] = []
-    for (slide, index), chunk in chunks.items():
-        if chunk.wav_path is None:
-            continue
-        label = f"{slide}/{index}"
-        try:
-            body = Path(chunk.wav_path).read_bytes()
-        except OSError as exc:
-            problems.append(f"{label}: cannot read {chunk.wav_path} ({exc.strerror or exc})")
-            continue
-        length = wav_length_ms(body)
-        if abs(length - chunk.duration_ms) > WAV_MATCH_TOLERANCE_MS:
-            problems.append(
-                f"{label}: the wav lasts {length} ms but its word timings were made for {chunk.duration_ms} ms. "
-                f"A render is still writing it (let it finish), or the wav was replaced (render it again: "
-                f"`uv run python -m relay.render talks/{talk.id} --force --only {slide}`). Then start the server.")
-            continue
-        narration[(slide, index)] = NarrationWav(body, f'"{hashlib.sha256(body).hexdigest()[:24]}"')
-    if problems:
-        raise RenderMissing(talk.id, problems)
-    return narration
-
-
-def narration_for(narration: Mapping[tuple[str, int], NarrationWav], slide: str, name: str) -> NarrationWav | None:
-    """The snapshot behind `/media/<slide>/<name>`, or None. Only looks names up, never builds a path from them."""
-    match = MEDIA_NAME_RE.fullmatch(name)
-    if not match:
-        return None
-    return narration.get((slide, int(match.group(1))))
-
-
-def _etag_matches(header: str | None, etag: str) -> bool:
-    """Whether an `If-None-Match` header (entity tags, weak or strong, or `*`) names this representation."""
-    if not header:
-        return False
-    return any(tag == "*" or tag.removeprefix("W/") == etag for tag in (part.strip() for part in header.split(",")))
 
 
 async def _call(log: LogFn, target: Any, method: str, *args: Any) -> None:
@@ -246,7 +135,7 @@ class _Deck:
 
 
 class DeckHub:
-    """The `BrowserPort`: the one connected deck socket (design §4, decision D13).
+    """The `BrowserPort`: the one connected deck socket.
 
     `send` is serialised per deck and silently drops messages while no deck is connected. Messages from a deck that
     has been replaced are ignored, so a stale tab can never drive the show. A deck that stops reading (a hung tab)
@@ -272,7 +161,7 @@ class DeckHub:
         self._tasks: set[asyncio.Task] = set()
         self._audio_out: dict[Any, list[int]] = {}
         self._mic_in = [0, 0]
-        # Observers (contract v5): read-only copies of the deck's feed (`/ws/observe`), e.g. the page the Zoom bot
+        # Observers: read-only copies of the deck's feed (`/ws/observe`), e.g. the page the Zoom bot
         # shares as its screen while the bot itself is the deck. They never drive the show and never count as it.
         self._observers: list[_Deck] = []
         self._observer_count = 0
@@ -589,8 +478,8 @@ class _ControllerRef:
 
 class _NoCache:
     """`Cache-Control: no-cache` on every HTTP response that has none: the browser always revalidates (cheap 304s),
-    so an edited web/ file shows up on the next reload, never minutes later. (The talk and its narration are a
-    snapshot taken at startup: a re-render shows up after a server restart.)"""
+    so an edited web/ file shows up on the next reload, never minutes later. (The talk is loaded at startup: an
+    edited talk shows up after a server restart.)"""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -610,42 +499,27 @@ class _NoCache:
 
 def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_root: Path = OUT,
                connect: Callable[..., Any] | None = None, controller_factory: ControllerFactory | None = None,
-               chunks: Chunks | None = None, web_dir: str | Path = WEB, analyzer: Any = None) -> FastAPI:
-    """Build the app for one talk. Raises `TalkError` (invalid package) or `RenderMissing` (narration not rendered,
-    or a wav that doesn't match its word timings).
+               web_dir: str | Path = WEB, analyzer: Any = None) -> FastAPI:
+    """Build the app for one talk. Raises `TalkError` (invalid package).
 
-    `connect` replaces `websockets.connect` for the Realtime link (tests used a fake);
-    `controller_factory(talk, chunks, settings, browser=, realtime=, log=, analyzer=)` replaces the real controller
-    (tests); `chunks` replaces the rendered narration on disk (tests); `web_dir` replaces `web/` (tests); `analyzer`
-    replaces the Claude analysis adapter (a `FakeAnalyzer` in tests; by default `ClaudeAnalyzer` when claude mode has
-    its key, else none: the deck then says the alignment check is unavailable).
+    `connect` replaces `websockets.connect` for the Realtime link; `controller_factory(talk, settings, browser=,
+    realtime=, log=, analyzer=)` replaces the real controller; `web_dir` replaces `web/`; `analyzer` replaces the
+    Claude analysis adapter (by default `ClaudeAnalyzer` when claude mode has its key, else none: the page then says
+    the alignment check is unavailable).
     """
-    import dataclasses
-
     settings = settings if settings is not None else load_settings()
     talk = load_talk(talk_dir)
-    # live narration needs no backup audio (Ken 2026-10-24: everything is online); rendered mode still does
-    chunks = (dict(chunks) if chunks is not None
-              else load_rendered(talk, out_root, required=settings.narration != "live"))
-    narration = load_narration(talk, chunks)  # what /media serves until the next start, whatever renders meanwhile
-    version = render_version(talk, chunks)
-    # the online meeting's prerecorded participants (contract v3.1): the script, and the clips /clips serves until the
-    # next start; the input (clips · mic) is resolved once, so the controller and the page agree on it
-    demo, mode, clips, clip_warnings = demo_payload(talk, settings, out_root)
-    settings = dataclasses.replace(settings, input=mode)
+    version = render_version(talk, {})
+    mode = settings.input
     web_dir = Path(web_dir)
     log = EventLog.for_talk(talk.id, out_root)
     if analyzer is None:
         analyzer = build_analyzer(settings, log)
-    log("server_start", {"talk": talk.id, "root": str(talk.root), "voice": talk.voice, "mic_mode": settings.mic_mode,
-                         "narration": settings.narration,
+    log("server_start", {"talk": talk.id, "root": str(talk.root), "voice": talk.voice,
                          "key_set": bool(settings.api_key),
-                         "realtime_url": settings.realtime_url, "turn_detection": settings.turn_detection,
+                         "realtime_url": settings.realtime_url, "realtime_model": settings.realtime_model,
                          "temperature": settings.temperature, "full_session_update": settings.full_session_update,
-                         "chunks": len(chunks), "fake_audio": any(chunk.fake for chunk in chunks.values()),
-                         "version": version, "narration_bytes": sum(len(wav.body) for wav in narration.values()),
-                         "input": mode, "demo_steps": len(demo["steps"]) if demo else 0,
-                         "clips": sorted(clips), "clip_warnings": clip_warnings,
+                         "pace": settings.pace, "version": version, "input": mode,
                          "alignment": {"mode": settings.alignment,
                                        "model": settings.alignment_model if settings.alignment == "claude" else None,
                                        "key_set": bool(settings.anthropic_api_key),
@@ -656,10 +530,8 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     link = RealtimeLink(settings, session_config=ref.session_config, on_event=ref.on_event,
                         on_status=ref.on_status, connect=connect, log=log)
     factory = controller_factory or default_controller_factory
-    controller = factory(talk, chunks, settings, browser=hub, realtime=link, log=log, analyzer=analyzer)
+    controller = factory(talk, settings, browser=hub, realtime=link, log=log, analyzer=analyzer)
     ref.controller = controller
-    if hasattr(controller, "demo_payload"):
-        controller.demo_payload = demo  # the hello describes the same clips /api/talk does
     meeting = getattr(controller, "meeting", _AUTO)
     if meeting is _AUTO:
         from .meeting import load_meeting
@@ -667,12 +539,12 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
         meeting = load_meeting(talk)
     alignment = (controller.alignment_info() if hasattr(controller, "alignment_info")
                  else alignment_info(settings, meeting, available=analyzer is not None or settings.alignment == "legacy"))
-    talk_payload = talk_json(talk, chunks, settings, demo=demo, alignment=alignment if meeting is not None else None)
+    talk_payload = talk_json(talk, settings, alignment=alignment if meeting is not None else None)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
-            await link.start()  # warm session (design §6); a missing key just reports `error`
+            await link.start()  # a warm session; a missing key just reports `error`
         except Exception as exc:  # noqa: BLE001 - serve the deck even if the link cannot start
             log("server_error", {"where": "link.start", "error": repr(exc)})
         try:
@@ -693,13 +565,8 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     app.add_middleware(_NoCache)
     app.state.settings = settings
     app.state.talk = talk
-    app.state.chunks = chunks
-    app.state.narration = narration
     app.state.version = version
-    app.state.demo = demo
     app.state.input = mode
-    app.state.clips = clips
-    app.state.clip_warnings = clip_warnings
     app.state.controller = controller
     app.state.link = link
     app.state.hub = hub
@@ -709,7 +576,11 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     app.state.alignment = alignment
 
     @app.get("/", include_in_schema=False)
-    async def index() -> Response:
+    async def index(request: Request) -> Response:
+        if mode == "voice" and request.query_params.get("view") not in OBSERVER_VIEWS:
+            # In a Zoom run the bot is the deck: a browser opening / would take its socket over (close 4000, the
+            # bot never reconnects). It gets the observer page, the one the bot shares, instead.
+            return RedirectResponse("/?view=observer", status_code=307)
         page = web_dir / "index.html"
         if page.is_file():
             return FileResponse(page, media_type="text/html")
@@ -726,26 +597,6 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     @app.get("/api/slides.md")
     async def api_slides() -> Response:
         return Response(talk.slides_md, media_type="text/markdown; charset=utf-8")
-
-    @app.get("/media/{slide}/{name}")
-    async def media(slide: str, name: str, request: Request) -> Response:
-        wav = narration_for(narration, slide, name)
-        if wav is None:
-            raise HTTPException(status_code=404, detail="not a rendered chunk of this talk")
-        if _etag_matches(request.headers.get("if-none-match"), wav.etag):
-            return Response(status_code=304, headers={"etag": wav.etag})
-        return Response(wav.body, media_type="audio/wav", headers={"etag": wav.etag})
-
-    @app.get("/clips/{name}")
-    async def clip(name: str, request: Request) -> Response:
-        """A prerecorded participant clip (contract v3.1 §2), from the snapshot taken at startup."""
-        match = CLIP_NAME_RE.fullmatch(name)
-        audio = clips.get(match.group(1)) if match else None
-        if audio is None:
-            raise HTTPException(status_code=404, detail="not a participant clip of this talk")
-        if _etag_matches(request.headers.get("if-none-match"), audio.etag):
-            return Response(status_code=304, headers={"etag": audio.etag})
-        return Response(audio.body, media_type="audio/wav", headers={"etag": audio.etag})
 
     @app.get("/healthz")
     async def healthz() -> dict:
@@ -768,7 +619,7 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
 
     @app.websocket("/ws/observe")
     async def observer_socket(ws: WebSocket) -> None:
-        """A read-only copy of the deck's feed (contract v5): the page the Zoom bot shares as its screen."""
+        """A read-only copy of the deck's feed: the page the Zoom bot shares as its screen."""
         await hub.observe(ws, controller)
 
     app.mount("/web", StaticFiles(directory=web_dir, check_dir=False), name="web")

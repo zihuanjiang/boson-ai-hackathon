@@ -12,19 +12,20 @@ shares her slides and presents them live through one Higgs Realtime session, fro
 Interrupt her and she stops mid-sentence, looks the answer up in the meeting's documents, shows the source on screen,
 and picks up exactly where she was cut. Then she listens. Higgs transcribes every line; Claude checks it against the
 documents and earlier answers for a conflict, a hidden disagreement or a detail nobody settled; and just before the
-group confirms a contradicting plan, Alice asks one neutral question. Confirmed decisions go into the notes with
-their owners. Everything is live: no recordings, no scripted participants.
+group confirms a contradicting plan, Alice asks one neutral question. Ask her something by name and she answers.
+Confirmed decisions go into the notes with their owners. Everything is live and by voice: no recordings, no scripted
+participants, no keyboard.
 
 ## The demo (about three minutes)
 
-1. Ken (the host) presses R. Alice opens with a hook ("Imagine you're an engineer, up since yesterday morning…"),
-   introduces herself and presents how she works.
-2. Ken cuts in mid-sentence: "Sorry, quick question: in Zoom, can people raise a hand to interrupt you?" She stops,
-   answers from the documents with the source on screen, and resumes where she was cut.
+1. The host hands Alice the floor ("Alice, take it away"). She opens with a hook ("Imagine you're an engineer, up
+   since yesterday morning…"), introduces herself and presents how she works.
+2. Someone cuts in mid-sentence with a question. She stops, answers from the documents with the source on screen, and
+   resumes where she was cut.
 3. The discussion: "How do the judges ask their questions in Zoom, and who briefs them?" One person proposes the Zoom
    chat, the other confirms; Alice asks one question before it is saved (she hears voices only, never the chat); the
-   plan is corrected and saved with its owner.
-4. N wraps up: decisions and owners first.
+   plan is corrected and saved with its owner. A question put to her ("Alice, …?") is answered on the spot.
+4. "Great, let's wrap up." She sums up: decisions and owners first.
 
 Who says what, with real people: [`talks/project-overview/run_of_show_people.md`](talks/project-overview/run_of_show_people.md).
 The presentation-ready slides are the deck's own files: [`talks/project-overview/deck/`](talks/project-overview/deck/).
@@ -43,9 +44,10 @@ uv run --with playwright python scripts/zoom_bot.py --url "<Zoom join link>" --t
 ```
 
 The bot starts the server, opens its own Chrome window, joins as **Alice (AI co-host)** and shares the slides. Admit
-it from the waiting room if Zoom asks. In the bot's terminal: **R** starts, **N** moves to the next agenda phase
-(discussion → wrap-up), **P** pauses or retries, **q** leaves. `--auto-start` presses R three seconds after the share
-begins. If it can't click something in Zoom, it says what it waits for: click it yourself in its window.
+it from the waiting room if Zoom asks. Everything else happens in the call, by voice. `--auto-start` starts the
+presentation three seconds after the share begins; Ctrl-C in the bot's terminal leaves the meeting and writes the
+run's summary (`out/zoom_bot/summary.json`). If it can't click something in Zoom, it says what it waits for: click it
+yourself in its window.
 
 Settings (`.env` or the environment, see `.env.example`): `RELAY_PACE` (default `1.15`: shorter, brisker points),
 `RELAY_ALIGNMENT` (`claude` default, `legacy` = the `checks.yaml` patterns, `off`), `BOSON_REALTIME_MODEL` (default
@@ -91,11 +93,12 @@ meeting, and the alignment check during the discussion.
 
 - Built for online meetings: one shared microphone in a room would also hear Alice, so in-person use needs echo
   cancellation first.
-- Speaker names are read off Zoom's web page, best effort: one can be wrong or missing.
+- Speaker names are read off Zoom's web page, best effort: one can be wrong or missing. A question to Alice is
+  recognised by her name in the transcript, so a misheard name goes unanswered.
 - Claude's check takes several seconds before Alice asks (7.6–9.9 s after the confirming line, measured) and can miss
   one (47 of 53 labelled lines right in our evaluation).
-- No recorded backup: if Higgs Realtime doesn't answer a talking point, the meeting pauses there until the host
-  presses P.
+- No recorded backup: if Higgs Realtime doesn't answer a talking point, Alice pauses there and tries again every few
+  seconds until it does.
 
 ## Repository
 

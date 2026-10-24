@@ -4,8 +4,9 @@ Collected from the docs, the tutorial authors' live-session notes (Aug–Oct 202
 Add our own findings here as we hit them (date them).
 
 This is a dated log. Some entries name tools that were removed when `main` was finalized on 2026-10-24
-(`scripts/live_check.py`, `scripts/e2e_chrome.py`, the TTS 3 backup renders, the fake Realtime, the older decks):
-the findings and measurements still hold; the system they describe now is `doc/architecture.md`.
+(`scripts/live_check.py`, `scripts/e2e_chrome.py`, `relay.verify`, the TTS 3 backup renders and participant clips,
+the fake Realtime, the older decks, the bot's terminal keys): the findings and measurements still hold; the system
+they describe now is `doc/architecture.md`.
 
 ## Account / auth / billing
 
@@ -50,6 +51,14 @@ the findings and measurements still hold; the system they describe now is `doc/a
 - Session closes after **5 min without user speech** (`session.idle_timeout`) and at an unpublished max duration;
   reconnect = new empty conversation. Replaying old turns verbatim makes the model re-narrate them; send one summary
   message instead. `1013` = concurrency cap, back off exponentially.
+- **2026-10-24 12:08, live in Zoom (`out/logs/project-overview-20261024-120705.jsonl`): a response cancelled before its
+  first output never reports done, and its id is reused.** Ken cut in during the `listen` point, Alice's answer
+  (`fe1d_resp_12`) was created, Ken spoke again 0.3 s later, the controller sent `response.cancel`: no
+  `response.done` ever came for it. His follow-up question was held for that done until the 8 s reply wait dropped it;
+  the resume narration's `response.created` then carried the same id `fe1d_resp_12`, which the controller ignored as
+  stale, so the narration played to nobody and timed out (6 s): ~16 s of silence. Fixed in the controller: a held
+  request waits at most 1.2 s for a cancelled response's done, and a second `response.created` with a known id is a
+  new response.
 
 ## Realtime — audio
 

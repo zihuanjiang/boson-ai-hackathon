@@ -330,7 +330,8 @@ an `error` event with `type: "insufficient_quota"`).
 
 ## 10. Differences from OpenAI Realtime (migration checklist)
 
-- URL `wss://api.boson.ai/v1/realtime`, model `higgs-realtime`, Boson key. WebSocket only.
+- URL `wss://api.boson.ai/v1/realtime`, model `higgs-realtime-1.5-preview` (or the older `higgs-realtime`), Boson
+  key. WebSocket only.
 - No `session.created` until you send `session.update`. `session.type` is always `"realtime"` (no transcription sessions).
 - `output_modalities` exactly one. Voices differ. Transcription model is `higgs-stt-3.1`; OpenAI transcription
   options other than `language` are ignored. `audio/pcma` unsupported; `audio/pcm` accepts 4 rates; `audio/opus` extra.
@@ -338,8 +339,3 @@ an `error` event with `type: "insufficient_quota"`).
   `idle_timeout_ms` rejected; `include`/`prompt`/`tracing` rejected.
 - Append limit 1 MiB (OpenAI 15 MiB). Context handled by summarization, not dropping.
 - Ephemeral keys prefixed `bai-eph-`, passed via subprotocol; `session` body ignored.
-
-## 11. Integrations
-
-Pipecat (`pipecat-boson`, 24 kHz PCM, no STT/TTS services needed), LiveKit Agents plugin (in review upstream),
-and the official TS tutorial (https://github.com/boson-ai/higgs-realtime-tutorial).

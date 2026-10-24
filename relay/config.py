@@ -1,13 +1,17 @@
-"""Settings, paths and constants shared by the render CLI, the server and the verify checks.
+"""Settings, paths and constants shared by the server, the controller and the Zoom bot.
 
 The API keys come from the repo-root `.env` (gitignored): BOSON_API_KEY for Higgs, ANTHROPIC_API_KEY for the Claude
 alignment analysis (separate billing). Never log `Settings.api_key` or `Settings.anthropic_api_key`.
+
+Everything is live, in a Zoom call: Alice hears the call through the Zoom bot (input `voice`), Higgs Realtime presents
+every talking point (narration `live`), and the session uses manual turns (`turn_detection` null: the backend's
+segmenter ends each line and decides every response.create). Those three are fixed; the settings below are the ones
+a run can change (`.env.example` lists them).
 """
 
 from __future__ import annotations
 
 import copy
-import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,40 +23,17 @@ OUT = ROOT / "out"
 WEB = ROOT / "web"
 TALKS = ROOT / "talks"
 
-RATE = 24_000  # Hz. PCM16 mono everywhere: TTS wav, Realtime in/out, the browser AudioContext.
-TTS_MODEL = "higgs-tts-3"
-# The newest Realtime model is the default, always (Ken, 2026-10-24: accessible with the key since then; same
-# resolved session defaults as higgs-realtime). BOSON_REALTIME_MODEL overrides, e.g. back to higgs-realtime.
+RATE = 24_000  # Hz. PCM16 mono everywhere: Realtime in/out and the bot's audio.
+# The newest Realtime model is the default, always (Ken, 2026-10-24). BOSON_REALTIME_MODEL overrides, e.g. back to
+# higgs-realtime.
 REALTIME_MODEL = "higgs-realtime-1.5-preview"
-REALTIME_MODELS = ("higgs-realtime-1.5-preview", "higgs-realtime")  # the ids the fake Realtime accepts
 STT_MODEL = "higgs-stt-3.1"
 PRESET_VOICES = ("default", "chloe", "eleanor", "jake", "marcus", "nora", "oliver")
-MIC_MODES = ("tap", "hold")  # "open" (hands-free) is a nice-to-have, not in v1
-# live: Higgs Realtime presents every slide in its own words (D52); rendered: the TTS 3 renders play, as in v1.
-# In live mode the renders are the offline backup (D53).
-NARRATION_MODES = ("live", "rendered")
-# Where the participants' voices come from (contract v3.1, doc/online_meeting_patch.md). clips: an online meeting, the
-# participants are prerecorded clips the deck plays and streams (talks/<id>/demo.yaml), the physical mic is off and a
-# participant who starts talking while the facilitator speaks barges in. mic: the room microphone with tap-to-talk
-# (in-room; the facilitator's voice would reach the mic, so no voice barge-in). voice: a live participant stream with
-# no acoustic path back to the facilitator — the Zoom bot (scripts/zoom_bot.py: the bot's "ears" are the Zoom web
-# client's audio output, its "mouth" a stream Zoom takes as its microphone), later a headset; real people, no clips,
-# and a participant who starts talking while the facilitator speaks interrupts it. Unset: clips for a talk with
-# demo.yaml, else mic.
-INPUT_MODES = ("clips", "mic", "voice")
-# Manual turns by default (On the Same Page): `turn_detection: null` for the whole session, and the backend ends user
-# turns itself (relay/segmenter.py) and decides every response.create. Live 2026-10-23: turn detection cannot be
-# changed after the session starts, and the discussion must be transcribed without replies (a commit with turn
-# detection off gives the transcript and no response). RELAY_TURN_DETECTION='<JSON object>' brings server VAD back.
-DEFAULT_TURN_DETECTION: dict | None = None
-# The server-VAD setting of the old path (live 2026-10-23: semantic_vad's default 100 ms silence ended 3 of 4 spoken
-# lines at their first pause; with 700 ms every line was heard in full and replies started within ~0.7–1.2 s).
-VAD_TURN_DETECTION: dict = {"type": "semantic_vad", "silence_duration_ms": 700}
-# How the discussion is checked (doc/alignment_replacement_prompt.md, contract v5). claude: Claude reads the documents
-# and the discussion and finds evidence conflicts, hidden disagreements and ambiguous decisions (ANTHROPIC_API_KEY);
-# legacy: the regex engine over checks.yaml, explicit only; off: nobody checks (transcripts and notes still work).
+# How the discussion is checked. claude: Claude reads the documents and the discussion and finds evidence conflicts,
+# hidden disagreements and ambiguous decisions (ANTHROPIC_API_KEY); legacy: the regex engine over checks.yaml,
+# explicit only; off: nobody checks (transcripts and notes still work).
 ALIGNMENT_MODES = ("claude", "legacy", "off")
-ALIGNMENT_MODEL = "claude-opus-5-5"  # the current Opus; RELAY_ALIGNMENT_MODEL overrides (see doc/gotchas.md for the measured tradeoff)
+ALIGNMENT_MODEL = "claude-opus-5-5"  # RELAY_ALIGNMENT_MODEL overrides (doc/gotchas.md has the measured tradeoff)
 ALIGNMENT_EFFORTS = ("low", "medium", "high")
 
 
@@ -65,19 +46,19 @@ class Settings:
     alignment_effort: str = "low"
     alignment_timeout_s: float = 20.0
     alignment_max_tokens: int = 4000
-    base_url: str = "https://api.boson.ai"  # without /v1
     realtime_url: str = "wss://api.boson.ai/v1/realtime"
     realtime_model: str = REALTIME_MODEL
-    mic_mode: str = "tap"
-    narration: str = "live"
-    pace: float = 1.0  # live talking points are asked for their length ÷ pace (RELAY_PACE; load_settings: 1.15)
-    turn_detection: dict | None = None  # None: manual turns (DEFAULT_TURN_DETECTION); a dict: server VAD
+    pace: float = 1.15  # live talking points are asked for their length ÷ pace (RELAY_PACE)
     temperature: float | None = None
     full_session_update: bool = False
-    input: str | None = None  # INPUT_MODES; None: clips for a talk with demo.yaml, else mic
     host: str = "127.0.0.1"
     port: int = 8000
     out_dir: Path = OUT
+    # fixed for the Zoom call (see the module docstring)
+    input: str = "voice"
+    narration: str = "live"
+    mic_mode: str = "tap"
+    turn_detection: dict | None = None
 
     @property
     def headers(self) -> dict[str, str]:
@@ -85,31 +66,13 @@ class Settings:
 
     @property
     def session_turn_detection(self) -> dict | None:
-        """`audio.input.turn_detection` for session.update: the setting in tap mode (null by default: manual turns),
-        manual commit (null) in hold mode.
-
-        A copy, so a caller mutating its session config can't change every later session.update.
-        """
-        return None if self.mic_mode == "hold" else copy.deepcopy(self.turn_detection)
+        """`audio.input.turn_detection` for session.update: null (manual turns). A copy, so a caller mutating its
+        session config can't change every later session.update."""
+        return copy.deepcopy(self.turn_detection)
 
 
 def _flag(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _turn_detection(raw: str | None) -> dict | None:
-    raw = (raw or "").strip()
-    if not raw:
-        return copy.deepcopy(DEFAULT_TURN_DETECTION)
-    value = json.loads(raw)
-    if value is not None and not isinstance(value, dict):
-        raise ValueError("RELAY_TURN_DETECTION must be a JSON object or null")
-    return value
-
-
-def _base_url(raw: str | None) -> str:
-    base = (raw or "https://api.boson.ai").strip().rstrip("/")
-    return base[: -len("/v1")] if base.endswith("/v1") else base
 
 
 def load_settings(**overrides) -> Settings:
@@ -127,29 +90,18 @@ def load_settings(**overrides) -> Settings:
         "alignment_effort": (env.get("RELAY_ALIGNMENT_EFFORT") or "low").strip().lower(),
         "alignment_timeout_s": float(timeout) if timeout else 20.0,
         "alignment_max_tokens": int(max_tokens) if max_tokens else 4000,
-        "base_url": _base_url(env.get("BOSON_BASE_URL")),
         "realtime_url": (env.get("BOSON_REALTIME_URL") or "wss://api.boson.ai/v1/realtime").strip().rstrip("/"),
         "realtime_model": (env.get("BOSON_REALTIME_MODEL") or REALTIME_MODEL).strip(),
-        "mic_mode": (env.get("MIC_MODE") or "tap").strip().lower(),
-        "narration": (env.get("RELAY_NARRATION") or "live").strip().lower(),
         # Ken 2026-10-24: the facilitator spoke too slowly; Higgs Realtime has no speed setting, but it keeps to the
         # length each point asks for, so a pace of 1.15 asks for points ~13% shorter
         "pace": min(1.6, max(0.7, float((env.get("RELAY_PACE") or "1.15").strip()))),
-        "turn_detection": _turn_detection(env.get("RELAY_TURN_DETECTION")),
         "temperature": float(temperature) if temperature else None,
         "full_session_update": _flag(env.get("RELAY_FULL_SESSION_UPDATE")),
-        "input": (env.get("RELAY_INPUT") or "").strip().lower() or None,
         "host": (env.get("RELAY_HOST") or "127.0.0.1").strip(),
         "port": int(env.get("RELAY_PORT") or 8000),
     }
     values.update({key: value for key, value in overrides.items() if value is not None})
     settings = Settings(**values)
-    if settings.mic_mode not in MIC_MODES:
-        raise ValueError(f"MIC_MODE must be one of {MIC_MODES}, got {settings.mic_mode!r}")
-    if settings.narration not in NARRATION_MODES:
-        raise ValueError(f"RELAY_NARRATION must be one of {NARRATION_MODES}, got {settings.narration!r}")
-    if settings.input is not None and settings.input not in INPUT_MODES:
-        raise ValueError(f"RELAY_INPUT must be one of {INPUT_MODES}, got {settings.input!r}")
     if settings.alignment not in ALIGNMENT_MODES:
         raise ValueError(f"RELAY_ALIGNMENT must be one of {ALIGNMENT_MODES}, got {settings.alignment!r}")
     if settings.alignment_effort not in ALIGNMENT_EFFORTS:
@@ -157,10 +109,3 @@ def load_settings(**overrides) -> Settings:
     if settings.alignment_timeout_s <= 0 or settings.alignment_max_tokens < 256:
         raise ValueError("RELAY_ALIGNMENT_TIMEOUT_S must be > 0 and RELAY_ALIGNMENT_MAX_TOKENS at least 256")
     return settings
-
-
-def input_mode(settings: Settings, demo: object) -> str:
-    """The input the server runs with: the setting, else clips when the talk has a demo script, else mic."""
-    if settings.input in INPUT_MODES:
-        return settings.input
-    return "clips" if demo is not None else "mic"

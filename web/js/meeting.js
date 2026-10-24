@@ -81,10 +81,10 @@ export const RELAY_NAMES = Object.freeze({ product: "Relay", ai: "Relay", aiCap:
 /** @type {Names} */
 export const FACILITATOR_NAMES = Object.freeze({
   product: "On the Same Page",
-  ai: "the facilitator",
-  aiCap: "The facilitator",
-  tile: "Facilitator",
-  role: "AI facilitator",
+  ai: "Alice",
+  aiCap: "Alice",
+  tile: "Alice",
+  role: "AI co-host",
 });
 
 export const SPEAKING_LEVEL = 0.02; // the AI's output RMS above this = speaking; below it = quiet

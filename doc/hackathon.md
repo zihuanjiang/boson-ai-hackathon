@@ -14,7 +14,7 @@ https://www.boson.ai/blog/higgs-realtime-hackathon-compass (SF Realtime hackatho
 | **Sat Oct 24** | Build day. Presentations from ~3 pm. Final rounds + judging done by 6–7 pm. Pub night after |
 
 - Venue: MScAC HQ, University of Toronto, **700 University Ave, 9th floor**, Toronto ON M5G 1Z5.
-- Register on Luma: https://luma.com/7368qkv7. Solo or team both fine; team formation Friday evening. No team-size
+- Solo or team both fine; team formation Friday evening. No team-size
   rule stated (the 2026 Bay Area edition on Devpost used 2–4).
 - "Final timings will follow" — the exact submission deadline was **not published**; 2025 required preliminary demos
   by 11 am on the final day and finalists got 10 min to present + 5 min Q&A. Assume a Saturday-midday cutoff until told otherwise.
@@ -25,9 +25,9 @@ https://www.boson.ai/blog/higgs-realtime-hackathon-compass (SF Realtime hackatho
 ## Credits and access
 
 - Every participant gets free Higgs Audio credits; **$100 of free Higgs Realtime credits** for hackathon participants.
-- Claim in the workspace: https://www.boson.ai/workspace/api-key?open-credits=true (banner). Nothing works before
-  claiming (429 `insufficient_quota`, Realtime close code `4429`). New accounts also get $10 general trial credit.
-- Keys: https://www.boson.ai/workspace/api-key — format `bai-xxxx`.
+- Claim them in the Boson AI workspace (a banner on the API key page). Nothing works before claiming (429
+  `insufficient_quota`, Realtime close code `4429`). New accounts also get $10 general trial credit.
+- Keys: created on the same page, format `bai-xxxx`.
 
 ## Tracks (pick one primary at submission)
 

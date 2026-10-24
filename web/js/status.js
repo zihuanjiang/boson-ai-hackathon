@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * The presenter's readouts besides the meeting window itself (doc/design.md §8): the status strip, now the hidden
+ * The presenter's readouts besides the meeting window itself: the status strip, now the hidden
  * "Meeting info" panel (state, phase, slide/chunk, mic meter, Realtime dot, reply latency, MIC_MODE, fake-audio and
  * server badges), the tool ticker under the Relay tile, the banner with the countdown, error toasts, and the join
  * dialog's checklist (the pre-show check behind "Join with Computer Audio").

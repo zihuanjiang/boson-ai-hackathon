@@ -1,12 +1,10 @@
-"""Pure audio helpers for the Zoom bot (contract v5 §0, §2): the page's Web Audio tap is 48 kHz float32, the deck
+"""Pure audio helpers for the Zoom bot: the page's Web Audio tap is 48 kHz float32, the deck
 protocol wants 24 kHz PCM16 in 100 ms frames.
 
 - `Decimator`: 48 kHz → 24 kHz with a windowed-sinc low-pass (cut below the output's Nyquist, so nothing above 12 kHz
   folds back as aliasing) and 2:1 decimation, stateful across calls (the filter's history carries over). Any other
   input rate falls back to linear interpolation (no low-pass): a 44.1 kHz context would still be understood, not pretty.
 - `Framer`: bytes in, whole 100 ms (4800-byte) frames out, the remainder carried to the next call.
-- `upsample_2x`: 24 kHz PCM16 → 48 kHz float32 (linear interpolation), the dry run's stand-in for the browser's own
-  resampling of the participants' clips into the tap.
 
 No numpy, no audioop: `math.sumprod` does the dot products in C.
 """
@@ -151,19 +149,6 @@ class Framer:
         frame = bytes(self._carry).ljust(self.frame_bytes, b"\x00")
         self._carry.clear()
         return frame
-
-
-def upsample_2x(pcm: bytes) -> array.array:
-    """24 kHz PCM16 → 48 kHz float32 by linear interpolation (the dry run's stand-in for the browser's resampler)."""
-    source = floats_from_pcm16(pcm)
-    out = array.array("f", bytes(8 * len(source)))
-    n = len(source)
-    for i in range(n):
-        a = source[i]
-        b = source[i + 1] if i + 1 < n else a
-        out[2 * i] = a
-        out[2 * i + 1] = (a + b) / 2
-    return out
 
 
 def sine(freq_hz: float, seconds: float, rate: int, amplitude: float = 0.5) -> array.array:

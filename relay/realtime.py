@@ -1,4 +1,4 @@
-"""RealtimeLink: the backend's one warm WebSocket to Higgs Realtime (design §6). Implements `RealtimePort`.
+"""RealtimeLink: the backend's one warm WebSocket to Higgs Realtime. Implements `RealtimePort`.
 
 Every new connection starts with `session.update` carrying `session_config()` (the controller's full config with
 the current context); the link is `ready` once `session.created` arrives (≤ 10 s). Every server event goes to

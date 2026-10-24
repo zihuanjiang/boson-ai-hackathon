@@ -9,8 +9,4 @@
 | [brief_updated.md](brief_updated.md) | The product spec (On the Same Page) |
 | [hackathon.md](hackathon.md) | The event: rules, judging, submission checklist |
 
-## Official links
-
-- Hackathon page: https://www.boson.ai/hackathon
-- Docs: https://docs.boson.ai/overview · OpenAPI: https://docs.boson.ai/openapi.json
-- Workspace (keys, credits): https://www.boson.ai/workspace · API keys: https://www.boson.ai/workspace/api-key
+Boson AI's docs: https://docs.boson.ai · the hackathon: https://www.boson.ai/hackathon

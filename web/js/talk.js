@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * The talk as the deck sees it (GET /api/talk, doc/design.md §3), normalised so that a sparse or odd payload can't
+ * The talk as the deck sees it (GET /api/talk), normalised so that a sparse or odd payload can't
  * break the client, plus pure lookups: slide by id or deck index, chunk by index, the fragments visible while a
  * chunk plays, and the narration audio to preload. No DOM: unit-tested under JavaScriptCore.
  */

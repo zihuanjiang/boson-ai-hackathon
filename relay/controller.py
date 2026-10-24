@@ -1,40 +1,30 @@
-"""The presenter state machine (design §5): narration, live turns, deck tools, resume.
+"""Alice's state machine: the presentation, live turns, tools, the discussion and the wrap-up (doc/architecture.md).
 
-The server feeds a Controller every deck message (`on_browser`), every Higgs Realtime server event (`on_realtime`)
-and every link status change (`on_realtime_status`); the Controller answers only through the BrowserPort and the
-RealtimePort. All public handlers and timer callbacks run under one asyncio.Lock, never raise (a bug is logged and
-shown as an `error` message), and ignore message/event types they don't know.
+The server feeds a Controller every deck message (`on_browser`: the Zoom bot), every Higgs Realtime server event
+(`on_realtime`) and every link status change (`on_realtime_status`); the Controller answers only through the
+BrowserPort and the RealtimePort. All public handlers and timer callbacks run under one asyncio.Lock, never raise (a
+bug is logged and shown as an `error` message), and ignore message/event types they don't know.
 
-States (brief Appendix C): IDLE · NARRATING · PAUSED · LISTENING (mic open) · REPLYING (live reply, mic closed).
-A live turn remembers its `origin` (narration / paused / idle) so it can go back there when it ends without a tool.
+States: IDLE · NARRATING · PAUSED · LISTENING · REPLYING · ROOM (the discussion, listening) · INTERVENING. A live turn
+remembers its `origin` (narration / paused / idle / room) so it can go back there when it ends without a tool.
 
-Narration (D52, D53): with `narration = "live"` every relay slide is presented by the one warm Realtime session, in
-Relay's own words, from that slide's notes: one `response.create` per slide (a `LiveNarration`), streamed to the deck
-as a reply. A cut truncates the model's memory to what the room heard and the slide continues live from there. When
-the link is not ready as a slide starts, or a request never speaks, the slide plays from its TTS 3 render (the
-backup: v1's chunk-by-chunk narration, which is all of `narration = "rendered"`).
+The presentation: one warm Realtime session presents one talking point per `response.create` (a `LiveNarration`),
+performed from the script's guide, streamed to the bot as a reply. A cut truncates the model's memory to what the room
+heard and the point continues from there (the guide's prepared resume line, or the unheard rest). There is no recorded
+backup: a point Higgs Realtime doesn't answer (twice) pauses and is tried again by itself every AUTO_RESUME_S.
 
-Turns (contract v3 §5.1): with `turn_detection` null (the default) the backend ends a spoken turn itself, with a
-per-turn `Segmenter` on the mic frames (its end = commit + response.create; Space again still sends at once). A JSON
-`turn_detection` (RELAY_TURN_DETECTION) keeps the server-VAD path.
+Voice (the Zoom bot's `mic` frames, `source: "voice"`): turn detection is off (`turn_detection` null) and one
+participant segmenter listens in every state, since Alice's own audio never reaches this input. Someone who starts
+talking while she presents or answers barges in (cut, truncate to what the call heard, LISTENING, the segmenter's end
+commits the turn and asks for the reply); before the presentation, speaking to her is the opening (she starts); in the
+discussion a line is committed and transcribed, never answered, unless it is put to her by name or asks to wrap up.
 
-A meeting package (agenda.yaml: On the Same Page, doc/brief_updated.md) turns Relay into the meeting facilitator:
-agenda phases presentation → discussion → wrap-up; one talking point (script chunk) per live narration response; the
-facilitator's tools (lookup_evidence, record_clarification, save_decision, … ) with real round trips (a follow-up
-`response.create` answers from a data tool's output, MAX_FOLLOWUPS per turn); then the discussion: state ROOM (the
-room mic open, every utterance committed and transcribed, the facilitator silent), the alignment engine on every
-utterance, and the facilitator speaking up only at its gate (state INTERVENING: one neutral question with the evidence
-on screen), saving the corrected decision (validated against what was said), and summing up at the wrap-up. A talk
-without agenda.yaml behaves exactly as before.
-
-An online meeting (contract v3.1, doc/online_meeting_patch.md; input `clips`, the default with demo.yaml): the
-participants are prerecorded clips the deck plays and streams as `mic` frames with `source: "clip"` (speaker, step id,
-and where the deck's reply player is). The facilitator's own audio never reaches this input, so one participant
-segmenter listens to it in every state: a participant who starts talking while the facilitator presents or answers
-barges in exactly like Space (cut, truncate to what the deck played, LISTENING, the segmenter's end sends the turn); in
-a pause it is a question; in the discussion it is a line labelled by the clip (`source: "clip"`), and cuts the
-facilitator if it was speaking up. The facilitator never speaks up over a participant who is talking. Input `mic`
-ignores clip frames: the room mic and tap-to-talk exactly as before.
+The meeting (agenda.yaml): phases presentation → discussion → wrap-up; the facilitator's tools (lookup_evidence,
+record_clarification, save_decision, …) with real round trips (a follow-up `response.create` answers from a data
+tool's output, MAX_FOLLOWUPS per turn); in the discussion (ROOM) the alignment check reads every line, and Alice speaks
+up only at its gate (INTERVENING: one neutral question with the evidence on screen), saves the corrected decision
+(validated against what was said) and sums up at the wrap-up. Some branches serve a talk without agenda.yaml, the
+room microphone and recorded chunks; the Zoom path never reaches them.
 """
 
 from __future__ import annotations
@@ -46,13 +36,14 @@ import collections
 import copy
 import dataclasses
 import math
+import re
 import traceback
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
 
 from . import alignment, evidence, prompts, semantic, tools
-from .config import RATE, STT_MODEL, Settings, input_mode
-from .meeting import JOINED_ROLE, MeetingState, Participant, live_speaker_name, load_demo, load_meeting
+from .config import RATE, STT_MODEL, Settings
+from .meeting import JOINED_ROLE, MeetingState, Participant, live_speaker_name, load_meeting
 from .ports import AsyncioClock, BrowserPort, Clock, LogFn, RealtimePort, Timer, null_log
 from .prompts import TurnContext, build_instructions, narration_instructions
 from .segmenter import Segmenter
@@ -95,14 +86,14 @@ WRAPUP_WAIT_S = 2.0  # the wrap-up waits this long at most for the transcript of
 POINT_MIN_S = 3  # the length a live talking point is asked for: its backup length, within these bounds
 POINT_MAX_S = 30
 POINT_CONTINUE_MIN_S = 3
-# A guided point (D88) is asked for its guide's own length, up to this (talk.GUIDE_MAX_S): a 25-second hook is asked
+# A guided point is asked for its guide's own length, up to this (talk.GUIDE_MAX_S): a 25-second hook is asked
 # for 25 seconds, whatever its shorter TTS 3 backup line lasts. No narration timer depends on the length: first audio
 # within NARRATION_WAIT_S, an event at least every REPLY_STALL_S while it streams, then the drain (its audio + 2 s).
 GUIDED_POINT_MAX_S = 45
 DUPLICATE_DECISION_S = 60.0  # the same decision saved again this soon: "already saved"
 AUTO_SOURCE_IDS = 2  # an automatic clarification cites the top results of the turn's lookups
 DEFAULT_WINDOW_UTTERANCES = 3
-# Model-based alignment (relay/semantic.py, contract v5 §3). The analysis runs outside the lock; its results are
+# Model-based alignment (relay/semantic.py). The analysis runs outside the lock; its results are
 # applied under it. An intervention the analysis asked for waits while a newer analysis is in flight (a correction
 # may be on its way), at most ALIGNMENT_HOLD_S; an asked issue that gets no answer within ALIGNMENT_ANSWER_WINDOW
 # utterances stays open for the wrap-up; the wrap-up waits for an analysis in flight at most ALIGNMENT_WRAPUP_WAIT_S.
@@ -119,6 +110,19 @@ SEGMENTER_FRAME_MS = 10  # relay.segmenter analyses 10 ms frames (its end_frames
 LISTEN_SILENCE_S = 8.0  # tap mode: no speech_started this long after the floor opens → as Esc
 LISTEN_MAX_S = 30.0  # a turn that never ends: tap mode sends what was heard (speech started), else as Esc
 REPLY_WAIT_S = 8.0  # end of the user's turn → response.created, else back to origin
+# A request held back for a cancelled response waits this long for its response.done. Live 2026-10-24: Higgs sends
+# none for a response cancelled before its first output (and later reuses its id), so the held question was dropped.
+CANCEL_GRACE_S = 1.2
+AUTO_RESUME_S = 3.0  # a point Higgs Realtime didn't answer is tried again this often (no keys in a Zoom call)
+# A discussion line that asks to end it: "let's wrap up", "let's wrap it up", "Alice, wrap up", "wrap up the meeting".
+WRAPUP_REQUEST_RE = re.compile(r"\b(?:let'?s|let us|time to|we can|okay|ok|alice,?)\s+(?:now\s+)?wrap\s+"
+                               r"(?:it\s+|this\s+|things\s+)?up\b|\bwrap\s+up\s+the\s+meeting\b", re.I)
+# A discussion line put to Alice herself: it opens or ends with her name ("Alice, can people…?", "…, Alice?") and is
+# a question or a request. Answered at once, like a question during the presentation (no key in a Zoom call).
+_LEAD_IN = r"(?:(?:hey|hi|okay|ok|so|um|uh|and|but|wait|sorry|quick question)\W+)*"
+ADDRESSED_RE = re.compile(rf"^\W*{_LEAD_IN}alice\b|\balice\W*$", re.I)
+QUESTION_RE = re.compile(rf"\?|^\W*{_LEAD_IN}(?:alice\W+)?(?:can|could|would|will|do|does|did|is|are|was|were|what|"
+                         r"how|who|when|where|why|which|tell|remind|explain|check|look)\b", re.I)
 REPLY_STALL_S = 8.0  # a bound reply with no event of its own this long (and no response.done) → treat it as done
 ERROR_GRACE_S = 1.5  # after a non-benign `error` mid-reply: this long without an event of the reply → as a stall
 DOUBLE_SEND_S = 1.0  # tap mode: Space this soon after a spoken turn ended (still thinking) was a "send": ignored
@@ -126,7 +130,7 @@ SEND_NOW_MIN_FRAMES = 5  # tap mode: "send now" needs this many 100 ms mic frame
 COUNTDOWN_S = 1.5  # "Resuming…" / "Starting…" after a reply that called no tool (the deck shows whole seconds: ceil)
 DRAIN_GRACE_S = 2.0  # drain fallback = remaining reply audio + this
 NARRATION_WAIT_S = 6.0  # a live narration request → its first audio, else it failed (live: 0.26–0.55 s)
-NARRATION_RETRIES = 1  # a failed live narration is asked for once more, then the meeting pauses on it (no backup)
+NARRATION_RETRIES = 1  # a failed live narration is asked for once more, then it pauses and is tried every AUTO_RESUME_S
 NARRATION_MIN_S = 6  # the length a live narration is asked for: the slide's backup length, within these bounds
 NARRATION_MAX_S = 60
 CONTINUE_MIN_S = 5  # …and at least this for the rest of a slide that was cut
@@ -144,24 +148,24 @@ CUT_CALL_OUTPUT = tools.error_output("not run: the reply was cut off")  # calls 
 NARRATION_CALL_OUTPUT = tools.error_output("not now: you are presenting; the deck moves on by itself")
 NOT_NOW_OUTPUT = tools.error_output("not now: just speak")  # a tool call in an intervention, hand-over or summary
 LIMIT_OUTPUT = tools.error_output("answer now with what you have")  # data calls after MAX_FOLLOWUPS follow-ups
-# claude mode, a save_decision outside the decision flow: nothing validated says the group agreed (contract v5 §3)
+# claude mode, a save_decision outside the decision flow: nothing validated says the group agreed
 NO_PROPOSAL_OUTPUT = ("not saved: decisions go into the notes when the group confirms them (the alignment check "
                       "records a confirmed decision itself); say so if asked")
 NOTHING_TO_CANCEL = frozenset({"response_not_active", "response_cancel_not_active"})  # Higgs docs; OpenAI
 SEND_RACE_ERRORS = frozenset({"voice_output_task_ongoing", "input_audio_buffer_commit_empty"})
 
 BANNER_HUMAN = "{presenter} has the floor"
-BANNER_OPENING = "{presenter} has the floor — tap Space to hand over"
-BANNER_QA = "Waiting for a question — tap Space"
+BANNER_OPENING = "{presenter} has the floor"
+BANNER_QA = "Waiting for a question"
 BANNER_RESUMING = "Resuming…"
 BANNER_STARTING = "Starting…"
-BANNER_PAUSED = "Paused — P to resume"
-BANNER_NO_BACKUP = "Higgs Realtime didn't answer — P to try again"
-BANNER_PAUSED_R = "Paused — R to resume"
-BANNER_OFFLINE = "Realtime offline — {presenter} has the floor (R resumes)"
-BANNER_OFFLINE_BACK = "Realtime is back — {presenter} has the floor (R resumes)"
+BANNER_PAUSED = "Paused"
+BANNER_NO_ANSWER = "Higgs Realtime didn't answer — trying again…"
+BANNER_PAUSED_R = "Paused"
+BANNER_OFFLINE = "Higgs Realtime offline — reconnecting…"
+BANNER_OFFLINE_BACK = "Higgs Realtime is back"
 BANNER_END = "End of the talk"
-BANNER_DISCUSSION = "Discussion: {prompt} — the facilitator is listening"
+BANNER_DISCUSSION = "Discussion: {prompt} — Alice is listening"
 BANNER_WRAPPED = "Meeting wrapped up"
 BANNER_WRAPPING = "Wrapping up…"
 
@@ -174,7 +178,7 @@ ERR_OFFLINE_TYPED = "Realtime offline — the typed question was not sent"
 ERR_OFFLINE_ROOM = "Realtime offline — the facilitator can't answer; typed lines still reach the alignment check"
 ERR_OFFLINE_CLIP = "Realtime offline — the facilitator can't hear the participants (typed lines still work)"
 ERROR_MAX_CHARS = 200
-INPUT_CLIPS, INPUT_MIC, INPUT_VOICE = "clips", "mic", "voice"  # config.INPUT_MODES (contracts v3.1, v5)
+INPUT_CLIPS, INPUT_MIC, INPUT_VOICE = "clips", "mic", "voice"  # Settings.input: "voice" (the Zoom bot)
 PARTICIPANT_SOURCES = {INPUT_CLIPS: "clip", INPUT_VOICE: "voice"}  # the `source` of the frames each mode listens to
 CLIP_ID_MAX_CHARS = 40
 # A participant's line ends where the clip ends (the deck flags the silence it streams after a clip: `tail`). The
@@ -197,7 +201,7 @@ class Cursor:
     live: bool = False
     heard: str = ""
     heard_ms: int = 0
-    beat: int = 0  # a guided point cut live (D88): the beat the room was in, where it picks up (0 otherwise)
+    beat: int = 0  # a guided point cut live: the beat the room was in, where it picks up (0 otherwise)
 
     @property
     def slide_start(self) -> bool:
@@ -211,7 +215,7 @@ class Cursor:
 
 @dataclass
 class LiveNarration:
-    """One live narration request: the Realtime session presents slide `slide` in its own words (D52) — in a
+    """One live narration request: the Realtime session presents slide `slide` live — in a
     meeting, only its talking point `chunk`. It reaches the deck as reply `reply` (the same numbering as live
     answers)."""
 
@@ -225,11 +229,11 @@ class LiveNarration:
     audio_bytes: int = 0
     first_audio_at: float | None = None
     response_done: bool = False
-    incomplete: bool = False  # the link dropped or it stalled before response.done: the backup replays the slide
+    incomplete: bool = False  # the link dropped or it stalled before response.done: the point is tried again
     pending: list[dict] = field(default_factory=list)  # its response.create, held while another response is active
     calls: dict[str, tuple[Any, Any]] = field(default_factory=dict)  # call_id → (name, arguments): never run
     text: str = ""  # transcript so far
-    from_beat: int = 0  # a guided point (D88): the first beat this request presents
+    from_beat: int = 0  # a guided point: the first beat this request presents
     expected_ms: int = 0  # the length it was asked for (a cut before its response.done measures against it)
 
 
@@ -279,7 +283,7 @@ class Turn:
     draft: dict | None = None  # a decision turn: the alignment check's decision draft
     proposal: dict | None = None  # a decision turn in claude mode: the validated proposal the model must match
     decision_saved: bool = False
-    # an online meeting (contract v3.1): a turn a participant's prerecorded clip opened by speaking
+    # a turn a participant in the call opened by speaking
     source: str = "mic"  # mic (Space, typed) · clip
     speaker: str | None = None  # the clip's participant (prepared clip metadata, no diarization)
     clip: str | None = None  # the demo step id of the clip
@@ -482,13 +486,9 @@ class Controller:
         self._room_commits: collections.deque[tuple[str | None, str]] = collections.deque()
         self._room_items: dict[str, tuple[str | None, str]] = {}
         self._room_commit_held: tuple[str | None, str] | None = None  # a room commit waits for the active response
-        # The online meeting (contract v3.1): the participants are prerecorded clips the deck plays and streams; the
-        # facilitator's own audio never reaches this input, so a clip that starts while it speaks is a barge-in.
-        self.demo = self._load_demo(talk)
-        self.input_mode = input_mode(settings, self.demo)
-        self.demo_payload: dict | None = self._default_demo_payload()  # the server sets the one with its clips
-        # clips: a line ends where its clip ends (the deck flags the tail), the segmenter is only the fallback. voice
-        # (the Zoom bot, contract v5): nobody flags anything, so a line ends after the room segmenter's own silence.
+        # The Zoom call: the bot streams what the call plays; Alice's own audio never reaches this input, so speech
+        # that starts while she speaks is a barge-in. A line ends after the participant segmenter's own silence.
+        self.input_mode = settings.input
         self._clip_seg: Segmenter | None = (Segmenter(end_ms=CLIP_END_MS) if self.input_mode == INPUT_CLIPS
                                             else Segmenter() if self.input_mode == INPUT_VOICE else None)
         # what a participant's turn or line is labelled with: "clip" (prerecorded) or "voice" (a live stream)
@@ -533,6 +533,7 @@ class Controller:
         self._reply_seq = 0
         # Per Realtime session (a new session numbers its ids afresh): forgotten on every `ready`.
         self._active: set[str] = set()  # responses created and not done yet (server side)
+        self._created: set[str] = set()  # responses whose response.created arrived (a second one: a reused id)
         self._ignored: set[str] = set()  # responses whose later events are ignored (cut, stalled or unexpected)
         self._answered: set[str] = set()  # call ids whose function_call_output went out (or waits in _owed)
         self._done: set[str] = set()  # responses whose response.done arrived
@@ -569,7 +570,7 @@ class Controller:
             "session.updated": self._ev_session,
         }
 
-    # --- public interface (design §5) -----------------------------------------------------------------------
+    # --- public interface ------------------------------------------------------------------------------------
 
     async def on_browser(self, msg: dict) -> None:
         """Every message from the deck."""
@@ -617,7 +618,7 @@ class Controller:
             self._analysis.cancel()
         self._generation += 1
 
-    # --- the alignment check's mode and status (contract v5 §0, §3) -------------------------------------------
+    # --- the alignment check's mode and status -----------------------------------------------------------------
 
     def _choose_alignment(self, settings: Settings) -> str:
         """claude (model-based; available only with an analyzer), legacy (the regex engine: explicit, and only with a
@@ -662,25 +663,6 @@ class Controller:
     def _refresh_alignment(self) -> None:
         if self.mstate is not None:
             self.mstate.alignment = self.alignment_status()
-
-    def _load_demo(self, talk: Talk) -> Any:
-        """The demo script (demo.yaml) of a meeting, None for a plain talk or without one. A broken one (the server
-        refuses those at startup) leaves the participants silent rather than the controller unbuilt."""
-        if self.meeting is None:
-            return None
-        try:
-            return load_demo(talk, self.meeting)
-        except Exception as exc:  # noqa: BLE001 - TalkError, or a talk object without a folder (tests)
-            self._note("demo_unavailable", {"error": repr(exc)})
-            return None
-
-    def _default_demo_payload(self) -> dict | None:
-        """hello's `demo` until the server hands over its own (with the clips it serves): the script, no audio."""
-        if self.demo is None:
-            return None
-        from .clips import demo_json  # late: relay.clips pulls in the TTS client
-
-        return demo_json(self.demo, {}, self.input_mode)
 
     def _participant_name(self, name: Any) -> str | None:
         """A participant's canonical name for a clip frame's `speaker` (prepared clip metadata), else None."""
@@ -732,7 +714,7 @@ class Controller:
         return self.settings.mic_mode != "hold" and self.turn_detection is None
 
     def session_config(self) -> dict:
-        """The full session object (design §6) for the current context: the first session.update of a connection."""
+        """The full session object for the current context: the first session.update of a connection."""
         turn_detection = self.turn_detection
         config: dict[str, Any] = {
             "type": "realtime",
@@ -808,7 +790,7 @@ class Controller:
 
     @property
     def status(self) -> str:
-        """The checkpoint status (contract §5.6): presenting · answering · resuming · paused · listening ·
+        """The checkpoint status: presenting · answering · resuming · paused · listening ·
         intervening · wrapping_up · idle."""
         state, turn = self.state, self.turn
         if state == NARRATING:
@@ -1025,14 +1007,12 @@ class Controller:
             self._note("client_log", {"level": msg.get("level"), "message": msg.get("message")})
         elif kind == "speaker" and self.meeting is not None:
             self._set_speaker(msg.get("name"))
-        elif kind in ("hello", "arm", "chunk_ended", "reply_drained", "typed"):
+        elif kind in ("hello", "arm", "reply_drained", "typed"):
             self._note("browser", dict(msg))
             if kind == "hello":
                 await self._greet()
             elif kind == "arm":
                 return True
-            elif kind == "chunk_ended":
-                await self._on_chunk_ended(msg)
             elif kind == "reply_drained":
                 await self._on_reply_drained(msg)
             else:
@@ -1064,14 +1044,14 @@ class Controller:
         self._last_state = self._state_message()  # the bundle carried the state (as _sync_state(force=True) would)
 
     def greeting(self) -> list[dict]:
-        """The greeting bundle for an observer (`/ws/observe`, contract v5): the same messages a connecting deck
+        """The greeting bundle for an observer (`/ws/observe`): the same messages a connecting deck
         gets, without the side effects (nothing is halted, no state is sent to the deck). Read-only."""
         return self._greeting_bundle()
 
     def _greeting_bundle(self) -> list[dict]:
         hello = {"type": "hello", "talk": self.talk.id, "version": self._version(),
                  "mic_mode": self.settings.mic_mode, "narration_mode": self.settings.narration,
-                 "meeting": meeting_info(self.meeting), "input": self.input_mode, "demo": self.demo_payload,
+                 "meeting": meeting_info(self.meeting), "input": self.input_mode, "demo": None,
                  "alignment": self.alignment_info() if self.meeting is not None else None,
                  "snapshot": self.snapshot()}
         bundle: list[dict] = [hello]
@@ -1152,12 +1132,12 @@ class Controller:
                 return arrived - (mark_position - position) / 1000
         return None
 
-    # --- the participants' clips (an online meeting, contract v3.1 §3) -------------------------------------------
+    # --- the participants' voices (the Zoom call) --------------------------------------------------------------
 
     async def _on_clip_frame(self, msg: dict) -> None:
         """A 100 ms frame of a participant's audio: a prerecorded clip the deck plays and streams (`source: "clip"`,
         then 1.2 s of flagged silence), or a live participant stream with no acoustic path back to the facilitator
-        (`source: "voice"`: the Zoom bot's ears, contract v5). The facilitator's own audio is never in this stream, so
+        (`source: "voice"`: the Zoom bot's ears). The facilitator's own audio is never in this stream, so
         it is listened to in every state: one participant segmenter buffers it locally and, at an utterance's start,
         decides what the participant's words are — a barge-in on the facilitator, a question in a pause, or a line of
         the discussion. A frame of the other source (or any in mic mode) is ignored, logged once."""
@@ -1205,6 +1185,11 @@ class Controller:
                 and not self._room_line_in_flight()):
             await self._run_flows()  # held for an onset that came to nothing (a click): it goes ahead now
 
+    def _ignores_voice(self) -> bool:
+        """Speech in the Zoom call that Alice must not answer: from the wrap-up on (a "thanks" would cut her summary,
+        which then never comes). Before the presentation, speech is how the host starts it (the opening turn)."""
+        return self.input_mode == INPUT_VOICE and self.meeting is not None and self.agenda_phase == WRAPUP
+
     def _clip_speaking(self) -> bool:
         """A participant is talking in the clip stream, or has just started to (the segmenter's onset, before its
         start_ms of speech): the facilitator never starts speaking up over that."""
@@ -1218,6 +1203,10 @@ class Controller:
             self._clip_target = ("drop",)
             self._note("clip_unheard", {"speaker": speaker, "clip": clip, "state": self.state})
             await self._send_error(ERR_OFFLINE_CLIP)
+            return
+        if self._ignores_voice():
+            self._clip_target = ("drop",)
+            self._note("clip_ignored", {"speaker": speaker, "state": self.state, "agenda_phase": self.agenda_phase})
             return
         if self.agenda_phase == DISCUSSION and self.state != LISTENING:
             if self._replying:  # the facilitator is speaking up (or answering): the participant cuts it off
@@ -1547,22 +1536,6 @@ class Controller:
         self._link_action = "restart"
         self._note("meeting_reset", {})
 
-    async def _on_chunk_ended(self, msg: dict) -> None:
-        cursor = self.cursor
-        if (self.state != NARRATING or self.live is not None or cursor is None
-                or _int(msg.get("play_id")) != self.play_id):  # (a live narration has no chunks)
-            self._note("chunk_ended_ignored", {"play_id": msg.get("play_id"), "current": self.play_id,
-                                               "state": self.state})
-            return
-        slide = self.talk.slide(cursor.slide)
-        if cursor.chunk + 1 < len(slide.chunks):
-            if self.meeting is not None:  # every talking point decides again: live if the link is back
-                await self._play(Cursor(slide.id, cursor.chunk + 1))
-            else:
-                await self._play_rendered(Cursor(slide.id, cursor.chunk + 1))
-            return
-        await self._after_slide(slide)
-
     async def _on_reply_drained(self, msg: dict) -> None:
         reply = _int(msg.get("reply"))
         live = self.live
@@ -1691,9 +1664,20 @@ class Controller:
                 await self._rt(event)
             return
         turn.pending = events
+        self._start_timer("cancel_grace", CANCEL_GRACE_S, self._on_cancel_grace)
         if self._active - self._ignored:
             self._ignored |= self._active
             await self._rt({"type": "response.cancel"})
+
+    async def _on_cancel_grace(self) -> None:
+        """A request is still held back for responses we cancelled or ignored: Higgs sends no response.done for one
+        cancelled before its first output, so stop waiting for them and send what was held."""
+        stale = self._active & self._ignored
+        if not stale:
+            return
+        self._note("cancel_unconfirmed", {"ids": sorted(stale)})
+        self._active -= stale
+        await self._send_pending()
 
     async def _send_pending(self) -> None:
         """What was held back, once no response is active any more: a room utterance's commit, then a question (the
@@ -1830,8 +1814,8 @@ class Controller:
         await self._end_turn()
 
     async def _drained(self, reason: str) -> None:
-        """The reply has finished playing: run the queued tool, else count down to the presentation (a greeting,
-        D57) or back to the script (origin narration), else return to PAUSED / IDLE. In a meeting a follow-up may be
+        """The reply has finished playing: run the queued tool, else count down to the presentation (a greeting)
+        or back to the script (origin narration), else return to PAUSED / IDLE. In a meeting a follow-up may be
         waiting for this reply to finish (it goes out now, the turn goes on), and the facilitator's own turns go on to
         the discussion (hand-over), the room (intervention, decision, a direct question) or the end (summary)."""
         turn = self.turn
@@ -1867,7 +1851,7 @@ class Controller:
             # A Q&A answer was given but the model didn't hand back (live F5: it rarely does; D-watchdog).
             await self._auto(tools.HANDOFF_TO_HUMAN)
         elif self.phase == "opening" and (turn.first_audio_at is not None or turn.heard):
-            # The greeting was heard but called no tool (F5 again): the watchdog starts the presentation (D57).
+            # The greeting was heard but called no tool (doc/gotchas.md F5): the watchdog starts the presentation.
             self._set_state(IDLE, BANNER_STARTING)
             await self._send({"type": "countdown", "seconds": math.ceil(COUNTDOWN_S)})
             self._start_timer("countdown", COUNTDOWN_S, self._on_start_countdown)
@@ -1887,47 +1871,34 @@ class Controller:
         return slide.fragment_at(chunk) if slide.is_relay else None
 
     async def _play(self, cursor: Cursor, *, show_slide: bool = False) -> None:
-        """Narrate from `cursor`: live (D52) when the link is ready and the cursor starts a slide or continues a live
-        one, else from the renders (rendered mode, or the backup, D53). A backup narration cut mid-slide continues
-        from the renders even once the link is back; the next slide start decides again."""
+        """Narrate from `cursor` live when the link is ready (the cursor starts a talking point or continues a cut
+        one); otherwise pause on it and try again by itself."""
         starts = cursor.point_start if self.meeting is not None else cursor.slide_start  # a meeting: per talking point
-        if self._live_mode and self.realtime.ready and (cursor.live or starts):
+        if self.realtime.ready and (cursor.live or starts):
             await self._narrate(cursor, show_slide=show_slide)
-        else:  # the backup can't continue a live slide (talking point): it presents it again from its start
-            backup = Cursor(cursor.slide, cursor.chunk if self.meeting is not None else 0) if cursor.live else cursor
-            await self._play_rendered(backup, show_slide=show_slide)
+        else:
+            await self._pause_unanswered(cursor, show_slide=show_slide)
 
-    async def _play_rendered(self, cursor: Cursor, *, show_slide: bool = False) -> None:
-        """Play the rendered chunk at `cursor` (the narration of rendered mode; the backup in live mode)."""
+    async def _pause_unanswered(self, cursor: Cursor, *, show_slide: bool = False) -> None:
+        """Higgs Realtime can't present the point at `cursor` (no answer, the link down): there is no recorded
+        backup, so show the point, pause, and try it again by itself every AUTO_RESUME_S (nobody presses a key in a
+        Zoom call) until the link answers."""
         slide = self.talk.slide(cursor.slide)
         fragment = self._fragments(slide, cursor.chunk)
-        if self._live_mode and (slide.id, cursor.chunk) not in self.chunks:
-            # No backup audio (Ken 2026-10-24: everything is live): show the point and pause; P retries it live.
-            if show_slide or slide.index != self.slide_index or self.fragment != fragment:
-                self.slide_index = slide.index
-                await self._send({"type": "slide", "slide": slide.id, "fragment": fragment})
-            self.fragment = fragment
-            self.cursor = Cursor(slide.id, cursor.chunk)
-            self._last_point = (slide.id, cursor.chunk)
-            self.started = True
-            self._note("no_backup", {"slide": slide.id, "chunk": cursor.chunk})
-            self._set_state(PAUSED, BANNER_NO_BACKUP)
-            return
-        if show_slide or slide.index != self.slide_index:
+        if show_slide or slide.index != self.slide_index or self.fragment != fragment:
             self.slide_index = slide.index
             await self._send({"type": "slide", "slide": slide.id, "fragment": fragment})
-        self.play_id += 1
         self.fragment = fragment
-        self.cursor = cursor
+        self.cursor = cursor if cursor.live else Cursor(slide.id, cursor.chunk)
         self._last_point = (slide.id, cursor.chunk)
         self.started = True
-        self.floor_human = False
-        self.floor_offline = False
-        self._cut_info = None
-        self.narration_source = "backup" if self._live_mode else "rendered"
-        await self._send({"type": "play", "play_id": self.play_id, "slide": slide.id, "chunk": cursor.chunk,
-                          "offset_ms": cursor.offset_ms, "fragment": fragment, "resume_word": cursor.resume_word})
-        self._set_state(NARRATING, None)
+        self._note("unanswered", {"slide": slide.id, "chunk": cursor.chunk, "retry_s": AUTO_RESUME_S})
+        self._set_state(PAUSED, BANNER_NO_ANSWER)
+        self._start_timer("auto_resume", AUTO_RESUME_S, self._on_auto_resume)
+
+    async def _on_auto_resume(self) -> None:
+        if self.state == PAUSED and self.banner == BANNER_NO_ANSWER and self.cursor is not None:
+            await self._play(self.cursor)
 
     async def _narrate(self, cursor: Cursor, *, show_slide: bool = False) -> None:
         """Present the cursor's slide live: the whole slide shows (all its fragments) and the Realtime session is
@@ -2133,7 +2104,7 @@ class Controller:
         self._note("cut", {"slide": slide, "chunk": chunk, "t_ms": t_ms, "cut_word": point.cut_word,
                            "word": word.word, "resume_word": point.resume_word, "offset_ms": point.offset_ms})
 
-    # --- live narration (D52) --------------------------------------------------------------------------------
+    # --- live narration ------------------------------------------------------------------------------------
 
     def _narration_seconds(self, slide: Slide) -> int:
         """How long a live narration of `slide` should take: as long as its backup, else its notes at a speaking
@@ -2145,7 +2116,7 @@ class Controller:
 
     def _point_seconds(self, slide: Slide, chunk: int) -> int:
         """How long a live talking point should take: as long as its backup chunk, else its note at a speaking pace;
-        within POINT_MIN_S…POINT_MAX_S. A guided point (D88): its guide's length, up to GUIDED_POINT_MAX_S."""
+        within POINT_MIN_S…POINT_MAX_S. A guided point: its guide's length, up to GUIDED_POINT_MAX_S."""
         guide = slide.chunks[chunk].guide
         pace = self.settings.pace  # RELAY_PACE: > 1 asks for shorter points (the live model keeps to the length asked)
         if guide is not None:
@@ -2169,7 +2140,7 @@ class Controller:
             seconds = self._point_seconds(slide, live.chunk)
             beat = 0
             if live.continuing and cursor is not None and cursor.live:
-                if chunk.guide is not None:  # the beats left from the one the room was in, or the resume line (D88)
+                if chunk.guide is not None:  # the beats left from the one the room was in, or the resume line
                     beat = min(max(cursor.beat, 0), len(chunk.guide.beats) - 1)
                     # what is left by the guide, never "its length minus what was heard": the live pace isn't the
                     # guide's, and a slow first half would leave the rest a few seconds for three verbatim lines
@@ -2203,6 +2174,7 @@ class Controller:
         self._note("narration_request", note)
         if self._active:
             live.pending = [event]
+            self._start_timer("cancel_grace", CANCEL_GRACE_S, self._on_cancel_grace)
             if self._active - self._ignored:
                 self._ignored |= self._active
                 await self._rt({"type": "response.cancel"})
@@ -2247,7 +2219,7 @@ class Controller:
 
     async def _narration_drained(self, reason: str) -> None:
         """The live narration has finished playing: on to what follows the slide; a narration the link or a stall
-        cut short is followed by the backup presenting the slide again from its start."""
+        cut short pauses at the point's start and is tried again by itself."""
         live = self.live
         if live is None:
             return
@@ -2258,7 +2230,7 @@ class Controller:
                                          "chunk": live.chunk, "incomplete": live.incomplete})
         slide = self.talk.slide(live.slide)
         if live.incomplete:
-            await self._play_rendered(Cursor(live.slide, live.chunk))
+            await self._pause_unanswered(Cursor(live.slide, live.chunk))
         elif self.meeting is not None and live.chunk + 1 < len(slide.chunks):
             await self._play(Cursor(live.slide, live.chunk + 1))  # the slide's next talking point
         else:
@@ -2277,8 +2249,8 @@ class Controller:
 
     async def _narration_failed(self, why: str) -> None:
         """A narration request that never spoke: no audio in time, a response that ended or stalled silent, a
-        request the link could not send. Ask once more while the link is ready, else the backup presents the slide
-        (D53)."""
+        request the link could not send. Ask once more while the link is ready, else pause and try again by itself
+        (a resume after a cut keeps its place)."""
         live = self.live
         if live is None:
             return
@@ -2291,7 +2263,7 @@ class Controller:
         await self._send({"type": "reply_flush", "reply": live.reply})
         retry = live.attempt < NARRATION_RETRIES and self.realtime.ready
         self._note("narration_failed", {"why": why, "slide": live.slide, "reply": live.reply,
-                                        "attempt": live.attempt, "then": "retry" if retry else "backup"})
+                                        "attempt": live.attempt, "then": "retry" if retry else "pause"})
         if retry:
             self._reply_seq += 1
             self.live = LiveNarration(live.slide, self._reply_seq, live.continuing, attempt=live.attempt + 1,
@@ -2299,7 +2271,9 @@ class Controller:
             await self._request_narration(self.live)
         else:
             self.live = None
-            await self._play_rendered(Cursor(live.slide, live.chunk))
+            cursor = self.cursor
+            same = cursor is not None and cursor.live and (cursor.slide, cursor.chunk) == (live.slide, live.chunk)
+            await self._pause_unanswered(cursor if same else Cursor(live.slide, live.chunk))
 
     async def _cut_live(self, msg: dict | None) -> tuple[str, str, int] | None:
         """Cut the live narration off: cancel it if still generating, truncate the model's memory of it to what
@@ -2327,7 +2301,7 @@ class Controller:
         if played > 0:  # what the room heard of this slide so far: earlier parts too, when this one continued it
             so_far = " ".join(part for part in (cursor.heard, heard) if part)
             guide = self._guide(live.slide, live.chunk) if self.meeting is not None else None
-            if guide is not None:  # a guided point continues from the beat the room was in (D88), never the top
+            if guide is not None:  # a guided point continues from the beat the room was in, never the top
                 audio_ms = live.audio_bytes // BYTES_PER_MS
                 total = audio_ms if live.response_done else max(audio_ms, live.expected_ms)
                 beat = prompts.beat_reached(guide, live.from_beat, heard, played / total if total else 0.0)
@@ -2342,7 +2316,7 @@ class Controller:
         return live.slide, heard, played
 
     def _guide(self, slide_id: str, chunk: int) -> Any:
-        """The guide of a talking point (D88), or None."""
+        """The guide of a talking point, or None."""
         try:
             return self.talk.slide(slide_id).chunks[chunk].guide
         except (KeyError, IndexError):
@@ -2507,7 +2481,7 @@ class Controller:
             self.floor_human = True
             self._set_state(IDLE, self._banner_human())
 
-    # --- the facilitator's tools (a meeting, contract §4–§5.5) ------------------------------------------------
+    # --- the facilitator's tools (a meeting) -------------------------------------------------------------------
 
     async def _settle_meeting(self, turn: Turn, *, owe: bool = False, straggler: bool = False) -> str | None:
         """At a meeting response's response.done: data calls run now and their outputs carry the results; state
@@ -2644,7 +2618,7 @@ class Controller:
         return texts
 
     async def _run_state(self, call: tools.ToolCall, turn: Turn) -> tuple[bool, str]:
-        """A state tool, validated and applied now (contract §5.5). (applied, function_call_output)."""
+        """A state tool, validated and applied now. (applied, function_call_output)."""
         known = self._known_ids()
         if call.name == tools.RECORD_CLARIFICATION:
             ids = [sid for sid in call.args["source_ids"] if sid in known]
@@ -2656,7 +2630,7 @@ class Controller:
             extra = {"dropped_source_ids": dropped} if dropped else {}
             return True, tools.json_output(ok=True, id=clarification.id, **extra)
         args = dict(call.args)  # save_decision
-        # claude mode: in a decision turn the model's decision must match the validated proposal (contract v5 §3:
+        # claude mode: in a decision turn the model's decision must match the validated proposal (
         # content-word overlap with the recent transcript is no proof of agreement); legacy mode keeps today's check
         proposal = turn.proposal if self.alignment_mode == ALIGNMENT_CLAUDE else None
         if self.alignment_mode == ALIGNMENT_CLAUDE and self._analysis is not None and proposal is None:
@@ -2786,7 +2760,7 @@ class Controller:
         intervention that never made a sound leaves its issue pending (claude mode: `intervention_unheard`, and the
         next analysis decides whether to ask); a presentation question answered from a lookup leaves a clarification
         behind (by=auto) when the model did not record one: the question, the facilitator's final words, the top
-        sources (contract §5.3)."""
+        sources."""
         if turn.kind == KIND_DECISION and turn.draft and not turn.decision_saved:
             turn.decision_saved = True
             await self._save_draft(turn.draft)
@@ -2819,7 +2793,7 @@ class Controller:
                             "id": clarification.id})
         await self._send_meeting()
 
-    # --- the discussion (a meeting, contract §5.4) --------------------------------------------------------------
+    # --- the discussion (a meeting) ---------------------------------------------------------------------------
 
     async def _handover(self) -> None:
         """The presentation is over: one sentence of hand-over (per-response instructions), then the discussion.
@@ -2830,7 +2804,7 @@ class Controller:
             await self._enter_discussion()
             return
         turn = Turn(origin=ORIGIN_HANDOVER, kind=KIND_HANDOVER, phase=PRESENTATION)
-        guide = getattr(self.talk, "handover", None)  # the script's hand-over guidance (D88), if any
+        guide = getattr(self.talk, "handover", None)  # the script's hand-over guidance, if any
         await self._flow_request(turn, prompts.handover_instructions(self.meeting, guide), tool_choice="none",
                                  state=REPLYING)
 
@@ -2902,6 +2876,7 @@ class Controller:
         if self._active:
             if self._room_commit_held is None:  # (a second one would commit the same buffer: one item)
                 self._room_commit_held = label
+                self._start_timer("cancel_grace", CANCEL_GRACE_S, self._on_cancel_grace)
             return
         if await self._rt({"type": "input_audio_buffer.commit"}):
             self._room_commits.append(label)
@@ -2933,6 +2908,19 @@ class Controller:
         meeting so far goes to the analysis, outside the lock; `on_analysis` applies what comes back."""
         utterance = self.mstate.add_utterance(text, speaker, source)
         await self._send({"type": "transcript", "utterance": _jsonable(utterance)})
+        if self.agenda_phase == DISCUSSION and WRAPUP_REQUEST_RE.search(text):
+            # Someone asks to wrap up ("Great, let's wrap up."): the meeting moves on by voice (no keys in Zoom)
+            self._note("utterance", {"id": utterance.id, "speaker": speaker, "source": source, "text": text,
+                                     "events": ["wrapup_request"]})
+            await self._halt(None, cut=False)
+            await self._enter_wrapup()
+            return
+        if (self.agenda_phase == DISCUSSION and self.state == ROOM and self.turn is None and self.realtime.ready
+                and ADDRESSED_RE.search(text) and QUESTION_RE.search(text)):
+            self._note("utterance", {"id": utterance.id, "speaker": speaker, "source": source, "text": text,
+                                     "events": ["question_to_alice"]})
+            await self._answer_room_question(text, speaker)
+            return
         events: list[dict] = []
         if self.engine is not None:
             try:
@@ -2958,6 +2946,21 @@ class Controller:
             await self._run_flows()
         elif self.agenda_phase == WRAPUP:
             await self._late_line()
+
+    async def _answer_room_question(self, text: str, speaker: str | None) -> None:
+        """A discussion line put to Alice by name: answered like a question during the presentation, with no key.
+        Its audio is in the conversation already (the room commit), so one response.create asks for the answer: the
+        meeting's instructions (the discussion phase) make her look it up and answer in a sentence or two; the answer
+        becomes a clarification later checks can cite, and then she listens to the room again (origin ROOM)."""
+        turn = await self._take_floor(None)  # the room closes (a line being spoken still gets committed)
+        turn.source, turn.speaker, turn.user_text = self.participant_source, speaker, text
+        self.turn = turn
+        await self._rt(self._turn_update())  # the discussion's instructions, and the tools back if withdrawn
+        await self._request_events(turn, [{"type": "response.create"}])
+        self._enter_replying(turn, "addressed")
+        self._note("room_question", {"speaker": speaker, "text": text, "reply": turn.reply})
+        await self._send({"type": "caption", "role": "user", "text": text, "final": True, "reply": turn.reply,
+                          "speaker": speaker})
 
     def _room_line_in_flight(self) -> bool:
         """A room line was committed (or waits to be) and its transcript hasn't come yet."""
@@ -3083,7 +3086,7 @@ class Controller:
             return
         conflicts = [item for event in events for item in (event, *(event.get("related") or []))]
         query = " ".join(str(event.get("query") or "") for event in events).strip()
-        if not query:  # the slot label and both values (contract §5.4)
+        if not query:  # the slot label and both values
             query = " ".join(f"{item.get('label') or ''} {item.get('claimed_label') or ''} "
                              f"{item.get('established_label') or ''}" for item in conflicts)
             query = " ".join(query.split())
@@ -3264,7 +3267,7 @@ class Controller:
         if closed:
             await self._send_meeting()
 
-    # --- model-based alignment (claude mode, contract v5 §3) ---------------------------------------------------
+    # --- model-based alignment (claude mode) -----------------------------------------------------------------
 
     def _snapshot(self) -> Snapshot:
         """The meeting as it is now. The utterances after the last successful analysis are the new ones (the model's
@@ -3741,7 +3744,7 @@ class Controller:
                 self._note("vad_after_send", {"reply": turn.reply, "audio_end_ms": event.get("audio_end_ms")})
             return
         self._remember_user_item(turn, event.get("item_id"))
-        await self._close_mic(clear=False)  # trailing audio could re-trigger VAD and cancel the reply (D5)
+        await self._close_mic(clear=False)  # trailing audio could re-trigger VAD and cancel the reply
         self._enter_replying(turn, "vad")
         self._estimate_speech_end(turn, event.get("audio_end_ms"))
 
@@ -3804,6 +3807,14 @@ class Controller:
         response = event.get("response") if isinstance(event.get("response"), dict) else {}
         response_id = response.get("id")
         if isinstance(response_id, str) and response_id:
+            if response_id in self._created:
+                # Higgs announces a response once: this is a new one with a reused id (live 2026-10-24, after a
+                # response cancelled before its first output). Forget what the old one left behind.
+                self._note("response_id_reused", {"response_id": response_id})
+                self._ignored.discard(response_id)
+                self._done.discard(response_id)
+                self._owed.pop(response_id, None)
+            self._created.add(response_id)
             self._active.add(response_id)
         else:
             response_id = None
@@ -4005,7 +4016,7 @@ class Controller:
 
     async def _finish_response(self, turn: Turn, *, owe: bool = False) -> None:
         """No more reply audio: answer the calls, queue the action, reply_end, and arm the drain fallback. In a
-        meeting a tool round trip may follow (contract §5.3): at once after a silent response, else once its audio
+        meeting a tool round trip may follow: at once after a silent response, else once its audio
         has played."""
         turn.response_done = True
         self._cancel_timer("reply_wait")
@@ -4148,6 +4159,7 @@ class Controller:
         narration still draining from the old session keeps its state, but its audio item is gone: nothing to
         truncate."""
         self._active.clear()
+        self._created.clear()
         self._ignored.clear()
         self._answered.clear()
         self._done.clear()
@@ -4173,8 +4185,8 @@ class Controller:
 
     async def _link_lost(self) -> None:
         """Mid-turn drop: LISTENING goes back to its origin; a reply without response.done counts as done. Mid
-        live narration: nothing heard yet → the backup presents the slide now; else what arrived plays out and
-        then the backup presents the slide again."""
+        live narration: nothing heard yet → it failed (retry, then pause); else what arrived plays out and then the
+        point pauses and is tried again once the link is back."""
         self._active.clear()
         turn, live = self.turn, self.live
         if self.state == LISTENING:
@@ -4267,7 +4279,7 @@ class Controller:
                 self._note("tool", {"name": name, "args": args, "status": "auto"})
 
     async def _on_start_countdown(self) -> None:
-        """"Starting…" ran out: the greeting called no tool, so the watchdog starts the presentation (D57)."""
+        """"Starting…" ran out: the greeting called no tool, so the watchdog starts the presentation."""
         if self.state == IDLE:
             await self._auto(tools.START_PRESENTATION)
 
@@ -4278,8 +4290,8 @@ class Controller:
 
     async def _on_narration_stall(self) -> None:
         """The bound narration went quiet: no event of its own for REPLY_STALL_S (or ERROR_GRACE_S after an error)
-        and no response.done. Cancel it and ignore the rest of it: what was heard plays out, then the backup
-        presents the slide again; a narration that never spoke failed."""
+        and no response.done. Cancel it and ignore the rest of it: what was heard plays out, then the point pauses and
+        is tried again; a narration that never spoke failed."""
         live = self._open_narration()
         if live is None:
             return

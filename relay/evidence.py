@@ -1,4 +1,4 @@
-"""Evidence retrieval for `lookup_evidence` and the alignment check (contract §3.2).
+"""Evidence retrieval for `lookup_evidence` and the alignment check.
 
 The corpus is the meeting package's source statements plus what the meeting itself established (clarifications,
 decisions). `search` ranks it with BM25 over lowercased word tokens (a small stop list, light stemming of

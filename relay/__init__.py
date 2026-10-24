@@ -1,1 +1,2 @@
-"""Relay: a live voice co-presenter on Boson AI's Higgs Realtime and Higgs TTS 3. See doc/design.md."""
+"""On the Same Page (the `relay` package): Alice, an AI co-host in a Zoom call, live on Boson AI's Higgs Realtime.
+See doc/architecture.md."""

@@ -1,4 +1,4 @@
-"""Model-based alignment (contract v5 §1; doc/alignment_replacement_prompt.md).
+"""Model-based alignment: Claude's check of the discussion (the default, `--alignment claude`).
 
 Claude reads a snapshot of the meeting (every source passage, the discussion so far, earlier clarifications, confirmed
 decisions, the open issues) and returns one structured result: candidate claims, participant assumptions, alignment
@@ -499,7 +499,7 @@ def _clip(text: Any, limit: int = 300) -> str:
 
 class ClaudeAnalyzer:
     """The Claude API through Anthropic's async SDK: structured output, one retry, a bounded timeout, no key in any
-    log or error. Verify live before trusting a model id (`scripts/alignment_eval.py`)."""
+    log or error. Verify live before trusting a model id (doc/gotchas.md has the measured models)."""
 
     def __init__(self, settings: Settings, *, client: Any | None = None) -> None:
         import anthropic  # the SDK is a dependency; imported here so the module loads without it in odd environments

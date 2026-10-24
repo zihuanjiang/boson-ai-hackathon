@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Presenter keys (doc/design.md §4, brief Appendix C). Space (keydown) = space; in hold mode its keyup = space_up;
+ * Presenter keys of the local deck page (unused in a Zoom run: the bot is the deck, the page is an observer). Space (keydown) = space; in hold mode its keyup = space_up;
  * Esc; → / ← and the clicker's PageDown / PageUp = next / prev; P pause; H human; R relay; T focuses the typed box.
  * Auto-repeat is ignored. While a text box (the typed question, the chat) has focus nothing is a presenter key except
  * Esc, which leaves it. Before Arm (the join) nothing is handled, so Space/Enter on the focused Join button keep their

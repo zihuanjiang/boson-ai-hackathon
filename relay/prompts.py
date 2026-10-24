@@ -1,9 +1,9 @@
-"""Realtime instructions: the fixed BASE prompt plus a STATE block rebuilt for every live turn (design §7), and the
-per-response instructions that make Higgs Realtime present one slide live (D52).
+"""Realtime instructions: the fixed BASE prompt plus a STATE block rebuilt for every live turn, and the per-response
+instructions that make Higgs Realtime present one slide live.
 
 A meeting package (agenda.yaml, On the Same Page) swaps BASE for FACILITATOR_BASE and STATE for the meeting's, and
 adds the per-response instructions of the facilitator: one talking point, a follow-up after a tool result, the
-hand-over to the discussion, an intervention, a decision, the wrap-up (contract §5).
+hand-over to the discussion, an intervention, a decision, the wrap-up.
 
 Keep them short: a long system prompt made the model stop calling tools (doc/gotchas.md).
 """
@@ -21,7 +21,7 @@ from .textutil import norm_word, strip_tags
 
 PHASES = ("opening", "presenting", "qa", "human")
 
-# Brief Appendix E, verbatim. Stays under 120 words with the presenter's name filled in.
+# A plain talk (no agenda.yaml). Stays under 120 words with the presenter's name filled in.
 BASE_TEMPLATE = (
     "You are Relay, a voice co-presenter for {presenter}'s talk. Your scripted narration is played for you; never "
     "read the script yourself. When someone cuts in, answer in one or two short spoken sentences (up to four in "
@@ -30,7 +30,7 @@ BASE_TEMPLATE = (
     'say "As I was saying", and call resume_script. Use only the facts given. No lists, markdown or URLs.'
 )
 
-# Live narration (D52): Relay presents the slides itself, from per-slide notes. Also under 120 words.
+# Live narration: the model presents the slides itself, from per-slide notes. Also under 120 words.
 LIVE_BASE_TEMPLATE = (
     "You are Relay, a voice co-presenter for {presenter}'s talk. You present the slides yourself, live, in your own "
     "words, from the notes given for each slide. When someone cuts in, answer in one or two short spoken sentences "
@@ -187,9 +187,9 @@ def narration_instructions(talk: Talk, slide: Slide, *, seconds: int, continuing
     return "\n".join(lines)
 
 
-# --- the meeting facilitator (On the Same Page, contract §5) -----------------------------------------------------
+# --- the meeting facilitator (On the Same Page) ------------------------------------------------------------------
 
-# ≤ 130 words with a title and three participants filled in (tests/test_prompts.py checks it).
+# Keep it ≤ 130 words with a title and three participants filled in.
 FACILITATOR_BASE = (
     'You are Alice, the facilitator of the meeting "{title}" with {participants}. Anyone who says Alice is talking to you. You present the first agenda item '
     "yourself, live, in your own words, from the notes given for each talking point. When anyone asks about the "
@@ -330,11 +330,11 @@ def talking_point_instructions(talk: Talk, meeting: Any, slide: Slide, chunk: Ch
     return "\n".join(lines)
 
 
-# --- script guidance (D88): Claude writes the script, Higgs Realtime performs it ----------------------------------
+# --- script guidance: Claude writes the script, Higgs Realtime performs it ----------------------------------------
 #
 # Live findings this wording leans on (doc/gotchas.md, 2026-10-23/24): a quoted, sentence-shaped line comes back word
-# for word (F1, on higgs-realtime: a typed "repeat this line"; not yet verified for guided beats on
-# higgs-realtime-1.5-preview, scripts/probe_guided.py), so verbatim beats are quoted lines, and everything else is a
+# for word (F1 on higgs-realtime; guided beats on higgs-realtime-1.5-preview: the hook word for word in 5 of 5 runs),
+# so verbatim beats are quoted lines, and everything else is a
 # note, never a sentence to read out; listing a line the room already heard invites a restart, so a cut beat is sent
 # as its unheard rest; the model says ~1.4× its notes and adds emphasis words of its own (so a gist is a short note
 # with a length); it reads source ids aloud unless told not to; follow-ups must be self-contained. There is no SSML:
@@ -583,7 +583,7 @@ def beat_reached(guide: Guide, start: int, heard: str, fraction: float) -> int:
 
 
 def handover_instructions(meeting: Any, guide: Guide | None = None) -> str:
-    """The hand-over after the presentation: one sentence, then the facilitator listens (contract §5.2). With the
+    """The hand-over after the presentation: one sentence, then the facilitator listens. With the
     script's `handover:` guide (D88) it is performed beat by beat, like a guided talking point."""
     if guide is not None:
         seconds = round(min(45, max(3, guide.seconds_from(0))))
@@ -623,7 +623,7 @@ FOLLOWUP_KINDS = (FOLLOWUP_LOOKUP, FOLLOWUP_CONFIRM, FOLLOWUP_DECISION)
 def followup_instructions(kind: str, *, meeting: Any, agenda_phase: str = "presentation",
                           question: str | None = None, speaker: str | None = None, results: Iterable[dict] = (),
                           decision: Any = None) -> str:
-    """The `instructions` of a follow-up `response.create` after a tool round trip (contract §5.3). They replace the
+    """The `instructions` of a follow-up `response.create` after a tool round trip. They replace the
     session's for that response, so they carry everything the answer needs: live 2026-10-23 a follow-up without new
     instructions repeated the tool call; live 2026-10-24 one that only said "answer from these results" called
     get_presentation_state twice, and one that only said "confirm the decision" greeted the room ("Hello! I'm ready
@@ -705,11 +705,11 @@ def _heard_line(events: list[dict]) -> str | None:
 
 def intervention_instructions(events: dict | list[dict], lookup: Any, *, meeting: Any,
                               clarifications: Iterable[Any] = ()) -> str:
-    """The `instructions` of an intervention (contract §5.4): the conflicting line and the confirmation that the
+    """The `instructions` of an intervention: the conflicting line and the confirmation that the
     alignment check heard, what the documents and the earlier clarification say, and one neutral question before
     the group confirms (live 2026-10-23: a good question, but 17 s long → short sentences, at most two).
 
-    A model-based issue (contract v5 §3: `issue_type`, verified `evidence`, the model's suggested `question`) is
+    A model-based issue (relay/semantic.py: `issue_type`, verified `evidence`, the model's suggested `question`) is
     worded by its kind: an evidence conflict as the documents against the claim; a hidden disagreement names both
     readings neutrally and asks which one is meant; an unresolved detail names the proposal and the missing detail and
     asks who, what or when. The suggested question is the wording to use, or a close paraphrase; never that anyone
@@ -791,11 +791,11 @@ def _semantic_intervention(event: dict, lookup: Any, *, meeting: Any, clarificat
     return "\n".join(lines)
 
 
-DRAFT_PREFIX = "DRAFT: "  # the fake Realtime reads the draft back from this line
+DRAFT_PREFIX = "DRAFT: "  # the alignment check's draft decision, as JSON, in the decision instructions
 
 
 def decision_instructions(draft: dict, quotes: Iterable[tuple[str | None, str]], *, meeting: Any) -> str:
-    """The `instructions` of the decision response (contract §5.4): the resolving lines, the alignment check's draft
+    """The `instructions` of the decision response: the resolving lines, the alignment check's draft
     as JSON, save it (corrected only by the quotes) with the owner's next step in the model's own words (the action
     item: the draft's follow-up is only a quote, kept when the model gives none), then confirm in one short
     sentence."""
@@ -816,7 +816,7 @@ def decision_instructions(draft: dict, quotes: Iterable[tuple[str | None, str]],
 
 
 def wrapup_instructions(notes_text: str, *, meeting: Any) -> str:
-    """The `instructions` of the wrap-up summary (contract §5.6)."""
+    """The `instructions` of the wrap-up summary."""
     return "\n".join([
         f'You are Alice, the facilitator of the meeting "{meeting.title}", and the meeting is wrapping up.',
         f"The meeting notes: {' '.join((notes_text or 'nothing was recorded').split())}",

@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * The deck control socket (`/ws`, JSON text frames; protocol in doc/design.md §4). Reconnects with backoff and
+ * The deck control socket (`/ws`, or `/ws/observe` for the observer; JSON text frames). Reconnects with backoff and
  * says `hello` on every (re)connect. A close with code 4000 means another deck took over: no reconnect then, or the
  * two tabs would keep kicking each other off.
  * An observer (contract v5 §3: the page the Zoom bot shares as its screen, `?view=observer`) connects to

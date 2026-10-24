@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * reveal.js wrapper: slides by id, fragments by count (doc/design.md §4, §8). reveal's own keyboard, hash, controls,
+ * reveal.js wrapper: slides by id, fragments by count. reveal's own keyboard, hash, controls,
  * touch and overview are off: the backend decides what is on screen, the presenter keys go through keys.js.
  * The markdown comes from /api/slides.md (see the data-markdown section in index.html). Embedded: the deck is the
  * meeting's shared screen, sized by the page's layout, not the window, so every layout change calls layout().
@@ -135,7 +135,7 @@ export class Deck {
   async init() {
     const w = /** @type {any} */ (window);
     if (!w.Reveal || !w.RevealMarkdown) {
-      throw new Error("reveal.js is missing: run scripts/vendor_reveal.sh (web/vendor/reveal/)");
+      throw new Error("reveal.js is missing: web/vendor/reveal/ (a vendored copy, see its VERSION) did not load");
     }
     const designed = await loadDesignedDeck();
     const slides = designed ? document.querySelector(".reveal .slides") : null;

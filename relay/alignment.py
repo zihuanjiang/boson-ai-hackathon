@@ -1,4 +1,4 @@
-"""The alignment check (contract §3.3 + the coordinator's clarifications of 2026-10-23).
+"""The legacy alignment check (`--alignment legacy`; the default is Claude's, relay/semantic.py).
 
 `extract` turns text into structured claims with the patterns of the package's checks.yaml: a slot (e.g. Friday's
 release stage) and a value (beta / production). `established` applies the same extraction to the source

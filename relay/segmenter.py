@@ -1,4 +1,4 @@
-"""End-of-utterance detection on PCM16 mono mic audio (contract §3.4): the backend ends user turns itself.
+"""End-of-utterance detection on PCM16 mono audio (turn detection is off): the backend ends user turns itself.
 
     seg = Segmenter()                       # 24 kHz
     for kind, pcm in seg.feed(frame):       # any frame size

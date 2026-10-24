@@ -837,7 +837,7 @@ export class SidePanel {
   /** What the facilitator said in the discussion. @param {string} text @param {string} kind @param {string} time */
   facilitatorLine(text, kind, time) {
     if (!text) return;
-    const li = this.line("Facilitator", "facilitator", time, text, "");
+    const li = this.line("Alice", "facilitator", time, text, "");
     li.dataset.kind = kind;
   }
 

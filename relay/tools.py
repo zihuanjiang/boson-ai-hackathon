@@ -1,6 +1,6 @@
-"""The model's tools: Relay's five deck-control tools (brief Appendix D, design §7) for a plain talk, and the
-meeting facilitator's six (doc/brief_updated.md §9) for a meeting package. Realtime specs, call parsing, output
-strings, and the pure checks behind the facilitator's state tools.
+"""The model's tools: five deck-control tools for a plain talk, and the meeting facilitator's six (doc/brief_updated.md
+§9) for a meeting package. Realtime specs, call parsing, output strings, and the pure checks behind the facilitator's
+state tools.
 
 The backend runs every tool itself (the controller). Outputs are JSON *strings*: an object would reach the model as
 "[object Object]" (doc/gotchas.md).
@@ -22,7 +22,7 @@ NEXT_SLIDE = "next_slide"
 HANDOFF_TO_HUMAN = "handoff_to_human"
 TOOL_NAMES = (START_PRESENTATION, RESUME_SCRIPT, GOTO_SLIDE, NEXT_SLIDE, HANDOFF_TO_HUMAN)
 
-# Brief Appendix D: each description tells the model *when* to call the tool.
+# Each description tells the model *when* to call the tool.
 DESCRIPTIONS = {
     START_PRESENTATION: "When the presenter hands you the stage: greet in one line, then call this.",
     RESUME_SCRIPT: "After answering an interruption, when it's time to continue where you left off.",
@@ -32,7 +32,7 @@ DESCRIPTIONS = {
                       "judgment.",
 }
 
-# Texts of the outputs in design §5.3 that are not just {"ok": true, "slide": ...}.
+# Texts of the outputs that are not just {"ok": true, "slide": ...}.
 NOTHING_TO_RESUME = "nothing to resume"
 NO_NEXT_SLIDE = "no next slide"
 MISSING_SLIDE_ID = "missing slide_id"
@@ -135,7 +135,7 @@ def json_output(**fields: Any) -> str:
     return json.dumps(fields, ensure_ascii=False)
 
 
-# --- the meeting facilitator's tools (doc/brief_updated.md §9; contract §4) ------------------------------------
+# --- the meeting facilitator's tools (doc/brief_updated.md §9) -------------------------------------------------
 
 LOOKUP_EVIDENCE = "lookup_evidence"
 GET_PRESENTATION_STATE = "get_presentation_state"
@@ -204,7 +204,7 @@ def _ids_param(description: str) -> dict:
 
 
 def meeting_tool_specs(talk: Talk) -> list[dict]:
-    """The function tools the facilitator is offered (contract §4, minus get_presentation_state: see
+    """The function tools the facilitator is offered (all but get_presentation_state: see
     MODEL_TOOL_NAMES); set_presentation_state's slide_id is an enum of the relay slide ids."""
     relay_ids = [slide.id for slide in talk.relay_slides]
     parameters = {
@@ -304,7 +304,7 @@ def parse_meeting_call(call_id: str, name: Any, arguments_json: Any, talk: Talk)
     return ToolCall(call_id, name, {"action": action, "slide_id": slide_id})
 
 
-# --- save_decision / record_clarification checks (contract §5.5) -----------------------------------------------
+# --- save_decision / record_clarification checks -----------------------------------------------------------------
 
 STOP_WORDS = frozenset("""
 a an and are as at be been but by can could did do does for from go goes going had has have he her his i i'll if in
@@ -334,7 +334,7 @@ def content_words(text: str) -> set[str]:
 
 @dataclass(frozen=True)
 class DecisionCheck:
-    """The outcome of checking a model's save_decision call against the meeting (contract §5.5)."""
+    """The outcome of checking a model's save_decision call against the meeting."""
 
     ok: bool
     args: dict  # normalized: decision, owner (the participant's own spelling, or ""), follow_up, source_ids (kept)
@@ -361,7 +361,7 @@ def check_decision(args: dict, *, participants: Iterable[str], draft: dict | Non
                    known_ids: Iterable[str], proposal: dict | None = None,
                    match: float = PROPOSAL_MATCH) -> DecisionCheck:
     """A save_decision call is kept only if its owner is a participant (any case) or empty, and its decision is the
-    one the group confirmed. With a validated `proposal` (model-based alignment, contract v5 §3) that means the same
+    one the group confirmed. With a validated `proposal` (model-based alignment) that means the same
     decision, or at least `match` of its content words in the proposal's decision and follow-up: overlap with the
     recent transcript proves nothing then. Without one (the legacy engine, or a save outside the decision flow) the
     decision must share at least one content word with the check's draft or with what was said lately (`recent`).

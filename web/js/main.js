@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Relay deck client (doc/design.md §4, §8): boot, the join flow (Arm: the pre-show checklist behind "Join with
+ * The page's client (in a Zoom run: the observer view the bot shares, `?view=observer`): boot, the join flow (Arm: the pre-show checklist behind "Join with
  * Computer Audio"), presenter keys and the meeting's controls, and the dispatch of deck-socket messages to the deck,
  * audio, captions, the meeting window and the info panel. The browser never decides what plays next: it plays what
  * the backend sends (Relay presenting live and answering arrive as replies; the rendered backup as `play`), does only
@@ -224,7 +224,7 @@ function onTalk(talk) {
     meeting.alignmentStatus(talk.alignment);
     checklist.heading(talkTitle(talk) || "On the Same Page", `The facilitator presents · ${talk.meeting.host || talk.presenter} hosts`);
     checklist.label("server", "Connected to the facilitator");
-    captions.labels("Facilitator", "Room");
+    captions.labels("Alice", "Room");
   } else {
     checklist.heading(talkTitle(talk) || "Relay", `Relay presents · ${talk.presenter} hosts`);
   }
@@ -317,7 +317,7 @@ async function preloadClips(talk) {
     checklist.set("clips", "fail", `${result.total - result.failed}/${result.total} · ${result.failed} unavailable (${first}): Play next skips them`);
     report("warning", `arm: ${result.failed}/${result.total} participant clips failed to load (${first})`);
   } else if (talk.demo.steps.some((s) => !s.action && s.fake)) {
-    checklist.set("clips", "warn", `${result.total}/${result.total} · FAKE: placeholder tones, not voices (relay.clips --fake)`);
+    checklist.set("clips", "warn", `${result.total}/${result.total} · FAKE: placeholder tones, not voices`);
   } else {
     checklist.set("clips", "ok", `${result.total}/${result.total}`);
   }
@@ -1352,7 +1352,7 @@ function onTalkMeeting(talk) {
   if (!talk.meeting) return;
   checklist.heading(talkTitle(talk) || "On the Same Page", `The facilitator presents · ${talk.meeting.host || talk.presenter} hosts`);
   checklist.label("server", "Connected to the facilitator");
-  captions.labels("Facilitator", S.speaker || "Room");
+  captions.labels("Alice", S.speaker || "Room");
 }
 
 /**

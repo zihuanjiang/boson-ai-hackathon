@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Captions band, the meeting's subtitles at the bottom of the shared screen (doc/design.md §8). Rendered narration
+ * Captions band, the meeting's subtitles at the bottom of the shared screen. Rendered narration
  * (the backup): karaoke from the rendered word timings (said / being said / still to come), one sentence-sized page
  * at a time; on a cut the cut word is marked and the resume word flagged; when narration resumes with `resume_word`
  * the highlight sweeps back from the cut word to it ("the jump back"). Live: what the user said ("You") and Relay's
