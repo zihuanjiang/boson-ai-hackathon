@@ -3275,6 +3275,18 @@ kbd {
   color: var(--fg-2);
 }
 
+/* The observer IS the facilitator's screen share in Zoom (live 2026-10-24): Zoom already shows the people and their
+   controls, so the share drops the participant tiles (they read as a second, fake call) and the toolbar; the slides,
+   the agenda and the Evidence / Notes / Transcript panel stay. */
+.meeting.observer {
+  grid-template-rows: var(--top-h) minmax(0, 1fr) 0;
+}
+
+.meeting.observer .people,
+.meeting.observer .toolbar {
+  display: none;
+}
+
 .meeting.observer .tb:disabled {
   color: var(--fg-dim);
   cursor: default;
