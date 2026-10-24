@@ -342,12 +342,30 @@ class DecisionCheck:
     dropped: tuple[str, ...] = ()  # source ids that don't exist
 
 
+PROPOSAL_MATCH = 0.6  # the share of a save_decision's content words that must be in the validated proposal
+PROPOSAL_MISMATCH = ("that decision doesn't match the one the group confirmed: save the decision as they confirmed "
+                     "it")
+
+
+def proposal_match(decision: str, proposal: dict) -> float:
+    """How much of a save_decision's content is in the validated proposal (its decision and follow-up): the share of
+    the decision's content words found there, 0.0 for an empty decision."""
+    words = content_words(decision)
+    if not words:
+        return 0.0
+    target = content_words(f"{proposal.get('decision') or ''} {proposal.get('follow_up') or ''}")
+    return len(words & target) / len(words)
+
+
 def check_decision(args: dict, *, participants: Iterable[str], draft: dict | None, recent: Iterable[str],
-                   known_ids: Iterable[str]) -> DecisionCheck:
-    """A save_decision call is kept only if its owner is a participant (any case) or empty, and its decision shares
-    at least one content word with the alignment check's draft or with what was said lately (`recent`: the last
-    utterances). Unknown source ids are dropped. (Live 2026-10-23: the model saved an invented decision with an
-    invented owner.)"""
+                   known_ids: Iterable[str], proposal: dict | None = None,
+                   match: float = PROPOSAL_MATCH) -> DecisionCheck:
+    """A save_decision call is kept only if its owner is a participant (any case) or empty, and its decision is the
+    one the group confirmed. With a validated `proposal` (model-based alignment, contract v5 §3) that means the same
+    decision, or at least `match` of its content words in the proposal's decision and follow-up: overlap with the
+    recent transcript proves nothing then. Without one (the legacy engine, or a save outside the decision flow) the
+    decision must share at least one content word with the check's draft or with what was said lately (`recent`).
+    Unknown source ids are dropped. (Live 2026-10-23: the model saved an invented decision with an invented owner.)"""
     names = {name.lower(): name for name in participants}
     known = set(known_ids)
     ids = [sid for sid in args.get("source_ids") or [] if sid in known]
@@ -362,6 +380,12 @@ def check_decision(args: dict, *, participants: Iterable[str], draft: dict | Non
         listed = ", ".join(names.values()) or "none"
         return DecisionCheck(False, normalized, f"unknown owner '{owner_raw}': the participants are {listed}",
                              dropped)
+    if proposal is not None:
+        if same_decision(normalized["decision"], str(proposal.get("decision") or "")):
+            return DecisionCheck(True, normalized, None, dropped)
+        if proposal_match(normalized["decision"], proposal) < match:
+            return DecisionCheck(False, normalized, PROPOSAL_MISMATCH, dropped)
+        return DecisionCheck(True, normalized, None, dropped)
     said = set()
     if draft:
         said |= content_words(f"{draft.get('decision') or ''} {draft.get('follow_up') or ''}")

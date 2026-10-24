@@ -392,22 +392,58 @@ def _clip_text(text: Any, limit: int) -> str:
     return _clip(" ".join(str(text or "").split()), limit)
 
 
-def intervention_instructions(events: dict | list[dict], lookup: Any, *, meeting: Any,
-                              clarifications: Iterable[Any] = ()) -> str:
-    """The `instructions` of an intervention (contract §5.4): the conflicting line and the confirmation that the
-    alignment check heard, what the documents and the earlier clarification say, and one neutral question before
-    the group confirms (live 2026-10-23: a good question, but 17 s long → short sentences, at most two)."""
-    events = [events] if isinstance(events, dict) else list(events)
-    lines = [f'You are the facilitator of the meeting "{meeting.title}". The group is discussing and is about to '
-             "confirm a decision. You stop them, politely, with one clarification."]
+ISSUE_TYPE_NAMES = {"evidence_conflict": "a conflict with the documents", "hidden_disagreement": "a hidden "
+                    "disagreement", "ambiguous_decision": "an unresolved detail"}
+QUESTION_MAX_WORDS = 30
+
+
+def is_semantic_event(event: Any) -> bool:
+    """An alignment event of the model-based analysis (relay/semantic.py): it carries the verified `evidence` list and
+    the model's suggested `question`; the legacy engine's events carry neither (only slot values)."""
+    return isinstance(event, dict) and (isinstance(event.get("evidence"), list) or "question" in event)
+
+
+def _clarification_lines(clarifications: Iterable[Any]) -> list[str]:
+    lines = []
+    for clarification in clarifications:
+        answer = getattr(clarification, "answer", None) or (clarification.get("answer")
+                                                            if isinstance(clarification, dict) else None)
+        cid = getattr(clarification, "id", None) or (clarification.get("id") if isinstance(clarification, dict)
+                                                     else None)
+        if answer:
+            lines.append(f"Earlier in this meeting it was clarified ({cid}): {_quoted(_clip_text(answer, 220))}")
+    return lines
+
+
+def _heard_line(events: list[dict]) -> str | None:
     quotes: list[str] = []
     for event in events:
         for key in ("quote", "confirm_quote"):
             quote = _clip_text(event.get(key), 200)
             if quote and quote not in quotes:
                 quotes.append(quote)
-    if quotes:
-        lines.append("You just heard: " + " Then: ".join(_quoted(quote) for quote in quotes))
+    return "You just heard: " + " Then: ".join(_quoted(quote) for quote in quotes) if quotes else None
+
+
+def intervention_instructions(events: dict | list[dict], lookup: Any, *, meeting: Any,
+                              clarifications: Iterable[Any] = ()) -> str:
+    """The `instructions` of an intervention (contract §5.4): the conflicting line and the confirmation that the
+    alignment check heard, what the documents and the earlier clarification say, and one neutral question before
+    the group confirms (live 2026-10-23: a good question, but 17 s long → short sentences, at most two).
+
+    A model-based issue (contract v5 §3: `issue_type`, verified `evidence`, the model's suggested `question`) is
+    worded by its kind: an evidence conflict as the documents against the claim; a hidden disagreement names both
+    readings neutrally and asks which one is meant; an unresolved detail names the proposal and the missing detail and
+    asks who, what or when. The suggested question is the wording to use, or a close paraphrase; never that anyone
+    is wrong. The legacy engine's events (slot values) keep today's wording."""
+    events = [events] if isinstance(events, dict) else list(events)
+    if events and is_semantic_event(events[0]):
+        return _semantic_intervention(events[0], lookup, meeting=meeting, clarifications=clarifications)
+    lines = [f'You are the facilitator of the meeting "{meeting.title}". The group is discussing and is about to '
+             "confirm a decision. You stop them, politely, with one clarification."]
+    heard = _heard_line(events)
+    if heard:
+        lines.append(heard)
     for event in events:
         label = event.get("label") or event.get("slot") or "a detail"
         sources = ", ".join(event.get("source_ids") or [])
@@ -418,18 +454,61 @@ def intervention_instructions(events: dict | list[dict], lookup: Any, *, meeting
     if results:
         lines.append("The documents say: " + " ".join(
             f"[{result.get('source_id')}] {_clip_text(result.get('excerpt'), 220)}" for result in results[:3]))
-    for clarification in clarifications:
-        answer = getattr(clarification, "answer", None) or (clarification.get("answer")
-                                                            if isinstance(clarification, dict) else None)
-        cid = getattr(clarification, "id", None) or (clarification.get("id") if isinstance(clarification, dict)
-                                                     else None)
-        if answer:
-            lines.append(f"Earlier in this meeting it was clarified ({cid}): {_quoted(_clip_text(answer, 220))}")
+    lines.extend(_clarification_lines(clarifications))
     # Live 2026-10-24 the earlier wording ("at most two short sentences") still gave ~40 words / 15 s with every date.
     lines.append('Say at most thirty words: start with "One clarification before we confirm:", then one short '
                  "sentence with what was established (the stage or the audience, naming the earlier clarification "
                  "or the source id; no dates), then one short yes-or-no question about the plan. Never say anyone "
                  "is wrong.")
+    lines.append(f"{PLAIN_SPEECH} {NO_TOOLS}")
+    return "\n".join(lines)
+
+
+def _semantic_intervention(event: dict, lookup: Any, *, meeting: Any, clarifications: Iterable[Any]) -> str:
+    issue_type = str(event.get("issue_type") or "evidence_conflict")
+    topic = _clip_text(event.get("topic") or event.get("label"), 120) or "the plan"
+    claim = _clip_text(event.get("claim") or event.get("claimed_label"), 240)
+    lines = [f'You are the facilitator of the meeting "{meeting.title}". The group is discussing and is about to '
+             f"confirm a decision, and you noticed {ISSUE_TYPE_NAMES.get(issue_type, 'an alignment issue')}. You "
+             "stop them, politely, with one clarification."]
+    heard = _heard_line([event])
+    if heard:
+        lines.append(heard)
+    if issue_type == "hidden_disagreement":
+        views = [view for view in event.get("participant_views") or [] if isinstance(view, dict)]
+        readings = "; ".join(
+            f"{view.get('speaker') or 'someone'} said {_quoted(_clip_text(view.get('quote'), 160))}"
+            + (f" (meaning {_clip_text(view.get('view'), 120)})" if view.get("view") else "") for view in views[:4])
+        lines.append(f"They seem to agree on {topic}, but their words point to different things"
+                     + (f": {readings}." if readings else "."))
+        ask = "Name both readings neutrally, as their own words, and ask which one they mean."
+    elif issue_type == "ambiguous_decision":
+        missing = ", ".join(_clip_text(detail, 100) for detail in (event.get("missing_details") or [])
+                            if str(detail).strip())
+        lines.append(f"They are about to commit to {topic}" + (f": {_quoted(claim)}." if claim else ".")
+                     + (f" Not settled yet: {missing}." if missing else ""))
+        if event.get("material_consequence"):
+            lines.append(f"Why it matters: {_clip_text(event.get('material_consequence'), 160)}")
+        ask = "Ask who, what or when, neutrally; don't suggest an answer."
+    else:
+        sources = ", ".join([*(event.get("source_ids") or []), *(event.get("clarification_ids") or []),
+                             *(event.get("decision_ids") or [])])
+        established = _clip_text(event.get("established_label") or event.get("established"), 220)
+        said = f"the group said {_quoted(claim)}" if claim else "what the group said"
+        lines.append(f"Mismatch on {topic}: {said}, but " + (
+            f"the documents say {_quoted(established)}" if established else "the documents say otherwise")
+            + (f" ({sources})" if sources else "") + ".")
+        results = _results(lookup)
+        if results:
+            lines.append("The documents say: " + " ".join(
+                f"[{result.get('source_id')}] {_clip_text(result.get('excerpt'), 220)}" for result in results[:3]))
+        ask = "Ask whether the plan changed, naming what the documents say (no dates); never which side is right."
+    lines.extend(_clarification_lines(clarifications))
+    question = _clip_text(event.get("question"), 240)
+    if question:
+        lines.append(f"Ask this, or a close paraphrase: {_quoted(question)}")
+    lines.append(f'Say at most {QUESTION_MAX_WORDS} words: start with "One clarification before we confirm:", then '
+                 f"one short neutral question. {ask} Never say anyone is wrong.")
     lines.append(f"{PLAIN_SPEECH} {NO_TOOLS}")
     return "\n".join(lines)
 

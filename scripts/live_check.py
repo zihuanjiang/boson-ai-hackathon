@@ -60,7 +60,7 @@ import requests
 import websockets
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # `uv run python scripts/live_check.py` from anywhere
-from relay.config import INPUT_MODES, NARRATION_MODES, ROOT, input_mode, load_settings  # noqa: E402
+from relay.config import ALIGNMENT_MODES, INPUT_MODES, NARRATION_MODES, ROOT, input_mode, load_settings  # noqa: E402
 from relay.demo_driver import DemoDeck, fetch_clips  # noqa: E402
 
 OUT = ROOT / "out" / "live"
@@ -90,6 +90,7 @@ MEETING_LINES = {
 }
 INTERRUPT_AT = "rollback-trigger"  # the run of show's cue: Alice asks as the rollback plan starts
 ROOM_PAUSE_S = 1.0  # a beat before each discussion line (the facilitator's echo window is 0.3 s)
+ROOM_ANALYSIS_S = 6.0  # claude mode: the Claude analysis of a line (contract v5) takes a few seconds; legacy: instant
 PRINTED = ("tool", "state", "cut", "play", "slide", "reply_start", "metric", "error", "connection", "evidence",
            "transcript", "alignment")
 
@@ -465,8 +466,9 @@ async def room_line(deck: Deck, line: bytes, speaker: str, label: str, expected:
         heard = transcript["utterance"]["text"]
     except AssertionError as exc:
         print(f"  !! {label}: {exc}")
-    await asyncio.sleep(0.3)
-    events = [m["event"]["type"] for m in inbound(deck, mark) if m.get("type") == "alignment"]
+    await asyncio.sleep(ROOM_ANALYSIS_S)  # claude mode: the analysis of the line comes back a few seconds later
+    events = [f"{m['event']['type']}:{m['event'].get('issue_type') or '-'}" for m in inbound(deck, mark)
+              if m.get("type") == "alignment"]  # type:issue_type (legacy events say evidence_conflict too)
     return {"label": label, "speaker": speaker, "expected": expected, "heard": heard, "events": events}
 
 
@@ -651,7 +653,8 @@ async def run_demo(port: int, talk: dict, *, out: Path | None = None, timeout_sc
             print(f"  !! fake (tone) clips: {fake}: the model can't understand those (relay.clips --force)")
         deck.clips = await fetch_clips(base, demo, get)
         print(f"meeting: {(hello.get('meeting') or {}).get('title')}; input {hello.get('input')}; "
-              f"{len(deck.clips)} participant clips; the microphone is off")
+              f"{len(deck.clips)} participant clips; the microphone is off; alignment "
+              f"{json.dumps(hello.get('alignment'))}")
         results = await deck.run()
         wrapped = True
         try:
@@ -746,7 +749,8 @@ async def run(port: int, talk: dict, lines: dict[str, bytes]) -> dict:
         hello = await deck.until(lambda m: m.get("type") == "hello", "the server's hello", 0, 10)
         mode = hello.get("narration_mode") or "rendered"
         meeting = hello.get("meeting")
-        print(f"narration: {mode}" + (f"; meeting: {meeting['title']}" if meeting else ""))
+        print(f"narration: {mode}" + (f"; meeting: {meeting['title']}" if meeting else "")
+              + (f"; alignment: {json.dumps(hello.get('alignment'))}" if meeting else ""))
         await deck.send({"type": "hello", "client": "deck"})
         await deck.send({"type": "arm"})
         await deck.until(lambda m: m.get("type") == "connection" and m.get("status") == "ready", "Realtime ready", 0, 20)
@@ -793,9 +797,15 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--input", choices=INPUT_MODES, default=None,
                         help="the server's input (default: clips for a talk with demo.yaml, else mic)")
+    parser.add_argument("--alignment", choices=ALIGNMENT_MODES, default=None,
+                        help="the server's alignment check (default: RELAY_ALIGNMENT, else claude; claude needs "
+                             "ANTHROPIC_API_KEY in .env, legacy a checks.yaml)")
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
-    settings = load_settings(input=args.input)
+    settings = load_settings(input=args.input, alignment=args.alignment)
+    if settings.alignment == "claude" and not settings.anthropic_api_key:
+        print("warning: ANTHROPIC_API_KEY missing in .env: claude alignment is unavailable (the discussion is "
+              "transcribed, nobody checks it); use --alignment legacy for the regex check")
     if not settings.api_key:
         print("BOSON_API_KEY missing in .env")
         return 2
@@ -807,6 +817,8 @@ def main() -> int:
         command += ["--narration", args.narration]
     if args.input:
         command += ["--input", args.input]
+    if args.alignment:
+        command += ["--alignment", args.alignment]
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     with (OUT / "server.log").open("w") as log:
         server = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)

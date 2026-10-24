@@ -437,3 +437,79 @@ def test_follow_up_handover_intervention_decision_and_wrapup_instructions(meetin
     assert "The meeting notes: Meeting notes: D1 Friday beta (owner Bob)." in wrapup
     assert "the decisions with their owners first, then the open questions" in wrapup and "Don't call any tool." in \
         wrapup
+
+
+def _meeting():
+    from relay.meeting import MeetingPackage, Participant, Phase
+
+    return MeetingPackage(title="Release 4.3 rollout review", host="Alice",
+                          participants=(Participant("Alice", "Product manager"), Participant("Bob", "Comms"),
+                                        Participant("Carol", "Engineering lead")),
+                          phases=(Phase("presentation", "Rollout plan"),
+                                  Phase("discussion", "Launch announcement", "What goes out on Friday?"),
+                                  Phase("wrapup", "Decisions")), statements=(), checks=None)
+
+
+def test_semantic_interventions_are_worded_by_issue_type():
+    """Contract v5 §3: the model-based issues (`issue_type`, verified `evidence`, the suggested `question`) get their
+    own wording; the legacy engine's events (slot values) keep today's."""
+    meeting = _meeting()
+    base = {"type": "intervene", "topic": "Friday's release stage", "label": "Friday's release stage",
+            "quote": "I'll draft the announcement for Friday's production launch to all customers.",
+            "quote_speaker": "Bob", "confirm_quote": "Sounds good. Let's finalize that.", "evidence": [],
+            "participant_views": [], "missing_details": [], "source_ids": [], "clarification_ids": [],
+            "decision_ids": [], "established_label": "", "question": None}
+    assert prompts.is_semantic_event(base) and not prompts.is_semantic_event({"type": "intervene", "slot": "x"})
+
+    conflict = {**base, "issue_type": "evidence_conflict", "claim": "Friday is a production launch to all customers",
+                "evidence": [{"kind": "source", "id": "REQ-2", "quote": "the beta release, not the production release"}],
+                "source_ids": ["REQ-2"], "established_label": "the beta release, not the production release",
+                "question": "Has the plan changed? The rollout plan has Friday as the beta release."}
+    lookup = {"results": [{"source_id": "REQ-2", "excerpt": "On Friday the beta release goes to the beta group."}]}
+    text = prompts.intervention_instructions(conflict, lookup, meeting=meeting,
+                                             clarifications=[{"id": "CL-1", "answer": "Friday is beta."}])
+    assert "you noticed a conflict with the documents" in text
+    assert ('You just heard: "I\'ll draft the announcement for Friday\'s production launch to all customers." Then: '
+            '"Sounds good. Let\'s finalize that."') in text
+    assert ("Mismatch on Friday's release stage: the group said \"Friday is a production launch to all customers\", "
+            "but the documents say \"the beta release, not the production release\" (REQ-2).") in text
+    assert "The documents say: [REQ-2] On Friday the beta release goes to the beta group." in text
+    assert 'Earlier in this meeting it was clarified (CL-1): "Friday is beta."' in text
+    assert ('Ask this, or a close paraphrase: "Has the plan changed? The rollout plan has Friday as the beta release."'
+            in text)
+    assert 'Say at most 30 words: start with "One clarification before we confirm:"' in text
+    assert "Never say anyone is wrong." in text and text.endswith("No lists, markdown or URLs. Don't call any tool.")
+    assert "the stage or the audience" not in text  # the legacy wording stays with the legacy engine
+
+    disagreement = {**base, "issue_type": "hidden_disagreement", "topic": "What Friday's release is", "claim": None,
+                    "quote": "Friday's release is fine by me.", "confirm_quote": "Agreed, Friday.",
+                    "participant_views": [
+                        {"speaker": "Alice", "utterance_id": "U1", "quote": "Friday is our beta", "view": "a beta release"},
+                        {"speaker": "Bob", "utterance_id": "U2", "quote": "Friday goes to everyone",
+                         "view": "the production release"}],
+                    "question": "Before we confirm Friday, do we mean the beta or the production release?"}
+    text = prompts.intervention_instructions(disagreement, None, meeting=meeting)
+    assert "you noticed a hidden disagreement" in text and "Mismatch" not in text and "documents say" not in text
+    assert ("They seem to agree on What Friday's release is, but their words point to different things: Alice said "
+            '"Friday is our beta" (meaning a beta release); Bob said "Friday goes to everyone" (meaning the production '
+            "release).") in text
+    assert "Name both readings neutrally, as their own words, and ask which one they mean." in text
+    assert 'Ask this, or a close paraphrase: "Before we confirm Friday, do we mean the beta or the production release?"' in text
+
+    ambiguous = {**base, "issue_type": "ambiguous_decision", "topic": "Deploying the new model on Friday",
+                 "claim": "Deploy the new model on Friday", "quote": "Let's deploy the new model Friday.",
+                 "confirm_quote": "Yes, let's do it.", "missing_details": ["who owns a rollback"],
+                 "material_consequence": "A failed deployment with nobody to roll it back",
+                 "question": "Who will own the rollback if the Friday deployment fails?"}
+    text = prompts.intervention_instructions([ambiguous], None, meeting=meeting)
+    assert "you noticed an unresolved detail" in text and "Mismatch" not in text
+    assert ('They are about to commit to Deploying the new model on Friday: "Deploy the new model on Friday". Not '
+            "settled yet: who owns a rollback.") in text
+    assert "Why it matters: A failed deployment with nobody to roll it back" in text
+    assert "Ask who, what or when, neutrally; don't suggest an answer." in text
+    assert 'Ask this, or a close paraphrase: "Who will own the rollback if the Friday deployment fails?"' in text
+    assert len(text.split("\n")) <= 9  # short: a long prompt made the model stop following it (doc/gotchas.md)
+
+    bare = prompts.intervention_instructions({**conflict, "question": None, "established_label": "", "source_ids": [],
+                                              "evidence": []}, None, meeting=meeting)
+    assert "but the documents say otherwise." in bare and "Ask this" not in bare

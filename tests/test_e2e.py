@@ -6,6 +6,10 @@ Narration is driven by the test: it sends `chunk_ended` when it wants rendered n
 `hold_narration`, drains a live narration reply (D52) itself, so it can cut in while one plays. The runs narrate
 from the renders unless they ask for `narration="live"`.
 Browser code itself is covered by scripts/e2e_chrome.py (Chrome can't run inside the Claude Code sandbox).
+
+**Legacy alignment** (contract v5 §5): the meeting runs here were written for the regex engine and `running_app`
+pins `alignment="legacy"` by default (the fake Realtime does not fake Claude); the model-based discussion over the
+same stack, with an injected `FakeAnalyzer`, is in tests/test_semantic_flow.py.
 """
 
 from __future__ import annotations
@@ -129,16 +133,18 @@ def tool_applied(name: str):
 
 @asynccontextmanager
 async def running_app(tmp_path, connector: FakeConnector, *, talk_dir: Path = TALK_DIR, rendered: bool = False,
-                      narration: str = "rendered", turn_detection: dict | None = VAD_TURN_DETECTION):
+                      narration: str = "rendered", turn_detection: dict | None = VAD_TURN_DETECTION,
+                      alignment: str = "legacy", analyzer=None):
     """Real uvicorn on an ephemeral port. Narration: synthetic timings without audio, or (`rendered`) the renders in
     `tmp_path/talks/<id>/`, loaded like `relay serve` loads them; presented live with `narration="live"`. Turns:
     server VAD (the fake's speech events), the path these runs were written for; `turn_detection=None` = manual
-    turns (the default since contract v3: the backend's segmenter ends a turn)."""
+    turns (the default since contract v3: the backend's segmenter ends a turn). Alignment: the regex engine
+    (`legacy`, what these runs were written for) or `claude` with an injected `analyzer` (a FakeAnalyzer)."""
     talk = load_talk(talk_dir)
-    settings = Settings(fake_realtime=True, narration=narration,
+    settings = Settings(fake_realtime=True, narration=narration, alignment=alignment,
                         turn_detection=dict(turn_detection) if turn_detection is not None else None)
     app = create_app(talk_dir, settings, out_root=tmp_path, connect=connector,
-                     chunks=None if rendered else synthetic_chunks(talk))
+                     chunks=None if rendered else synthetic_chunks(talk), analyzer=analyzer)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="on"))
     task = asyncio.create_task(server.serve())
     for _ in range(200):

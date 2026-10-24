@@ -170,8 +170,11 @@ def assert_in_order(timeline: list[tuple[str, dict]], markers: list[tuple]) -> N
 
 
 class Harness:
+    """The controller on recording ports and a manual clock. `analyzer`: the alignment analysis of a meeting in claude
+    mode (a `semantic.FakeAnalyzer` in tests/test_semantic_flow.py); None = unavailable, as without the key."""
+
     def __init__(self, talk: Talk, chunks: dict[tuple[str, int], RenderedChunk], settings: Settings, *,
-                 ready: bool = True, clock: ManualClock | None = None):
+                 ready: bool = True, clock: ManualClock | None = None, analyzer: Any = None):
         self.talk, self.chunks, self.settings = talk, chunks, settings
         self.timeline: list[tuple[str, dict]] = []
         self.browser = RecordingBrowser(self.timeline)
@@ -180,7 +183,7 @@ class Harness:
         self.logs: list[tuple[str, dict]] = []
         self.expect_errors = False
         self.c = Controller(talk, chunks, settings, browser=self.browser, realtime=self.realtime, clock=self.clock,
-                            log=lambda kind, data: self.logs.append((kind, copy.deepcopy(data))))
+                            log=lambda kind, data: self.logs.append((kind, copy.deepcopy(data))), analyzer=analyzer)
         self._responses = itertools.count(1)
         self._calls = itertools.count(1)
 

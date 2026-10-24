@@ -202,6 +202,39 @@ def test_save_decision_checks_owner_words_and_sources():
     assert not check({"decision": " "}, participants=PEOPLE, draft=DRAFT, recent=[], known_ids=set()).ok
 
 
+PROPOSAL = {"decision": "Friday is the beta release, announced to beta users only", "owner": "Bob",
+            "follow_up": "Bob sends the release notes to the beta group"}
+
+
+def test_save_decision_must_match_the_validated_proposal():
+    """Contract v5 §3 (claude mode): the model's decision is kept only as the proposal's decision or sharing at least
+    60 % of its content words with the proposal's decision and follow-up; what was said lately proves nothing then."""
+    check = tools.check_decision
+    recent = ["Use the new onboarding flow for the pilot program", "Sounds good. Let's finalize that."]
+    same = check({"decision": "Friday is the beta release, announced to beta users only.", "owner": "bob"},
+                 participants=PEOPLE, draft=None, recent=recent, known_ids=set(), proposal=PROPOSAL)
+    assert same.ok and same.args["owner"] == "Bob"
+    paraphrased = check({"decision": "Friday's beta release is announced to the beta users only, Bob sends the notes"},
+                        participants=PEOPLE, draft=None, recent=[], known_ids=set(), proposal=PROPOSAL)
+    assert paraphrased.ok
+    assert tools.proposal_match("Friday beta release announced to beta users", PROPOSAL) == 1.0
+    assert tools.proposal_match("", PROPOSAL) == 0.0
+    invented = check({"decision": "Use the new onboarding flow for the pilot program", "owner": "Bob"},
+                     participants=PEOPLE, draft=DRAFT, recent=recent, known_ids=set(), proposal=PROPOSAL)
+    assert not invented.ok and invented.error == tools.PROPOSAL_MISMATCH  # the transcript overlap doesn't save it
+    half = check({"decision": "Friday beta release pilot onboarding flow"}, participants=PEOPLE, draft=None,
+                 recent=[], known_ids=set(), proposal=PROPOSAL)
+    assert not half.ok and 0.0 < tools.proposal_match("Friday beta release pilot onboarding flow", PROPOSAL) < 0.6
+    assert check({"decision": "Friday beta release pilot onboarding flow"}, participants=PEOPLE, draft=None, recent=[],
+                 known_ids=set(), proposal=PROPOSAL, match=0.4).ok  # the bar is configurable
+    stranger = check({"decision": "Friday is the beta release, announced to beta users only", "owner": "Alex"},
+                     participants=PEOPLE, draft=None, recent=[], known_ids=set(), proposal=PROPOSAL)
+    assert not stranger.ok and stranger.error.startswith("unknown owner 'Alex'")  # the owner check still applies
+    legacy = check({"decision": "Use the new onboarding flow for the pilot program"}, participants=PEOPLE, draft=None,
+                   recent=recent, known_ids=set())
+    assert legacy.ok  # without a proposal (legacy mode, or a save outside the decision flow): today's check
+
+
 def test_content_words_and_same_decision():
     assert tools.content_words("Bob's announcement goes to the beta users only!") == {
         "bob", "announcement", "beta", "user", "only"}

@@ -12,6 +12,11 @@ from relay.timeline import RenderedChunk, chunk_hash, synthetic_timing
 TEST_TALK_DIR = ROOT / "talks" / "test"
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "legacy: tests of the regex alignment engine (`--alignment legacy`, contract "
+                                       "v5 §5); the semantic path never uses it")
+
+
 def synthetic_chunks(talk: Talk) -> dict[tuple[str, int], RenderedChunk]:
     """RenderedChunks for every relay chunk of `talk`, with synthetic word timings and no wav files."""
     chunks = {}

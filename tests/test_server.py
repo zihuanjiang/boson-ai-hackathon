@@ -28,7 +28,8 @@ from tests.conftest import TEST_TALK_DIR, synthetic_chunks
 
 ENV_VARS = ("BOSON_API_KEY", "BOSON_BASE_URL", "BOSON_REALTIME_URL", "MIC_MODE", "RELAY_TURN_DETECTION",
             "RELAY_TEMPERATURE", "RELAY_FULL_SESSION_UPDATE", "RELAY_FAKE_REALTIME", "RELAY_HOST", "RELAY_PORT",
-            "RELAY_FAKE_DROP_AFTER", "RELAY_NARRATION")
+            "RELAY_FAKE_DROP_AFTER", "RELAY_NARRATION", "RELAY_ALIGNMENT", "ANTHROPIC_API_KEY", "RELAY_ALIGNMENT_MODEL",
+            "RELAY_ALIGNMENT_EFFORT", "RELAY_ALIGNMENT_TIMEOUT_S", "RELAY_ALIGNMENT_MAX_TOKENS")
 LIVE_NOTE = "Relay: narration: live (Higgs Realtime presents every slide; the TTS 3 renders are the offline backup)"
 BACKUP_ONLY = "live narration needs Higgs Realtime too: Relay will play the backup narration (the TTS 3 renders) only"
 VALID_SESSION = {"type": "realtime", "model": "higgs-realtime", "instructions": "You are Relay.\n\nPhase: opening",
@@ -43,9 +44,9 @@ class StubController:
     """Records every call; greets on connect and echoes each deck message back through the BrowserPort."""
 
     def __init__(self, talk: Any, chunks: Any, settings: Settings, *, browser: Any, realtime: Any,
-                 log: Callable[[str, dict], None]) -> None:
+                 log: Callable[[str, dict], None], analyzer: Any = None) -> None:
         self.talk, self.chunks, self.settings = talk, chunks, settings
-        self.browser, self.realtime, self.log = browser, realtime, log
+        self.browser, self.realtime, self.log, self.analyzer = browser, realtime, log, analyzer
         self.calls: list[tuple] = []
         self.statuses: list[tuple[str, str | None]] = []
         self.events: list[dict] = []
@@ -151,8 +152,8 @@ def wait_for(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
         time.sleep(0.005)
 
 
-def log_records(tmp_path: Path) -> list[dict]:
-    (path,) = (tmp_path / "out" / "logs").glob("test-*.jsonl")
+def log_records(tmp_path: Path, talk: str = "test") -> list[dict]:
+    (path,) = (tmp_path / "out" / "logs").glob(f"{talk}-*.jsonl")
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
@@ -316,9 +317,140 @@ def test_healthz_reports_link_and_controller(tmp_path: Path, web: Path) -> None:
     app, controller = build(tmp_path, web)  # no key, not fake: the link reports the missing key at startup
     with TestClient(app) as client:
         assert client.get("/healthz").json() == {"ok": True, "realtime": "error", "state": "IDLE",
-                                                 "detail": "BOSON_API_KEY missing", "deck": False}
+                                                 "detail": "BOSON_API_KEY missing", "deck": False,
+                                                 "alignment": {"mode": "claude", "model": "claude-opus-5-5",
+                                                               "available": False}}
     assert controller.statuses[0] == ("error", "BOSON_API_KEY missing")
     assert controller.statuses[-1] == ("offline", None)  # stopped on shutdown
+
+
+# --- the alignment check's wiring (contract v5 §0, §3) ------------------------------------------------------------
+
+def test_claude_mode_without_a_key_builds_no_analyzer_and_says_unavailable(tmp_path: Path, web: Path) -> None:
+    """No key: the server starts, the controller gets no analyzer, /api/talk and /healthz say `unavailable`; the
+    legacy engine is never a fallback."""
+    from tests.test_meeting_flow import write_meeting
+
+    talk_dir = write_meeting(tmp_path / "talks" / "meeting")
+    app, controller = build(tmp_path, web, talk_dir=talk_dir)
+    assert controller.analyzer is None and app.state.analyzer is None
+    with TestClient(app) as client:
+        data = client.get("/api/talk").json()
+        assert data["alignment"] == {"mode": "claude", "model": "claude-opus-5-5", "available": False}
+        assert client.get("/healthz").json()["alignment"] == data["alignment"]
+    start = next(record for record in log_records(tmp_path, "meeting") if record["kind"] == "server_start")
+    assert start["alignment"] == {"mode": "claude", "model": "claude-opus-5-5", "key_set": False, "analyzer": None}
+    assert "sk-ant" not in json.dumps(start)
+
+
+def test_claude_mode_with_a_key_builds_the_claude_analyzer(tmp_path: Path, web: Path) -> None:
+    from relay.semantic import ClaudeAnalyzer
+    from tests.test_meeting_flow import write_meeting
+
+    talk_dir = write_meeting(tmp_path / "talks" / "meeting")
+    app, controller = build(tmp_path, web, Settings(anthropic_api_key="sk-ant-test", alignment_model="claude-opus-5-5"),
+                            talk_dir=talk_dir)
+    assert isinstance(controller.analyzer, ClaudeAnalyzer) and controller.analyzer.model == "claude-opus-5-5"
+    with TestClient(app) as client:
+        assert client.get("/api/talk").json()["alignment"] == {"mode": "claude", "model": "claude-opus-5-5",
+                                                               "available": True}
+    start = next(record for record in log_records(tmp_path, "meeting") if record["kind"] == "server_start")
+    assert start["alignment"]["key_set"] is True and start["alignment"]["analyzer"] == "ClaudeAnalyzer"
+    assert all("sk-ant-test" not in json.dumps(record) for record in log_records(tmp_path, "meeting"))  # never logged
+
+
+def test_an_injected_analyzer_reaches_the_controller(tmp_path: Path, web: Path) -> None:
+    from relay.semantic import FakeAnalyzer
+    from tests.test_meeting_flow import write_meeting
+
+    fake = FakeAnalyzer()
+    talk_dir = write_meeting(tmp_path / "talks" / "meeting")
+    app, controller = build(tmp_path, web, talk_dir=talk_dir, analyzer=fake)
+    assert controller.analyzer is fake
+    with TestClient(app) as client:
+        assert client.get("/api/talk").json()["alignment"] == {"mode": "claude", "model": "claude-opus-5-5",
+                                                               "available": True}
+    app.state.log.close()
+
+
+def test_legacy_and_off_modes_in_the_payloads(tmp_path: Path, web: Path) -> None:
+    from tests.test_meeting_flow import write_meeting
+
+    talk_dir = write_meeting(tmp_path / "talks" / "meeting")
+    app, _ = build(tmp_path, web, Settings(alignment="legacy"), talk_dir=talk_dir)
+    with TestClient(app) as client:
+        assert client.get("/api/talk").json()["alignment"] == {"mode": "legacy", "model": None, "available": True}
+    (talk_dir / "checks.yaml").unlink()  # legacy without a checks.yaml: nothing checks, and it says so (off)
+    app, _ = build(tmp_path, web, Settings(alignment="legacy"), talk_dir=talk_dir)
+    with TestClient(app) as client:
+        assert client.get("/api/talk").json()["alignment"] == {"mode": "off", "model": None, "available": False}
+    app, _ = build(tmp_path, web, Settings(alignment="off"), talk_dir=talk_dir)
+    with TestClient(app) as client:
+        assert client.get("/api/talk").json()["alignment"] == {"mode": "off", "model": None, "available": False}
+    plain, _ = build(tmp_path, web)  # a plain talk: no alignment at all
+    with TestClient(plain) as client:
+        assert client.get("/api/talk").json()["alignment"] is None
+
+
+def test_the_real_controller_reports_the_alignment_status(tmp_path: Path, web: Path) -> None:
+    """The default factory passes the analyzer on; hello, /api/talk and /healthz carry the controller's own status."""
+    from relay.semantic import FakeAnalyzer
+    from tests.test_meeting_flow import write_meeting
+
+    talk_dir = write_meeting(tmp_path / "talks" / "meeting")
+    talk = load_talk(talk_dir)
+    app = create_app(talk_dir, Settings(), out_root=tmp_path / "out", chunks=synthetic_chunks(talk), web_dir=web,
+                     analyzer=FakeAnalyzer())
+    controller = app.state.controller
+    assert controller.alignment_mode == "claude" and controller.alignment_available
+    with TestClient(app) as client:
+        info = {"mode": "claude", "model": "fake-analyzer", "available": True}
+        assert client.get("/api/talk").json()["alignment"] == info
+        health = client.get("/healthz").json()["alignment"]
+        assert {key: health[key] for key in info} == info and health["analyses"] == 0 and health["in_flight"] is False
+        with client.websocket_connect("/ws") as ws:
+            hello = ws.receive_json()
+            assert hello["alignment"] == info and hello["snapshot"]["alignment"]["mode"] == "claude"
+
+
+def test_the_cli_has_an_alignment_flag_and_warns_without_a_key(served: dict[str, Any],
+                                                                capsys: pytest.CaptureFixture[str], tmp_path: Path,
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.test_meeting_flow import write_meeting
+
+    talk_dir = write_meeting(tmp_path / "talks" / "meeting")
+    assert cli.main(["serve", str(talk_dir), "--fake-realtime"]) == 0
+    assert served["settings"].alignment == "claude"
+    out = capsys.readouterr().out
+    assert f"  warning: {cli.NO_CLAUDE_KEY}" in out.splitlines()
+    assert "Relay: alignment: Claude (claude-opus-5-5) unavailable: ANTHROPIC_API_KEY missing" in out.splitlines()
+    assert cli.main(["serve", str(talk_dir), "--fake-realtime", "--alignment", "legacy"]) == 0
+    assert served["settings"].alignment == "legacy"
+    out = capsys.readouterr().out
+    assert cli.NO_CLAUDE_KEY not in out and "alignment: legacy patterns (checks.yaml: 2 slot(s))" in out
+    assert cli.main(["serve", str(talk_dir), "--fake-realtime", "--alignment", "off"]) == 0
+    assert f"  warning: {cli.ALIGNMENT_OFF}" in capsys.readouterr().out.splitlines()
+    monkeypatch.setenv("RELAY_ALIGNMENT", "legacy")
+    assert cli.main(["serve", str(talk_dir), "--fake-realtime", "--alignment", "claude"]) == 0  # the flag wins
+    assert served["settings"].alignment == "claude"
+    capsys.readouterr()
+    (talk_dir / "checks.yaml").unlink()
+    assert cli.main(["serve", str(talk_dir), "--fake-realtime", "--alignment", "legacy"]) == 0
+    assert f"  warning: {cli.NO_CHECKS}" in capsys.readouterr().out.splitlines()
+    assert cli.main(["serve", "talks/test", "--fake-realtime"]) == 0  # a plain talk: no alignment line at all
+    assert "alignment" not in capsys.readouterr().out
+
+
+def test_the_cli_describes_claude_alignment_with_a_key(served: dict[str, Any], capsys: pytest.CaptureFixture[str],
+                                                        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.test_meeting_flow import write_meeting
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    talk_dir = write_meeting(tmp_path / "talks" / "meeting")
+    assert cli.main(["serve", str(talk_dir), "--fake-realtime"]) == 0
+    out = capsys.readouterr().out
+    assert "Relay: alignment: Claude (claude-opus-5-5, effort low, timeout 20 s) reads the documents" in out
+    assert "separate Anthropic billing" in out and "sk-ant-test" not in out and "warning: alignment" not in out
 
 
 def test_create_app_rejects_bad_talks_and_missing_renders(tmp_path: Path, web: Path) -> None:
@@ -744,8 +876,9 @@ def test_default_factory_builds_the_real_controller(tmp_path: Path, web: Path, m
     app = create_app(TEST_TALK_DIR, Settings(), out_root=tmp_path / "out", chunks=synthetic_chunks(talk), web_dir=web)
     assert isinstance(app.state.controller, FakeModule.Controller)
     assert [type(arg).__name__ for arg in seen["args"]] == ["Talk", "dict", "Settings"]
-    assert set(seen["kwargs"]) == {"browser", "realtime", "log"}
+    assert set(seen["kwargs"]) == {"browser", "realtime", "log", "analyzer"}
     assert seen["kwargs"]["browser"] is app.state.hub and seen["kwargs"]["realtime"] is app.state.link
+    assert seen["kwargs"]["analyzer"] is None  # no key: no Claude adapter
 
 
 # --- python -m relay serve ----------------------------------------------------------------------------------
