@@ -108,6 +108,11 @@ eq("nothing to compare: hello without version", T.staleTalk(v1, "test", undefine
 eq("nothing to compare: page without version", T.staleTalk(talk, "test", "v2"), null);
 eq("nothing to compare: no talk yet / odd fields", [T.staleTalk(null, "x", "y"), T.staleTalk(v1, null, null), T.staleTalk(v1, "", "")], [null, null, null]);
 
+// the simulated online meeting (contract v3.1 §2: /api/talk.demo, null without demo.yaml)
+eq("no demo", [talk.demo, T.normalizeTalk(null).demo], [null, null]);
+const withDemo = T.normalizeTalk({ ...server, demo: { input: "clips", steps: [{ id: "alice-question", speaker: "Alice", say: "Hi?", when: { heard_ms: 1500 }, audio: "/clips/alice-question.wav", duration_ms: 900 }] } });
+eq("a demo", [withDemo.demo.input, withDemo.demo.steps[0].id, withDemo.demo.steps[0].audio, withDemo.demo.steps[0].when.heard_ms], ["clips", "alice-question", "/clips/alice-question.wav", 1500]);
+
 // fragments while a chunk plays: cumulative max, human = all (null)
 eq("fragments per chunk", [0, 1, 2].map((k) => T.fragmentFor(talk.slides[1], k)), [1, 1, 3]);
 eq("no fragment fields → 0", T.fragmentFor(talk.slides[2], 0), 0);

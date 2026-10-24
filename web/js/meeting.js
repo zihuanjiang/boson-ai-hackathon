@@ -7,12 +7,16 @@
  * slides, typed questions), the toolbar (mic, panels, slides, More, Leave) and the "you left" card.
  * A meeting talk (On the Same Page, contract v3 §7: `talk.meeting` set) renames the window ("On the Same Page", the
  * "Facilitator" tile) and adds the agenda strip, the tabbed side panel (Evidence, Notes, Transcript, Chat), the
- * evidence callout, the speaker picker, the room mic and "Restart meeting" (panels.js). A plain talk looks and
- * behaves exactly like Relay. DOM only: main.js owns the socket and every action. It calls these methods from its
- * message handlers, and the controls call back through MeetingHandlers.
+ * evidence callout, the speaker picker, the room mic and "Restart meeting" (panels.js). A simulated online meeting
+ * (contract v3.1 §4: the participants are prerecorded clips, the mic is off) replaces the room's tile with one tile
+ * per participant (a "Recorded" tag, a speaking ring from their own clip), shows the disclosure badge in the topbar,
+ * the demo script's controls in the agenda strip and the routing line in Meeting info, and the facilitator's tile
+ * says who interrupted it (a barge-in). A plain talk looks and behaves exactly like Relay. DOM only: main.js owns the
+ * socket and every action. It calls these methods from its message handlers, and the controls call back through
+ * MeetingHandlers.
  */
 import { FACILITATOR_KINDS, idKind } from "./facilitator.js";
-import { Agenda, Callout, SidePanel, Speakers } from "./panels.js";
+import { Agenda, Callout, DemoStrip, ParticipantTiles, SidePanel, Speakers } from "./panels.js";
 import { RT_LABELS } from "./status.js";
 import { talkTitle } from "./talk.js";
 import { clockText, meterLevel, toolLabel } from "./util.js";
@@ -53,6 +57,8 @@ import { clockText, meterLevel, toolLabel } from "./util.js";
  * @property {() => void} [onPhase]  the agenda's phase button (a meeting talk)
  * @property {() => void} [onReset]  More → Restart meeting, confirmed (a meeting talk)
  * @property {(name: string|null) => void} [onSpeaker]  a speaker picked in the discussion (null: the room)
+ * @property {() => void} [onDemoRun]  Run demo / Stop demo (a simulated online meeting)
+ * @property {() => void} [onDemoPlay]  Play next: the next step now, by hand
  */
 
 /**
@@ -86,6 +92,7 @@ export const RELAY_QUIET_MS = 500; // …while the AI has been quiet this long (
 export const HINT_EVERY_MS = 20000;
 export const HINT_SHOW_MS = 5000;
 export const RESET_CONFIRM_MS = 5000; // "Restart meeting" waits this long for its confirming second click
+export const BARGE_IN_MS = 2000; // the facilitator's tile says who interrupted it this long
 const CHAT_MAX_LINES = 200;
 /** @type {ReadonlySet<string>} */
 const MENU_ACTIONS = new Set(["pause", "human", "relay", "prev", "next", "type"]);
@@ -229,6 +236,14 @@ export class Meeting {
     this.meetingOffsetMs = null;
     /** @type {ReturnType<typeof setTimeout>|undefined} */
     this.resetTimer = undefined;
+    // a simulated online meeting (the participants are prerecorded clips, the mic is off)
+    this.clips = false;
+    /** @type {Map<string, number>} participant → performance.now() of their clip's last loud frame */
+    this.clipLoudAt = new Map();
+    /** @type {{name: string, until: number}|null} who interrupted the facilitator (a barge-in), shown on its tile */
+    this.interrupted = null;
+    /** @type {ReturnType<typeof setTimeout>|undefined} */
+    this.interruptTimer = undefined;
 
     this.brandName = part(root, ".brand-name");
     this.viewingText = part(root, ".viewing-text");
@@ -277,6 +292,13 @@ export class Meeting {
     this.speakers = new Speakers(part(root, ".speakers"), (name) => this.handlers.onSpeaker?.(name));
     this.callout = new Callout(part(root, ".callout"));
     this.side = new SidePanel(this.chat, { onChange: () => this.renderUnread() });
+    this.demoPill = part(root, ".demo-pill");
+    this.routingEl = part(root, ".strip-routing");
+    this.demoStrip = new DemoStrip(part(root, ".demo"), {
+      onRun: () => this.handlers.onDemoRun?.(),
+      onPlay: () => this.handlers.onDemoPlay?.(),
+    });
+    this.participants = new ParticipantTiles(this.people);
     this.install();
     this.renderMic();
     this.renderYou();
@@ -287,11 +309,12 @@ export class Meeting {
     const h = this.handlers;
     const mic = this.micButton;
     mic.addEventListener("click", () => {
-      if (this.room) h.onMic("room");
+      if (this.clips) h.onAction("type"); // the mic is off: a line can still be typed
+      else if (this.room) h.onMic("room");
       else if (this.micMode !== "hold") h.onMic("tap");
     });
     mic.addEventListener("pointerdown", (/** @type {PointerEvent} */ e) => {
-      if (this.room || this.micMode !== "hold" || e.button > 0) return;
+      if (this.clips || this.room || this.micMode !== "hold" || e.button > 0) return;
       e.preventDefault(); // no focus ring, no text selection while held
       this.holding = true;
       h.onMic("down");
@@ -427,8 +450,10 @@ export class Meeting {
 
   renderRelay() {
     const s = this.current;
-    this.relayStatusEl.textContent = relayStatus(s, this.presenter);
-    this.relayTile.classList.toggle("thinking", (s.state === "REPLYING" || s.state === "INTERVENING") && s.thinking);
+    const cut = this.interrupted !== null && performance.now() < this.interrupted.until ? this.interrupted.name : null;
+    this.relayStatusEl.textContent = cut ? `Interrupted by ${cut}` : relayStatus(s, this.presenter);
+    setFlag(this.relayTile, "data-interrupted", cut !== null);
+    this.relayTile.classList.toggle("thinking", !cut && (s.state === "REPLYING" || s.state === "INTERVENING") && s.thinking);
   }
 
   /**
@@ -588,6 +613,82 @@ export class Meeting {
     this.agenda.unlock();
   }
 
+  // ---- the simulated online meeting (prerecorded participants, the mic off)
+
+  /**
+   * The participants are prerecorded clips: their tiles replace the room's, the topbar says so, the agenda strip gets
+   * the demo script's controls, Meeting info the routing line, and the mic button says the mic is off.
+   * @param {{name: string, role: string}[]} participants
+   */
+  enableDemo(participants) {
+    if (this.clips) return;
+    this.clips = true;
+    this.root.classList.add("has-demo");
+    this.youTile.hidden = true;
+    this.hideHint();
+    this.participants.setup(participants);
+    this.demoPill.hidden = false;
+    this.routingEl.hidden = false;
+    this.demoStrip.show(true);
+    this.renderMic();
+  }
+
+  /** The demo strip: the script's state and its next step. @param {import("./panels.js").DemoStripView} view */
+  demoView(view) {
+    if (this.clips) this.demoStrip.render(view);
+  }
+
+  /**
+   * A participant's clip started (their tile speaks; a clip played by hand says so in the chat too).
+   * @param {string} name
+   * @param {boolean} manual
+   */
+  clipStarted(name, manual) {
+    this.participants.playing(name, manual);
+    if (manual) this.note("demo", `${name}'s clip played by hand (Play next)`);
+  }
+
+  /** No clip plays any more. */
+  clipStopped() {
+    this.participants.playing(null, false);
+  }
+
+  /** Something the demo script did on its own (disclosed in the chat). @param {string} text */
+  scriptNote(text) {
+    this.note("demo", text);
+  }
+
+  /**
+   * A participant's audible level (every animation frame while joined): their tile's border and ring, from their own
+   * clip's bus, never the facilitator's output.
+   * @param {string} name
+   * @param {number} level  RMS 0..1
+   */
+  participantLevel(name, level) {
+    const now = performance.now();
+    if (level > SPEAKING_LEVEL) this.clipLoudAt.set(name, now);
+    const speaking = now - (this.clipLoudAt.get(name) ?? -Infinity) < SPEAKING_HOLD_MS;
+    this.participants.level(name, speaking, speaking ? Math.round(meterLevel(level) * 50) / 50 : 0);
+  }
+
+  /**
+   * A barge-in (the backend heard a participant's clip start while the facilitator spoke and cut it): the
+   * facilitator's tile says who, for BARGE_IN_MS; the chat keeps a line.
+   * @param {string} name
+   * @param {number|null} playedMs  how much of the facilitator's reply had been heard
+   */
+  bargeIn(name, playedMs) {
+    const who = name || "a participant";
+    this.interrupted = { name: who, until: performance.now() + BARGE_IN_MS };
+    clearTimeout(this.interruptTimer);
+    this.interruptTimer = setTimeout(() => {
+      this.interrupted = null;
+      this.renderRelay();
+    }, BARGE_IN_MS);
+    this.note("barge", `${who} interrupted ${this.names.ai}${playedMs !== null ? ` (${(playedMs / 1000).toFixed(1)} s into its reply)` : ""}`);
+    this.renderRelay();
+  }
+
   // ---- mic and levels
 
   /**
@@ -621,6 +722,15 @@ export class Meeting {
   }
 
   renderMic() {
+    if (this.clips) {
+      // a simulated online meeting: the physical mic stays off (the participants are clips); a click types a line
+      this.micLabel.textContent = "Mic off";
+      this.micButton.title = `The microphone is off: the participants are prerecorded clips streamed to ${this.names.ai}. Click to type a line instead (T)`;
+      setFlag(this.micButton, "aria-pressed", false);
+      this.micButton.dataset.muted = "true";
+      this.micButton.dataset.room = "false";
+      return;
+    }
     const { label, title } = micButtonText(this.micMode, this.open, this.room, this.names.ai);
     const live = this.room ? !this.room.muted : this.open;
     this.micLabel.textContent = label;
@@ -760,14 +870,15 @@ export class Meeting {
    * line of the transcript.
    * @param {{role?: unknown, text?: unknown, final?: unknown}} msg
    * @param {string|null} kind  the reply's kind (assistant captions): narration, answer, intervention, …
+   * @param {string} [who]  who a user line is from ("You"; a prerecorded participant: "Alice (recorded)")
    */
-  caption(msg, kind) {
+  caption(msg, kind, who = "You") {
     if (!msg.final) return;
     const text = typeof msg.text === "string" ? msg.text.trim() : "";
     if (msg.role === "user") {
       const echo = this.typedEcho;
       this.typedEcho = null;
-      if (text && text !== echo) this.say("you", "You", text);
+      if (text && text !== echo) this.say("you", who, text);
     } else if (msg.role === "assistant") {
       if (kind === "narration") {
         this.note("presented", this.slideTitle ? `${this.names.aiCap} presented "${this.slideTitle}"` : `${this.names.aiCap} presented a slide`);

@@ -404,9 +404,11 @@ def test_follow_up_handover_intervention_decision_and_wrapup_instructions(meetin
     decision = prompts.decision_instructions(draft, [("Carol", "Yes, beta users only."), (None, "")],
                                              meeting=meeting)
     assert 'Carol: "Yes, beta users only."' in decision and "Someone" not in decision
-    assert (prompts.DRAFT_PREFIX + '{"decision": "Friday: beta", "owner": "Bob", "follow_up": "Bob notifies beta '
-            'users", "source_ids": ["REQ-2"]}') in decision.splitlines()
-    assert "Call save_decision with these values, correcting them only if the quotes say otherwise." in decision
+    # the follow-up (the action item) is the model's own words for the owner's next step, not a quote to keep
+    assert (prompts.DRAFT_PREFIX + '{"decision": "Friday: beta", "owner": "Bob", "source_ids": ["REQ-2"]}'
+            ) in decision.splitlines()
+    assert "Call save_decision with these values, correcting them only if the quotes say otherwise, and with " \
+           "follow_up: the owner's next step as a short instruction in your own words" in decision
     wrapup = prompts.wrapup_instructions("Meeting notes: D1 Friday beta (owner Bob).", meeting=meeting)
     assert "The meeting notes: Meeting notes: D1 Friday beta (owner Bob)." in wrapup
     assert "the decisions with their owners first, then the open questions" in wrapup and "Don't call any tool." in \

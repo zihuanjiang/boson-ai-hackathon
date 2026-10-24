@@ -616,8 +616,8 @@ async def test_milestone_2_the_facilitator_speaks_up_before_a_wrong_decision_and
     request = creates(h)[-1]
     assert request["metadata"]["relay"] == "decision" and "tool_choice" not in request
     assert prompts.DRAFT_PREFIX + json.dumps({"decision": draft["decision"], "owner": "Bob",
-                                             "follow_up": draft["follow_up"], "source_ids": draft["source_ids"]}) \
-        in request["instructions"]
+                                             "source_ids": draft["source_ids"]}) in request["instructions"]
+    assert "follow_up: the owner's next step" in request["instructions"]  # (in its own words, not a quote)
     # live 2026-10-23: the model may save an invented decision; it is rejected and the draft goes in instead
     await respond(h, call("save_decision", {"decision": "Use the new onboarding flow for the pilot program",
                                             "owner": "Alex", "follow_up": "Tell the pilot users"}),
@@ -684,7 +684,9 @@ async def test_what_the_models_decision_leaves_out_comes_from_the_draft(h: Harne
     decision = h.c.mstate.decisions[0]
     assert (decision.decision, decision.owner, decision.by) == (
         "Friday is the beta, announced to beta users only", "Bob", "model")
-    assert decision.follow_up == CAROL_FIX and decision.source_ids
+    # (the action item: the sentence that gave Bob the task, not Carol's whole reply)
+    assert decision.follow_up == "Bob owns the announcement." and decision.source_ids
+    assert [(item.owner, item.text) for item in h.c.mstate.action_items] == [("Bob", "Bob owns the announcement.")]
 
 
 async def test_a_decision_cut_off_still_saves_the_draft(h: Harness):

@@ -18,13 +18,26 @@ Writes out/live/: the synthesized lines (*.pcm), everything Relay streamed (repl
 narrations), frames.jsonl, summary.json. Each turn reports whether the model called the expected tool or the
 watchdog did it ("auto"); each live narration its slide, length and what Relay said.
 
-A meeting package (agenda.yaml: `--talk talks/rollout-review`, On the Same Page) runs the meeting instead, after its
-run of show: Alice's opening → the talking points → her question during the rollback plan (lookup_evidence → the
-answer → resume at that talking point, the clarification) → the hand-over → the discussion spoken into the room mic
-by three synthesized voices (Alice, Bob, Carol: transcripts, the alignment events, the facilitator's intervention
-at Carol's confirmation, the decision after her correction) → Alice asks for the wrap-up (else the phase button, said
-so in the report) → the summary. Turns end by the backend's segmenter (manual turns). The report lists what the room
-heard, which tools the model called, the evidence, the notes.
+A meeting package with a demo script (`--talk talks/rollout-review`: agenda.yaml + demo.yaml, input clips — the online
+meeting of doc/online_meeting_patch.md) runs **the demo as the page would**: first the participant clips are generated
+with real TTS 3 (`relay.clips`, cached; each speaker's voice from demo.yaml), then the server starts on them, and
+`relay.demo_driver` plays the page's Demo Audio Controller over /ws — the facilitator's replies play out in real time,
+each clip streams as 100 ms `source: "clip"` frames in real time when its cue holds (the same cues, from the deck
+messages it receives), the microphone is never used. It then checks the patch's §8 definition of done: a genuine
+barge-in while the facilitator spoke (Alice's clip cut the narration, no tap), a live answer grounded in a lookup, the
+presentation resumed at the interrupted talking point, a timely intervention before the correction, and the corrected
+decision with owner Bob in the decisions and the wrapped-up notes (plus the discussion lines labelled by the clips).
+
+    uv run python scripts/live_check.py --talk talks/rollout-review               # the online meeting (clips)
+    uv run python scripts/live_check.py --talk talks/rollout-review --input mic   # the in-room meeting (below)
+
+With `--input mic` (or a meeting without demo.yaml) the meeting runs after its run of show with Space and the room
+mic: Alice's opening → the talking points → her question during the rollback plan (lookup_evidence → the answer →
+resume at that talking point, the clarification) → the hand-over → the discussion spoken into the room mic by three
+synthesized voices (Alice, Bob, Carol: transcripts, the alignment events, the facilitator's intervention at Carol's
+confirmation, the decision after her correction) → Alice asks for the wrap-up (else the phase button, said so in the
+report) → the summary. Turns end by the backend's segmenter (manual turns). The report lists what the room heard,
+which tools the model called, the evidence, the notes.
 """
 
 from __future__ import annotations
@@ -47,7 +60,8 @@ import requests
 import websockets
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # `uv run python scripts/live_check.py` from anywhere
-from relay.config import NARRATION_MODES, ROOT, load_settings  # noqa: E402
+from relay.config import INPUT_MODES, NARRATION_MODES, ROOT, input_mode, load_settings  # noqa: E402
+from relay.demo_driver import DemoDeck, fetch_clips  # noqa: E402
 
 OUT = ROOT / "out" / "live"
 RATE = 24000
@@ -564,6 +578,168 @@ def meeting_report(summary: dict) -> bool:
     return ok
 
 
+# --- the online meeting (demo.yaml, input clips) ------------------------------------------------------------------
+
+DEMO_WRAP_TIMEOUT_S = 120.0  # the last step (Wrap up) → the summary has played and the meeting is wrapped up
+
+
+def is_demo_run(talk: dict) -> bool:
+    return bool(talk.get("demo")) and talk.get("input") == "clips"
+
+
+def demo_of(talk_dir: str):
+    """The talk's demo script (None without one, or when the package doesn't load: the server will say why)."""
+    from relay.__main__ import resolve_talk_dir
+    from relay.meeting import load_demo
+    from relay.talk import TalkError, load_talk
+
+    try:
+        return load_demo(load_talk(resolve_talk_dir(talk_dir)))
+    except TalkError:
+        return None
+
+
+def generate_real_clips(talk_dir: str, settings) -> bool:
+    """The participant clips with real TTS 3 (cached), before the server starts (it snapshots them then). False when
+    the talk has no demo or not every clip could be generated (the output says why)."""
+    from relay import clips as clip_store
+    from relay.__main__ import resolve_talk_dir
+    from relay.meeting import load_demo
+    from relay.talk import load_talk
+
+    talk = load_talk(resolve_talk_dir(talk_dir))
+    demo = load_demo(talk)
+    if demo is None:
+        return False
+    print(f"participant clips for {talk.id} (TTS 3, voices {demo.voices}):")
+    try:
+        report = clip_store.generate_clips(talk, demo, settings, out_root=settings.out_dir,
+                                           progress=lambda line: print(line, flush=True))
+    except ValueError as exc:  # a recording in the wrong format
+        print(f"clips: {exc}")
+        return False
+    for entry in report.recorded + report.cached:
+        print(f"  ok        {entry.step:<18} {entry.duration_ms / 1000:5.1f} s  {entry.speaker}")
+    if not report.ok:
+        print(f"clips not generated: {report.fatal or [entry.error for entry in report.failed]}")
+        return False
+    return True
+
+
+async def run_demo(port: int, talk: dict, *, out: Path | None = None, timeout_scale: float = 1.0,
+                   owner: str = "Bob") -> dict:
+    """The demo script played by the scripted page (relay.demo_driver) against the server on `port`: every clip
+    streamed in real time when its cue holds; then the definition of done. Returns the summary."""
+    base = f"http://127.0.0.1:{port}"
+
+    async def get(url: str) -> bytes:
+        def fetch() -> bytes:
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                return resp.read()
+        return await asyncio.to_thread(fetch)
+
+    async with websockets.connect(f"ws://127.0.0.1:{port}/ws", max_size=None) as ws:
+        deck = DemoDeck(ws, talk["demo"], {}, talk=talk, log=print, timeout_scale=timeout_scale, keep_audio=True)
+        hello = await deck.handshake()
+        demo = hello.get("demo") or talk["demo"]
+        deck.demo = demo
+        missing = [step["id"] for step in demo["steps"] if step.get("say") and not step.get("audio")]
+        fake = [step["id"] for step in demo["steps"] if step.get("fake")]
+        if missing:
+            print(f"  !! clips missing on the server: {missing} (run `uv run python -m relay.clips <talk>`)")
+        if fake:
+            print(f"  !! fake (tone) clips: {fake}: the model can't understand those (relay.clips --force)")
+        deck.clips = await fetch_clips(base, demo, get)
+        print(f"meeting: {(hello.get('meeting') or {}).get('title')}; input {hello.get('input')}; "
+              f"{len(deck.clips)} participant clips; the microphone is off")
+        results = await deck.run()
+        wrapped = True
+        try:
+            await deck.until(lambda m: m.get("type") == "state" and m.get("banner") == "Meeting wrapped up",
+                             "the meeting wrapped up", 0, DEMO_WRAP_TIMEOUT_S * timeout_scale)
+        except AssertionError as exc:
+            print(f"  !! {exc}")
+            wrapped = False
+        await asyncio.sleep(1.0)
+        checks = deck.assess(owner=owner)
+        inbound = deck.inbound()
+        summary = {
+            "demo": True, "wrapped_up": wrapped, "missing_clips": missing, "fake_clips": fake,
+            "checks": {name: {"ok": ok, "seen": seen} for name, (ok, seen) in checks.items()},
+            "steps": [result.to_json() for result in results],
+            "barge_ins": [m for m in inbound if m.get("type") == "barge_in"],
+            "tools": [(m.get("name"), m.get("status")) for m in inbound if m.get("type") == "tool"],
+            "evidence": [{"query": m["lookup"]["query"], "by": m["lookup"]["by"],
+                          "top": [r["source_id"] for r in m["lookup"]["results"]]} for m in inbound
+                         if m.get("type") == "evidence"],
+            "said": [{"reply": m.get("reply"), "kind": getattr(deck.replies.get(m.get("reply")), "kind", None),
+                      "text": m.get("text")} for m in inbound
+                     if m.get("type") == "caption" and m.get("role") == "assistant" and m.get("final")],
+            "heard": [{"speaker": m.get("speaker"), "text": m.get("text")} for m in inbound
+                      if m.get("type") == "caption" and m.get("role") == "user"],
+            "transcript": [m["utterance"] for m in inbound if m.get("type") == "transcript"],
+            "latency_ms": [m["value"] for m in inbound if m.get("type") == "metric"],
+            "errors": [m.get("message") for m in inbound if m.get("type") == "error"],
+            "backup_plays": sum(1 for m in inbound if m.get("type") == "play"),
+            "notes": next((m.get("notes") for m in reversed(inbound) if m.get("type") == "meeting"
+                           and m.get("notes")), None),
+        }
+        if out is not None:
+            (out / "frames.jsonl").write_text("\n".join(json.dumps({"t": round(t, 3), "dir": d, **m})
+                                                        for t, d, m in deck.messages) + "\n")
+            for reply, pcm in deck.audio.items():
+                write_wav(out / f"reply_{reply}.wav", bytes(pcm))
+        await deck.close()
+        return summary
+
+
+def demo_report(summary: dict) -> bool:
+    """Print the online meeting's summary; True when the patch's §8 definition of done held."""
+    print("\nsummary (online meeting, prerecorded participants, live facilitator):")
+    for step in summary["steps"]:
+        how = "PLAYED BY HAND (cue timed out)" if step["timed_out"] else (
+            "no clip" if step["unavailable"] else "on its cue")
+        print(f"  step {step['id']:<16} {str(step['speaker'] or step['action']):<6} armed {step['armed_at']:6.1f}s "
+              f"fired {step['fired_at'] or 0:6.1f}s  {how}")
+    for barge in summary["barge_ins"]:
+        print(f"  barge-in: {barge.get('speaker')} cut the {barge.get('state')} reply {barge.get('reply')} at "
+              f"{barge.get('played_ms')} ms")
+    for line in summary["heard"]:
+        print(f"  heard   {line['speaker']}: {line['text']}")
+    for said in summary["said"]:
+        print(f"  said    [{said['kind']}] {said['text']}")
+    for line in summary["transcript"]:
+        print(f"  room    {line.get('speaker')} ({line.get('source')}): {line.get('text')}")
+    print(f"  evidence {summary['evidence']}")
+    print(f"  tools    {summary['tools']}")
+    print(f"  latency  {summary['latency_ms']}")
+    if summary["errors"]:
+        print(f"  errors   {summary['errors']}")
+    decisions = (summary.get("notes") or {}).get("decisions") or []
+    print(f"  notes    decisions {[(d.get('decision'), d.get('owner'), d.get('by')) for d in decisions]}")
+    names = {"barge_in": "a genuine barge-in while the facilitator spoke (no tap, mic off)",
+             "lookup_answer": "a live answer grounded in a lookup",
+             "resumed": "the presentation resumed at the interrupted talking point",
+             "intervention": "a timely intervention before the correction",
+             "silent": "silent in the discussion until then (not on the conflicting line alone)",
+             "decision": "the corrected decision with owner Bob, after the correction",
+             "notes": "… in the wrapped-up notes",
+             "labels": "the discussion lines labelled by the clips' speakers"}
+    ok = True
+    for name, check in summary["checks"].items():
+        print(f"  {'ok ' if check['ok'] else 'MISS'} {names.get(name, name)}: {check['seen']}")
+        ok = ok and check["ok"]
+    for problem, failed in (("a cue timed out (played by hand)", any(s["timed_out"] for s in summary["steps"])),
+                            ("participant clips missing", bool(summary["missing_clips"])),
+                            ("fake clips (tones) instead of TTS 3", bool(summary["fake_clips"])),
+                            ("the meeting did not wrap up", not summary["wrapped_up"]),
+                            ("the backup narration played (a live narration failed)", bool(summary["backup_plays"]))):
+        if failed:
+            print(f"  MISS {problem}")
+            ok = False
+    return ok
+
+
 async def run(port: int, talk: dict, lines: dict[str, bytes]) -> dict:
     async with websockets.connect(f"ws://127.0.0.1:{port}/ws", max_size=None) as ws:
         deck = Deck(ws, talk)
@@ -589,6 +765,8 @@ async def run(port: int, talk: dict, lines: dict[str, bytes]) -> dict:
 
 def report(summary: dict) -> bool:
     """Print the summary; True when every turn ended as expected and no live narration needed the backup."""
+    if summary.get("demo"):
+        return demo_report(summary)
     if summary.get("meeting"):
         return meeting_report(summary)
     print(f"\nsummary (narration {summary['narration_mode']}):")
@@ -613,16 +791,22 @@ def main() -> int:
     parser.add_argument("--narration", choices=NARRATION_MODES, default=None,
                         help="the server's narration mode (default: RELAY_NARRATION, else live)")
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--input", choices=INPUT_MODES, default=None,
+                        help="the server's input (default: clips for a talk with demo.yaml, else mic)")
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
-    settings = load_settings()
+    settings = load_settings(input=args.input)
     if not settings.api_key:
         print("BOSON_API_KEY missing in .env")
         return 2
+    if input_mode(settings, demo_of(args.talk)) == "clips" and not generate_real_clips(args.talk, settings):
+        return 2  # (the server snapshots the clips at startup: they must exist first)
     port = args.port or free_port()
     command = [sys.executable, "-m", "relay", "serve", args.talk, "--port", str(port)]
     if args.narration:
         command += ["--narration", args.narration]
+    if args.input:
+        command += ["--input", args.input]
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     with (OUT / "server.log").open("w") as log:
         server = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -636,8 +820,11 @@ def main() -> int:
                 time.sleep(0.2)
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/talk", timeout=5) as resp:
             talk = json.loads(resp.read())
-        lines = synthesize(settings, talk)
-        summary = asyncio.run(run(port, talk, lines))
+        if is_demo_run(talk):
+            summary = asyncio.run(run_demo(port, talk, out=OUT))
+        else:
+            lines = synthesize(settings, talk)
+            summary = asyncio.run(run(port, talk, lines))
     except AssertionError as exc:
         print("FAIL:", exc)
         summary = None

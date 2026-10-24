@@ -421,8 +421,8 @@ class Engine:
             resolved.extend((c, *decided[c.id]) for c in members if c.id in decided)
         if not resolved:
             return []
-        owner = self._owner(utt, statements, [c for c, _, _ in resolved])
-        return self._resolved_events(resolved, utt.id, utt.at_s, owner, text, [utt.id])
+        owner, owned = self._owner(utt, statements, [c for c, _, _ in resolved])
+        return self._resolved_events(resolved, utt.id, utt.at_s, owner, text, [utt.id], follow_up=owned)
 
     def _asserted_values(self, statements: list[str], slot_id: str) -> set[str]:
         """Values of the slot asserted in the answer, without the slot's context (the intervention set it)."""
@@ -432,27 +432,34 @@ class Engine:
             values.update(value for value, negated in value_hits(part, slot).items() if not negated)
         return values
 
-    def _owner(self, utt: Utterance, statements: list[str], conflicts: list[_Conflict]) -> str | None:
-        """A participant named in a resolving sentence with an ownership pattern; else the speaker of a resolving
-        sentence that starts with I'll / I will; else the speaker of the conflicting "I'll …" line."""
+    def _owner(self, utt: Utterance, statements: list[str],
+               conflicts: list[_Conflict]) -> tuple[str | None, str | None]:
+        """(owner, the sentence that gave them the task): a participant named in a resolving sentence with an
+        ownership pattern ("Bob owns the announcement."); else the speaker of a resolving sentence that starts with
+        I'll / I will; else (no such sentence) the speaker of the conflicting "I'll …" line."""
         names = self.package.participant_names if self.package is not None else []
         for part in statements:
             if self._matches(self.checks.ownership, part):
                 found = [(match.start(), name) for name in names
                          for match in [re.search(rf"(?<!\w){re.escape(name)}(?!\w)", part, re.I)] if match]
                 if found:
-                    return min(found)[1]
+                    return min(found)[1], part
         speaker = self._participant(utt.speaker)
-        if speaker and any(_I_WILL_RE.match(part) for part in statements):
-            return speaker
+        mine = next((part for part in statements if _I_WILL_RE.match(part)), None)
+        if speaker and mine is not None:
+            return speaker, mine
         for conflict in conflicts:
             speaker = self._participant(conflict.speaker)
             if speaker and conflict.i_will:
-                return speaker
-        return None
+                return speaker, None
+        return None, None
 
     def _resolved_events(self, resolved: list[tuple[_Conflict, str, bool]], utterance_id: str, at_s: float,
-                         owner: str | None, quote: str, utterance_ids: list[str]) -> list[dict]:
+                         owner: str | None, quote: str, utterance_ids: list[str],
+                         follow_up: str | None = None) -> list[dict]:
+        """`resolved` events and the decision draft. The draft's follow-up (its action item when the draft is saved
+        as it is) is the sentence that gave the owner the task, else the whole answer (`quote`, which the resolved
+        events carry as `follow_up_quote` either way)."""
         events = []
         for conflict, value, plan_changed in resolved:
             conflict.status = "resolved"
@@ -480,7 +487,7 @@ class Engine:
             source_ids.extend(i for i in ids if i not in source_ids)
         first = next(iter(per_slot))
         events.append(self._event("decision_draft", first, utterance_id, at_s, decision="; ".join(parts),
-                                  owner=owner, follow_up=quote, source_ids=source_ids,
+                                  owner=owner, follow_up=follow_up or quote, source_ids=source_ids,
                                   clarification_ids=clarification_ids, slots=list(per_slot),
                                   conflict_ids=[c.id for c, _, _ in resolved],
                                   plan_changed=any(p for _, _, p in resolved), supersedes=supersedes,

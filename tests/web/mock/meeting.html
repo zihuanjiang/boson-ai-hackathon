@@ -9,7 +9,9 @@
          1920×1080 (window size, or the DevTools device toolbar): it walks through the meeting's states and measures
          each one. The plain-Relay states switch the meeting additions off (a talk without a meeting); the
          "facilitator" states are On the Same Page (the agenda strip, the evidence callout, the tabbed side panel with
-         the alignment card and the notes, the speaker picker). The verdict in the corner must say PASS.
+         the alignment card and the notes, the speaker picker); the "demo" states are the simulated online meeting
+         (prerecorded participants' tiles, the disclosure badge, the demo script's controls in the agenda strip, the
+         routing line in Meeting info, the join dialog with the mic off). The verdict in the corner must say PASS.
          tests/web/test_static.mjs checks that this copy still has every class of the real window. -->
     <link rel="stylesheet" href="../../../web/vendor/reveal/reset.css" />
     <link rel="stylesheet" href="../../../web/vendor/reveal/reveal.css" />
@@ -59,6 +61,7 @@
           <span class="live-badge" data-status="ready"
             ><i class="dot" aria-hidden="true"></i><span class="live-text">Higgs Realtime</span></span
           >
+          <span class="pill demo-pill" hidden>Simulated participants · prerecorded audio</span>
           <span class="pill backup-badge">Backup audio</span>
           <span class="pill fake-pill">Fake</span>
           <span class="pill server-pill">Server offline</span>
@@ -93,6 +96,13 @@
             ><span class="checkpoint-where">Slide 5</span><span class="checkpoint-status" data-status="intervening">intervening</span></span
           ><span class="agenda-prompt">“What goes out on Friday, and who sends it? And to whom, exactly, on which channel?”</span>
         </p>
+        <div class="demo" role="group" aria-label="Demo script" data-state="running" hidden>
+          <button type="button" class="demo-run" aria-pressed="true">Stop demo</button>
+          <p class="demo-next"
+            ><span class="demo-next-text">Next: Alice — while the facilitator presents rollback-trigger · waiting · Play next plays it by hand</span></p
+          >
+          <button type="button" class="demo-play" data-waiting="true">Play next</button>
+        </div>
         <button type="button" class="phase-button" data-phase="discussion">Wrap up</button>
       </nav>
 
@@ -113,6 +123,10 @@
           </div>
           <div><dt>Mic mode</dt><dd><span class="micmode">Hold</span></dd></div>
         </dl>
+        <p class="strip-routing" hidden>
+          <span class="routing-label">Higgs input:</span>
+          <span class="routing-text">participant clips only (facilitator audio is not sent)</span>
+        </p>
         <p class="strip-badges"><span class="badge fake-badge">Fake audio</span><span class="badge server-badge">Server offline</span></p>
         <p class="strip-hint">Click for the audio and connection check</p>
       </section>
@@ -158,7 +172,7 @@
             </li>
             <li class="callout-item">
               <div class="callout-ref"><span class="src-chip" data-kind="source">REQ-2</span><span class="callout-title">Rollout plan v3</span></div>
-              <p class="callout-text">Stage one of the rollout: on Friday 24 October the beta release goes to the beta group only, about 40 customers who opted in to early access.</p>
+              <p class="callout-text">Stage one of the rollout: on Friday 24 October the beta release, not the production release, goes to the beta group only, an audience of about 40 customers who opted in to early access.</p>
             </li>
           </ol>
         </aside>
@@ -243,6 +257,25 @@
               <span class="name">Carol</span><span class="role">Engineering lead</span>
             </div>
           </article>
+          <!-- a simulated online meeting: the prerecorded participants (made by panels.js ParticipantTiles) -->
+          <article class="tile tile-participant" data-name="Alice" data-speaking="true" data-playing="true" hidden>
+            <span class="tile-tag">Recorded</span>
+            <div class="avatar"><span class="ring" style="--level: 0.5"></span><span class="avatar-face"><span class="avatar-text">A</span></span></div>
+            <span class="tile-status">Speaking · played by hand</span>
+            <div class="nameplate"><span class="clip-dot"></span><span class="name">Alice</span><span class="role">Product manager</span></div>
+          </article>
+          <article class="tile tile-participant" data-name="Bob" data-speaking="false" data-playing="false" hidden>
+            <span class="tile-tag">Recorded</span>
+            <div class="avatar"><span class="ring"></span><span class="avatar-face"><span class="avatar-text">B</span></span></div>
+            <span class="tile-status"></span>
+            <div class="nameplate"><span class="clip-dot"></span><span class="name">Bob</span><span class="role">Customer communications</span></div>
+          </article>
+          <article class="tile tile-participant" data-name="Carol" data-speaking="false" data-playing="false" hidden>
+            <span class="tile-tag">Recorded</span>
+            <div class="avatar"><span class="ring"></span><span class="avatar-face"><span class="avatar-text">C</span></span></div>
+            <span class="tile-status"></span>
+            <div class="nameplate"><span class="clip-dot"></span><span class="name">Carol</span><span class="role">Engineering lead</span></div>
+          </article>
         </div>
         <section class="chat" aria-label="Meeting panels">
           <header class="chat-head">
@@ -288,7 +321,7 @@
                 <ol class="results">
                   <li class="result" data-kind="source">
                     <div class="result-head"><span class="src-chip" data-kind="source">REQ-2</span><span class="result-title">Rollout plan v3</span></div>
-                    <p class="result-text">Stage one of the rollout: on Friday 24 October the beta release goes to the beta group only, about 40 customers who opted in to early access.</p>
+                    <p class="result-text">Stage one of the rollout: on Friday 24 October the beta release, not the production release, goes to the beta group only, an audience of about 40 customers who opted in to early access.</p>
                   </li>
                   <li class="result-none">No matching source</li>
                 </ol>
@@ -548,6 +581,10 @@
           <p class="panel-kicker">Join the meeting</p>
           <h1 id="relay-overlay-title" class="panel-title">Release 4.3 rollout review</h1>
           <p class="panel-sub">The facilitator presents · Alice hosts</p>
+          <p class="panel-demo" hidden>
+            An online meeting, simulated: the participants are prerecorded. Their clips play on these speakers and stream to
+            Higgs as they play; the microphone stays off. Everything the facilitator says, looks up and decides is live.
+          </p>
         </header>
         <ul class="checklist">
           <li data-item="server" data-status="ok"><span class="ic"></span><span class="label">Connected to the facilitator</span><span class="detail">127.0.0.1:8000</span></li>
@@ -559,6 +596,9 @@
             <span class="ic"></span><span class="label">Microphone</span><span class="detail">MacBook Pro Microphone</span><span class="meter" style="--level: 0.6"><span class="meter-fill"></span></span>
           </li>
           <li data-item="narration" data-status="working"><span class="ic"></span><span class="label">Backup narration</span><span class="detail">5/6</span></li>
+          <li data-item="clips" data-status="fail" hidden>
+            <span class="ic"></span><span class="label">Participant clips</span><span class="detail">3/4 · 1 unavailable (/clips/carol-correct.wav: HTTP 404): Play next skips them</span>
+          </li>
           <li data-item="realtime" data-status="fail"><span class="ic"></span><span class="label">Higgs Realtime</span><span class="detail">error: BOSON_API_KEY missing</span></li>
         </ul>
         <div class="panel-actions">
@@ -608,16 +648,27 @@
       // Each state starts from the page as written (the facilitator in the discussion: agenda strip, callout, the
       // panel on the Transcript tab, the speaker picker), then switches what it needs.
       const touched = [
-        ".people", ".chat", ".strip", ".more-menu", ".left-card", ".overlay", ".tile-hint", ".banner", ".agenda", ".callout",
-        ".chat-title", ".tabs", ".evidence-pane", ".notes-pane", ".transcript-pane", ".chat-log", ".speakers",
-      ].map($);
+        ...[
+          ".people", ".chat", ".strip", ".more-menu", ".left-card", ".overlay", ".tile-hint", ".banner", ".agenda", ".callout",
+          ".chat-title", ".tabs", ".evidence-pane", ".notes-pane", ".transcript-pane", ".chat-log", ".speakers",
+          ".tile-you", ".demo-pill", ".demo", ".strip-routing", ".panel-demo", '[data-item="clips"]',
+        ].map($),
+        ...document.querySelectorAll(".tile-participant"),
+      ];
       const initial = touched.map((el) => el.hidden);
       function reset() {
         touched.forEach((el, i) => (el.hidden = initial[i]));
-        meeting.classList.remove("side-off", "captions-off");
+        meeting.classList.remove("side-off", "captions-off", "has-demo");
         meeting.classList.add("has-agenda");
         captions.dataset.mode = "live";
         $(".callout").dataset.kind = "intervention";
+      }
+      /** A simulated online meeting: the prerecorded participants' tiles, the badge, the demo controls, the routing. */
+      function demo() {
+        meeting.classList.add("has-demo");
+        $(".tile-you").hidden = true;
+        for (const tile of document.querySelectorAll(".tile-participant")) tile.hidden = false;
+        for (const sel of [".demo-pill", ".demo", ".strip-routing", ".panel-demo", '[data-item="clips"]']) $(sel).hidden = false;
       }
       /** A talk without a meeting: exactly Relay's window (the meeting additions off, the chat panel as the chat). */
       function plain() {
@@ -652,6 +703,14 @@
         { name: "facilitator: captions off", apply: () => meeting.classList.add("captions-off") },
         { name: "facilitator: you left, meeting info open", apply: () => (($(".left-card").hidden = false), ($(".strip").hidden = false)) },
         { name: "facilitator: join dialog", apply: () => ($(".overlay").hidden = false) },
+        { name: "demo: discussion, intervention callout, prerecorded participants", apply: demo },
+        { name: "demo: presenting, Alice's clip, evidence callout", apply: () => (demo(), pane("evidence"), ($(".callout").dataset.kind = "evidence"), ($(".speakers").hidden = true)) },
+        { name: "demo: wrap-up notes", apply: () => (demo(), pane("notes"), ($(".callout").dataset.kind = "decision"), ($(".speakers").hidden = true)) },
+        { name: "demo: meeting info (routing line) and More menu open", apply: () => (demo(), ($(".strip").hidden = false), ($(".more-menu").hidden = false)) },
+        { name: "demo: panel closed", apply: () => (demo(), ($(".chat").hidden = true)) },
+        { name: "demo: participants and panel hidden", apply: () => (demo(), ($(".chat").hidden = true), ($(".people").hidden = true), meeting.classList.add("side-off")) },
+        { name: "demo: captions off", apply: () => (demo(), meeting.classList.add("captions-off")) },
+        { name: "demo: join dialog (mic off, participant clips, disclosure)", apply: () => (demo(), ($(".overlay").hidden = false)) },
       ];
 
       const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -689,19 +748,25 @@
         if (Math.abs(slides.width / slides.height - 16 / 9) > 0.02) p.push(`slides not 16:9 (${fmt(slides)})`);
         if (!within(slides, share) || !within(slides, view())) p.push(`slides outside the share (${fmt(slides)} in ${fmt(share)})`);
         if (slides.width < 320) p.push(`slides too small (${fmt(slides)})`);
-        // both tiles, unless the participants are hidden
+        // every tile shown (the AI and the room, or the AI and the prerecorded participants), unless they are hidden
         if (shown($(".people"))) {
-          const [relay, you] = [".tile-relay", ".tile-you"].map((s) => box($(s)));
-          for (const [label, r] of [["AI tile", relay], ["You tile", you]]) {
+          const tiles = [...document.querySelectorAll(".people > .tile")].filter(shown);
+          if (tiles.length < 2) p.push(`only ${tiles.length} tile(s) shown`);
+          for (const tile of tiles) {
+            const r = box(tile);
+            const label = `${tile.querySelector(".name").textContent} tile`;
             if (!within(r, view()) || !within(r, box($(".side")))) p.push(`${label} not fully visible (${fmt(r)})`);
             if (r.height < 60) p.push(`${label} too small (${fmt(r)})`);
+            for (const sel of [".tile-status", ".nameplate", ".avatar", ".tile-tag"]) {
+              const el = tile.querySelector(sel);
+              if (shown(el) && !within(box(el), r)) p.push(`${label}: ${sel} spills out of its tile`);
+            }
+            const tag = tile.querySelector(".tile-tag");
+            if (shown(tag) && overlaps(box(tag), box(tile.querySelector(".avatar")))) p.push(`${label}: the Recorded tag covers the avatar`);
+            const st = tile.querySelector(".tile-status");
+            if (shown(st) && overlaps(box(st), box(tile.querySelector(".nameplate")))) p.push(`${label}: the status overlaps the nameplate`);
           }
-          if (overlaps(relay, you)) p.push("the tiles overlap");
-          for (const sel of [".tile-relay .tile-status", ".tile-relay .nameplate", ".tile-you .nameplate", ".tile-relay .avatar", ".tile-you .avatar"]) {
-            const r = box($(sel));
-            const tile = box($(sel).closest(".tile"));
-            if (!within(r, tile)) p.push(`${sel} spills out of its tile`);
-          }
+          tiles.forEach((a, i) => tiles.slice(i + 1).forEach((b) => overlaps(box(a), box(b)) && p.push("the tiles overlap")));
           const status = box($(".tile-relay .tile-status"));
           if (overlaps(status, box($(".tile-relay .nameplate"))) || overlaps(status, box($(".tile-relay .ticker")))) p.push("the AI tile's status overlaps its nameplate or ticker");
         }
@@ -728,10 +793,15 @@
         if (shown($(".agenda"))) {
           const strip = box($(".agenda"));
           if (!within(strip, view())) p.push(`agenda strip off screen (${fmt(strip)})`);
-          for (const sel of [".agenda-steps", ".checkpoint", ".phase-button"]) {
-            if (!within(box($(sel)), strip)) p.push(`${sel} outside the agenda strip`);
+          for (const sel of [".agenda-steps", ".checkpoint", ".phase-button", ".demo-run", ".demo-play"]) {
+            if (shown($(sel)) && !within(box($(sel)), strip)) p.push(`${sel} outside the agenda strip`);
           }
           if (overlaps(box($(".agenda-steps")), box($(".phase-button")))) p.push("the agenda steps run into the phase button");
+          if (shown($(".demo"))) {
+            const d = box($(".demo"));
+            for (const sel of [".phase-button", ".checkpoint", ".agenda-steps"]) if (overlaps(d, box($(sel)))) p.push(`the demo controls run into ${sel}`);
+            if ($(".demo-next").clientWidth < 120) p.push(`the demo's next step has no room (${$(".demo-next").clientWidth}px)`);
+          }
         }
         // the side panel's tabs fit their header
         if (shown($(".tabs"))) {

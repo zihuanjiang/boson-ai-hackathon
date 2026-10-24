@@ -115,6 +115,7 @@ Writes, atomically, `out/talks/<id>/<slide>/<n>.wav` (as returned) and `<n>.json
 | `GET /api/talk` | talk JSON (below) |
 | `GET /api/slides.md` | raw `slides.md` (`text/markdown; charset=utf-8`) |
 | `GET /media/{slide}/{n}.wav` | rendered narration (`audio/wav`) from the in-memory snapshot taken at startup, with a strong ETag (a hash of the bytes; `If-None-Match` → 304); 404 if not rendered |
+| `GET /clips/{step}.wav` | a prerecorded participant clip of the demo script (`audio/wav`, 24 kHz mono PCM16) from the in-memory snapshot taken at startup: the recording at `talks/<id>/clips/<step>.wav` if there is one, else the clip `relay.clips` generated in `out/talks/<id>/clips/`; 404 if neither exists (the server still starts, warns, and the step's `audio` is null) |
 | `GET /talk/{path}` | static files from the talk folder (images) |
 | `GET /healthz` | `{"ok": true, "realtime": "<status>", "state": "<state>", "detail": "<link detail>\|null", "deck": bool}` |
 | `WS /ws` | the deck control socket (§4); one deck at a time. Close 4000 = replaced by a newer deck (the client doesn't reconnect; the replaced deck's input is ignored). 4001 = the deck stopped reading for 5 s and was dropped: the controller hears at once, and the 4001 goes out whenever the tab reads again (the close is never abandoned: uvicorn writes it only once the tab reads), so the tab reconnects. A dropped deck that sends input after its close failed has its connection ended (it reconnects) |
@@ -148,6 +149,17 @@ the same value.
                "words": [{"word": "Here", "start": 120, "end": 300, "sentence": 0}],
                "sentences": ["…"], "audio": "/media/how/0.wav"}]}]}
 ```
+
+`/api/talk` also carries `narration_mode` (`live` | `rendered`), `meeting` and `demo` (both null for a plain talk) and
+`input`. `meeting` (a talk with `agenda.yaml`) = `{title, host, participants: [{name, role}], phases: [{id, title,
+prompt}], documents: [{id, title, statements: [{id, text}]}], discussion_slide}`. `demo` (a meeting with `demo.yaml`,
+the simulated online meeting of `doc/online_meeting_patch.md`) = `{input, voices: {participant: TTS preset}, steps:
+[{id, speaker, say, action, when, audio, duration_ms, recorded, fake}]}`: `action` is `start` | `phase` | null (a
+clip), `when` is the step's cue as written plus `timeout_ms` (always present, default 90 000), `audio` is
+`/clips/<id>.wav` or null when the clip is missing, `recorded` = a recording rather than a generated clip, `fake` = a
+`relay.clips --fake` tone burst. `input` = `clips` (the participants are the demo's prerecorded clips, streamed by the
+deck; the microphone stays off) or `mic` (the room microphone and tap-to-talk, as before): `--input` / `RELAY_INPUT`,
+default `clips` for a talk with `demo.yaml`, else `mic`.
 
 ## 4. Deck socket protocol (`/ws`, JSON text frames)
 
@@ -204,6 +216,26 @@ load or decode plays silently on a timer (captions run, `chunk_ended` at its dur
 | `connection` | `status`, `detail` | Realtime link: `offline`, `connecting`, `ready`, `reconnecting`, `error` |
 | `metric` | `name`, `value` | `reply_latency_ms`: end of the user's speech → first reply audio at the backend. For a turn that turn detection ended, the end of speech is estimated from `speech_stopped.audio_end_ms` (§5.2); otherwise it is the turn's end (typed send, hold release, Space "send now" or listen-max). The deck's output latency is not included. The event log also has `turn_end_latency_ms` (turn-end event → first reply audio); each log line says what it measures (`from`, `to`) |
 | `error` | `message` | show briefly as a toast (under the status strip) |
+
+**A meeting (On the Same Page: a talk with `agenda.yaml`).** The rows above stay as they are; a plain talk sees none
+of this.
+
+| Direction | `type` | Fields | Meaning |
+| --- | --- | --- | --- |
+| → backend | `key` | `key` adds `phase`, `reset` | `phase`: the agenda button (presentation → hand-over + discussion; discussion → wrap-up; wrap-up → nothing). `reset`: Restart meeting (empty meeting state, slide 1, IDLE, a fresh Realtime session). Both silence the facilitator first, like `next` |
+| → backend | `speaker` | `name: str\|null` | who the room's next lines are from (the speaker picker; null = the room) |
+| → backend | `typed` | adds `speaker` | in the discussion a typed line is an utterance of the room (no Realtime needed) |
+| → backend | `mic` | `pcm`, and for a participant clip `source: "clip"`, `speaker`, `clip` (step id), `tail: bool`, `reply`, `played_ms`, `at: Position\|null` | input `clips`: the deck streams each clip as it plays (100 ms frames, each sent when its audio starts playing) and then 1.2 s of silence flagged `tail: true`; accepted in every state, ignored with input `mic`. `reply`/`played_ms` = the deck's current reply and how much of it was heard (null/null without one), `at` = the backup narration's position: where a barge-in cuts. A participant's line ends where the clip ends (its first `tail` frame, or another clip's first frame); frames without `tail` end on 1.1 s of silence. Frames without `source` are the room/tap mic, sent only while the backend has the mic open (now also in ROOM) |
+| ← deck | `hello` | adds `narration_mode`, `meeting`, `demo`, `input`; `snapshot` adds `agenda_phase`, `status`, `talking_point`, `checkpoint`, `speaker`, `input` | as `/api/talk` (§3); the bundle ends with `meeting` |
+| ← deck | `state` | adds `narration` (`live`\|`backup`\|`rendered`\|null), `agenda_phase`, `status`, `talking_point`, `checkpoint {slide_id, talking_point_id, status}` | status: presenting · resuming · answering · paused · listening · intervening · wrapping_up · idle |
+| ← deck | `reply_start` | adds `kind` | `narration` (presenting a talking point live), `answer`, or the facilitator's own `handover`, `intervention`, `decision`, `summary`; a follow-up after a tool round trip is a new reply of the same kind (a silent tool-only reply drains at once and is no cue for the demo script) |
+| ← deck | `caption` | `role: "user"` adds `speaker` | on a turn a participant's clip started (prepared clip metadata, never diarization) |
+| ← deck | `mic` | `open: true` also in ROOM | the room mic of the discussion; a participant clip's turn opens none (the state still goes LISTENING) |
+| ← deck | `meeting` | the whole meeting state (`MeetingState.to_json()`: phase, agenda, participants, checkpoint, clarifications, decisions, action items, open questions; `notes` once wrapped up) | after every change |
+| ← deck | `evidence` | `lookup {id, query, by: model\|engine, purpose, at_s, results: [{source_id, kind, title, excerpt, score}]}` | a lookup (the model's `lookup_evidence`, or the alignment check's before an intervention): the evidence callout and tab |
+| ← deck | `transcript` | `utterance {id, text, speaker, at_s, phase, source: voice\|typed\|clip}` | one line of the discussion |
+| ← deck | `alignment` | `event` (claim, conflict, intervene, resolved, decision_draft, suggestion) | the alignment check's events (chips, the alignment card) |
+| ← deck | `barge_in` | `speaker`, `clip`, `played_ms`, `reply`, `state` | input `clips`: a participant's clip started while the facilitator was audible (narration, an answer, an intervention); sent just before the cut reply's `reply_flush`. None for an intervention nothing of which was heard yet: it is asked after the participant's line instead |
 
 **Stale deck.** The deck keeps the talk id and `version` of the `/api/talk` it loaded at boot. A `hello` with another
 talk id or version (a re-render or an edit, then a server restart) means its slides, word timings and decoded
@@ -535,6 +567,9 @@ uv run python -m relay.render talks/test --fake                 # offline render
 uv run python -m relay.render talks/test                        # real render (TTS 3); restart the server to use it
 uv run python -m relay serve talks/test --fake-realtime         # offline end-to-end
 uv run python -m relay serve talks/test                         # live → open http://localhost:8000, click Arm
+uv run python -m relay.clips talks/rollout-review [--fake]      # the meeting demo's participant clips (TTS 3)
+uv run python -m relay serve talks/rollout-review [--input mic] # the online meeting (input clips: mic off);
+                                                                #   --input mic / RELAY_INPUT=mic: the room mic
 uv run python scripts/smoke/realtime.py --tool                  # live smoke tests (also tts.py, avatar.py)
 uv run python -m relay.verify voices|tags|latency|tools|session|idle|all   # Appendix F (live API); all = not idle
 uv run python scripts/live_check.py                             # live run without a browser: real server + Higgs,

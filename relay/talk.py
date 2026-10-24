@@ -445,13 +445,18 @@ def main(argv: list[str] | None = None) -> int:
     for slide in talk.relay_slides:
         print(f"  {slide.id:<12} {len(slide.chunks)} chunk(s) {word_count(slide.narration):>4} words"
               f"{'  [qa]' if slide.is_qa else ''}")
-    from .meeting import load_meeting  # see _parse
+    from .meeting import load_demo, load_meeting  # see _parse
     meeting = load_meeting(talk)
     if meeting is not None:
         documents = len({statement.doc_id for statement in meeting.statements})
         slots = len(meeting.checks.slots) if meeting.checks else 0
         print(f"meeting: {meeting.title}: host {meeting.host}, {len(meeting.participants)} participants, "
               f"{len(meeting.statements)} statements in {documents} document(s), {slots} alignment slot(s)")
+        demo = load_demo(talk, meeting)
+        if demo is not None:
+            speakers = ", ".join(dict.fromkeys(step.speaker or "" for step in demo.clips))
+            print(f"demo: {len(demo.steps)} steps, {len(demo.clips)} prerecorded participant clips ({speakers}); "
+                  f"generate them with `uv run python -m relay.clips talks/{talk.id}`")
     return 0
 
 

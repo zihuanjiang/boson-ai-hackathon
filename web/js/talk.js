@@ -4,11 +4,13 @@
  * break the client, plus pure lookups: slide by id or deck index, chunk by index, the fragments visible while a
  * chunk plays, and the narration audio to preload. No DOM: unit-tested under JavaScriptCore.
  */
+import { normalizeDemo } from "./demo.js";
 import { normalizeMeetingInfo } from "./facilitator.js";
 import { resolveSlide, toInt } from "./util.js";
 
 /** @typedef {import("./util.js").Word} Word */
 /** @typedef {import("./facilitator.js").MeetingInfo} MeetingInfo */
+/** @typedef {import("./demo.js").DemoInfo} DemoInfo */
 /**
  * @typedef {object} TalkChunk
  * @property {number} index
@@ -42,6 +44,8 @@ import { resolveSlide, toInt } from "./util.js";
  * @property {TalkSlide[]} slides
  * @property {MeetingInfo|null} meeting  the meeting package (On the Same Page: agenda, participants, documents);
  *   null for a plain talk, which looks and behaves exactly like Relay
+ * @property {DemoInfo|null} demo  the simulated online meeting (demo.yaml: prerecorded participant clips and their
+ *   cues) and the backend's input (`clips`: the mic stays off); null for a talk without one
  */
 
 /** @param {unknown} raw @returns {Word[]} */
@@ -102,6 +106,7 @@ export function normalizeTalk(raw) {
       };
     }),
     meeting: normalizeMeetingInfo(raw?.meeting),
+    demo: normalizeDemo(raw?.demo),
   };
 }
 

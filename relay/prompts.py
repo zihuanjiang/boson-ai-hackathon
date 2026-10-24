@@ -412,16 +412,20 @@ DRAFT_PREFIX = "DRAFT: "  # the fake Realtime reads the draft back from this lin
 
 def decision_instructions(draft: dict, quotes: Iterable[tuple[str | None, str]], *, meeting: Any) -> str:
     """The `instructions` of the decision response (contract §5.4): the resolving lines, the alignment check's draft
-    as JSON, save it (corrected only by the quotes), then confirm in one short sentence."""
+    as JSON, save it (corrected only by the quotes) with the owner's next step in the model's own words (the action
+    item: the draft's follow-up is only a quote, kept when the model gives none), then confirm in one short
+    sentence."""
     fields = {"decision": str(draft.get("decision") or ""), "owner": str(draft.get("owner") or ""),
-              "follow_up": str(draft.get("follow_up") or ""), "source_ids": list(draft.get("source_ids") or [])}
+              "source_ids": list(draft.get("source_ids") or [])}
     lines = [f'You are the facilitator of the meeting "{meeting.title}". The group just settled a decision:']
     for speaker, text in quotes:
         if text and text.strip():
             lines.append(f"{speaker or 'Someone'}: {_quoted(_clip_text(text, 240))}")
     lines.append(DRAFT_PREFIX + json.dumps(fields, ensure_ascii=False))
-    lines.append("Call save_decision with these values, correcting them only if the quotes say otherwise. Then "
-                 "confirm in one short sentence that it is in the meeting notes, naming the decision and its owner.")
+    lines.append("Call save_decision with these values, correcting them only if the quotes say otherwise, and with "
+                 "follow_up: the owner's next step as a short instruction in your own words, eight words at most "
+                 '(like "Email the release notes to the beta group"). Then confirm in one short sentence that it is '
+                 "in the meeting notes, naming the decision and its owner.")
     lines.append(PLAIN_SPEECH)
     return "\n".join(lines)
 

@@ -184,3 +184,28 @@ def test_the_demo_corpus():
     top = search("Friday rollout", corpus)
     assert top and "friday" in top[0]["excerpt"].lower() and "beta" in top[0]["excerpt"].lower()
     assert search("who owns the announcement", corpus)
+
+
+# What the live model looked up for Alice's question (the 20:15 probes, 6/6 a lookup first), her words, and the
+# run of show's typed fallback: the rollout plan's stage-one line (REQ-2) is the card the operator points at.
+LIVE_QUERIES = ["Friday rollout audience", "Friday deployment audience", "Friday rollout target audience",
+                "Wait, I thought Friday was production. Which one is it?", "Is Friday beta or production?",
+                "Friday rollout"]
+
+
+@pytest.mark.skipif(not (ROLLOUT / "agenda.yaml").is_file(), reason="talks/rollout-review not written yet")
+@pytest.mark.parametrize("query", LIVE_QUERIES)
+def test_the_demo_corpus_puts_the_stage_one_requirement_first(query: str):
+    from relay.meeting import load_meeting
+
+    assert ids(search(query, entries(load_meeting(ROLLOUT), None)))[0] == "REQ-2"
+
+
+@pytest.mark.skipif(not (ROLLOUT / "agenda.yaml").is_file(), reason="talks/rollout-review not written yet")
+def test_the_stage_one_requirement_still_establishes_friday_as_the_beta():
+    from relay import alignment
+    from relay.meeting import load_meeting
+
+    package = load_meeting(ROLLOUT)
+    asserted = alignment._asserted(package.statement("REQ-2").text, package.checks)
+    assert asserted.get("friday_stage") == ["beta"] and asserted.get("friday_audience") == ["beta_users"]

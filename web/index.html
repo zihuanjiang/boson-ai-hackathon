@@ -25,6 +25,12 @@
           <span class="live-badge" data-status="offline" title="Higgs Realtime: offline"
             ><i class="dot" aria-hidden="true"></i><span class="live-text">Higgs Realtime offline</span></span
           >
+          <span
+            class="pill demo-pill"
+            title="Online meeting simulation: the participants are prerecorded clips, played here and streamed to Higgs as they play. Everything the facilitator says and decides is live."
+            hidden
+            >Simulated participants · prerecorded audio</span
+          >
           <span class="pill backup-badge" title="Higgs Realtime is not ready: Relay plays the pre-rendered TTS 3 narration" hidden
             >Backup audio</span
           >
@@ -57,6 +63,11 @@
             ><span class="checkpoint-where"></span><span class="checkpoint-status" data-status="idle">idle</span></span
           ><span class="agenda-prompt" hidden></span>
         </p>
+        <div class="demo" role="group" aria-label="Demo script" hidden>
+          <button type="button" class="demo-run" aria-pressed="false" title="Run the demo script: each prerecorded participant speaks on its cue">Run demo</button>
+          <p class="demo-next"><span class="demo-next-text"></span></p>
+          <button type="button" class="demo-play" title="Play the next step now, by hand: it shows as played by hand">Play next</button>
+        </div>
         <button type="button" class="phase-button" title="End the presentation: the facilitator hands over and listens">Start discussion</button>
       </nav>
 
@@ -91,6 +102,10 @@
           </div>
           <div><dt>Mic mode</dt><dd><span class="micmode" title="MIC_MODE">Tap</span></dd></div>
         </dl>
+        <p class="strip-routing" hidden>
+          <span class="routing-label">Higgs input:</span>
+          <span class="routing-text">participant clips only (facilitator audio is not sent)</span>
+        </p>
         <p class="strip-badges">
           <span class="badge fake-badge" title="Narration was rendered with --fake: placeholder tones, not TTS" hidden
             >Fake audio</span
@@ -358,6 +373,10 @@
           <p class="panel-kicker">Join the meeting</p>
           <h1 id="relay-overlay-title" class="panel-title">Relay</h1>
           <p class="panel-sub">Relay presents · the presenter hosts</p>
+          <p class="panel-demo" hidden>
+            An online meeting, simulated: the participants are prerecorded. Their clips play on these speakers and stream to
+            Higgs as they play; the microphone stays off. Everything the facilitator says, looks up and decides is live.
+          </p>
         </header>
         <ul class="checklist">
           <li data-item="server" data-status="working">
@@ -380,6 +399,10 @@
             <span class="ic" aria-hidden="true"></span><span class="label">Backup narration</span
             ><span class="detail">when you join</span>
           </li>
+          <li data-item="clips" data-status="pending" hidden>
+            <span class="ic" aria-hidden="true"></span><span class="label">Participant clips</span
+            ><span class="detail">when you join</span>
+          </li>
           <li data-item="realtime" data-status="pending">
             <span class="ic" aria-hidden="true"></span><span class="label">Higgs Realtime</span
             ><span class="detail">waiting for the server</span>
@@ -393,7 +416,7 @@
           </p>
         </div>
         <dl class="keys" aria-label="Presenter keys">
-          <div><dt><kbd>Space</kbd></dt><dd>talk to <span class="ai-name">Relay</span>, again to send</dd></div>
+          <div data-key="space"><dt><kbd>Space</kbd></dt><dd>talk to <span class="ai-name">Relay</span>, again to send</dd></div>
           <div><dt><kbd>Esc</kbd></dt><dd>cancel the turn</dd></div>
           <div><dt><kbd>→</kbd> <kbd>←</kbd></dt><dd>next / previous slide</dd></div>
           <div><dt><kbd>P</kbd></dt><dd>pause</dd></div>

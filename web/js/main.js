@@ -8,10 +8,15 @@
  * A meeting talk (On the Same Page, contract v3 §6: `talk.meeting`) adds the `meeting`, `evidence`, `transcript` and
  * `alignment` messages, the agenda phase and checkpoint in `state`, the phase and reset keys, the `speaker` label, and
  * the room mic of the discussion (frames stream while the backend has the mic open, unless it is muted here).
+ * A simulated online meeting (contract v3.1 §4: `talk.demo` with input `clips`) never asks for the microphone: the
+ * participants are prerecorded clips, preloaded at join, played on their own buses and streamed as `mic` frames
+ * (source "clip") by the Demo Audio Controller (demo.js), whose script this page runs on its own events (Run demo,
+ * Play next); a `barge_in` from the backend shows on the facilitator's tile.
  */
 import { AudioEngine, Microphone, NarrationPlayer, ReplyPlayer, STOP_FADE_S } from "./audio.js";
 import { Captions } from "./captions.js";
 import { Deck } from "./deck.js";
+import { ClipPlayer, ClipStream, DemoController, MIC_OFF, PUMP_MS, clipLabel, clipsMode, demoLine, normalizeDemo } from "./demo.js";
 import {
   FACILITATOR_KINDS,
   ROOM_STATES,
@@ -21,6 +26,7 @@ import {
   normalizeMeetingInfo,
   normalizeMeetingState,
   normalizeUtterance,
+  phaseButton,
 } from "./facilitator.js";
 import { installKeys } from "./keys.js";
 import { Meeting } from "./meeting.js";
@@ -46,6 +52,9 @@ import { RATE, backoffMs, int16ToBase64, isNewerReply, meterLevel, toInt } from 
 /** @typedef {import("./talk.js").TalkSlide} TalkSlide */
 /** @typedef {import("./captions.js").LiveAudio} LiveAudio */
 /** @typedef {import("./meeting.js").ControlAction} ControlAction */
+/** @typedef {import("./demo.js").DemoStep} DemoStep */
+/** @typedef {import("./demo.js").ClipMeta} ClipMeta */
+/** @typedef {import("./facilitator.js").Checkpoint} Checkpoint */
 
 const HOLD_TAIL_MS = 120; // hold mode: send space_up this late, so the last 100 ms mic frame still goes out
 const RENDER_QUANTUM_MS = (128 / RATE) * 1000;
@@ -90,6 +99,10 @@ const S = {
   roomMuted: false, // the discussion's room mic is muted here: no frames go out while the backend listens to the room
   /** @type {string|null} who the room's next lines are from (null: the room) */
   speaker: null,
+  /** @type {Checkpoint|null} the last checkpoint (the demo script's talking-point cue) */
+  checkpoint: null,
+  /** the Realtime link's status (`connection`): offline, connecting, ready, reconnecting, error */
+  realtime: "offline",
 };
 
 /** @type {DeckSocket} */ let socket;
@@ -104,6 +117,12 @@ const S = {
 /** @type {Toasts} */ let toasts;
 /** @type {Checklist} */ let checklist;
 /** @type {Meeting} */ let meeting;
+/** @type {ClipPlayer} */ let clips;
+/** @type {ClipStream} */ let clipStream;
+/** @type {DemoController|null} the demo script (a simulated online meeting only) */
+let demo = null;
+/** @type {ReturnType<typeof setInterval>|undefined} */
+let pumpTimer;
 /** @type {{overlay: HTMLElement, arm: HTMLButtonElement, done: HTMLButtonElement, typedForm: HTMLFormElement, typed: HTMLInputElement}} */
 let ui;
 /** @type {Promise<Talk>} */
@@ -204,8 +223,232 @@ function onTalk(talk) {
       (talk.fake_audio ? " · FAKE AUDIO: placeholder tones, not TTS" : ""),
   );
   if (!S.armed && !S.arming) checklist.set("narration", "pending", `${chunks} chunks, loaded when you join`);
+  if (clipsOn()) setupDemo(talk);
   updateWhere();
   socket.connect();
+}
+
+// ---------------------------------------------------------------- the simulated online meeting (demo.js)
+
+/** A meeting whose participants are prerecorded clips (the backend's input is `clips`): the mic stays off. */
+function clipsOn() {
+  return Boolean(S.talk?.meeting) && clipsMode(S.talk?.demo);
+}
+
+/**
+ * The demo script, the participants' tiles and the disclosure; the join dialog says the mic stays off.
+ * @param {Talk} talk
+ */
+function setupDemo(talk) {
+  if (demo || !talk.demo || !talk.meeting) return;
+  demo = new DemoController(talk.demo.steps, {
+    now: () => performance.now(),
+    play: startClip,
+    act: runAction,
+    available: (step) => step.action !== null || (step.audio !== null && !clips.errors.has(step.id)),
+    onChange: renderDemo,
+  });
+  meeting.enableDemo(talk.meeting.participants);
+  checklist.set("mic", "ok", MIC_OFF);
+  const clipSteps = talk.demo.steps.filter((s) => !s.action).length;
+  const row = document.querySelector('[data-item="clips"]');
+  if (row instanceof HTMLElement) row.hidden = false;
+  checklist.set("clips", "pending", `${clipSteps} clips, loaded when you join`);
+  const hint = document.querySelector(".panel-hint");
+  if (hint) hint.textContent = "Joining turns on the speaker, loads the participant clips and the backup narration, and checks Higgs Realtime. The microphone stays off.";
+  const disclosure = document.querySelector(".panel-demo");
+  if (disclosure instanceof HTMLElement) disclosure.hidden = false;
+  // no microphone: Space opens the typed box (onKeyAction), it doesn't talk to the facilitator
+  const space = document.querySelector('.keys [data-key="space"] dd');
+  if (space) space.textContent = "type a line (the microphone is off)";
+  renderDemo();
+}
+
+/** Fetch every participant clip (the checklist counts them); a missing one shows as unavailable. @param {Talk} talk */
+async function preloadClips(talk) {
+  if (!clipsOn() || !talk.demo) return;
+  if (!engine.ctx) {
+    checklist.set("clips", "fail", "no audio: the participants' clips cannot play");
+    return;
+  }
+  const result = await clips.preload(talk.demo.steps, (done, total, failed) =>
+    checklist.set("clips", "working", `${done}/${total}${failed ? ` · ${failed} unavailable` : ""}`),
+  );
+  if (result.failed) {
+    const first = clips.errors.values().next().value ?? "";
+    checklist.set("clips", "fail", `${result.total - result.failed}/${result.total} · ${result.failed} unavailable (${first}): Play next skips them`);
+    report("warning", `arm: ${result.failed}/${result.total} participant clips failed to load (${first})`);
+  } else if (talk.demo.steps.some((s) => !s.action && s.fake)) {
+    checklist.set("clips", "warn", `${result.total}/${result.total} · FAKE: placeholder tones, not voices (relay.clips --fake)`);
+  } else {
+    checklist.set("clips", "ok", `${result.total}/${result.total}`);
+  }
+  renderDemo();
+}
+
+/** The demo strip shows the script's state. */
+function renderDemo() {
+  if (!demo) return;
+  const view = demo.view();
+  const line = demoLine(view, demo.steps, phaseButton(S.agendaPhase ?? "presentation").label);
+  meeting.demoView({ running: view.running, done: view.done, playing: view.playing !== null, waiting: view.waiting, text: line.text, title: line.title });
+}
+
+/** What the demo script's cues look at, from what this page knows now (called on its events). */
+function syncDemo() {
+  if (!demo) return;
+  const snap = replies.snapshot();
+  let kind = S.replyKind && snap && S.replyKind.reply === snap.reply ? S.replyKind.kind : null;
+  let heard = kind && snap ? snap.played_ms : null;
+  const rendered = kind === null ? renderedPoint() : null;
+  if (rendered) {
+    // the renders present the talking point (a live narration failed: the backup): as audible as a live one
+    kind = "narration";
+    heard = rendered.t_ms;
+  }
+  demo.observe({
+    state: S.state,
+    agendaPhase: S.agendaPhase,
+    checkpoint: S.checkpoint,
+    replyKind: kind,
+    heardMs: heard,
+    audible: relayAudible(),
+  });
+}
+
+/**
+ * The rendered narration playing the checkpoint's slide (the backup standing in for a live narration), as a
+ * talking-point cue hears it: its position. Only while Realtime is up: offline the backend can't hear a participant's
+ * clip, which would then play over the backup unheard.
+ */
+function renderedPoint() {
+  if (!narration.active || S.realtime !== "ready" || !S.checkpoint) return null;
+  const pos = narration.position();
+  return pos && pos.slide === S.checkpoint.slide_id ? pos : null;
+}
+
+let demoSyncAt = -Infinity;
+const DEMO_SYNC_MS = 100; // rendered narration has no progress events: its talking-point cue is looked at this often
+
+/**
+ * Play a participant's clip: the `speaker` message first, then the clip on their bus and its samples as `mic` frames
+ * paced on the audio clock (ClipStream). The facilitator is not cut here: the backend decides (a barge-in) from what
+ * it hears in the stream.
+ * @param {DemoStep} step
+ * @param {boolean} manual  Play next
+ */
+function startClip(step, manual) {
+  const name = step.speaker ?? "";
+  if (!S.armed) return false;
+  if (!socket.open) {
+    toasts.show(`Not connected to ${serverName()}: ${name}'s clip not played`);
+    return false;
+  }
+  onSpeaker(name || null);
+  const started = clips.play(step);
+  if (!started) {
+    toasts.show(`${name}'s clip can't play: ${clips.errors.get(step.id) ?? "not loaded"}`);
+    return false;
+  }
+  clipStream.start(started.samples, { speaker: name, clip: step.id }, started.t0);
+  if (clipStream.active && !pumpTimer) pumpTimer = setInterval(() => clipStream.pump(), PUMP_MS);
+  captions.user(step.say, clipLabel(name, manual));
+  meeting.clipStarted(name, manual);
+  if (manual) report("info", `demo: ${step.id} played by hand (Play next)`);
+  return true;
+}
+
+/**
+ * One frame of the participant stream: the clip's samples (or the silence after it), with who and which clip, and
+ * where the facilitator is (its reply and the ms heard; `at`: the backup narration's position, as a key sends it):
+ * the backend cuts it there on a barge-in. `tail`: the silence after the clip (the backend ends the participant's
+ * line where the clip ends, never on a pause inside it). Never dropped: the stream is real time.
+ * @param {Int16Array} pcm
+ * @param {ClipMeta} meta
+ * @param {boolean} tail
+ */
+function sendClipFrame(pcm, meta, tail) {
+  const reply = replies.snapshot();
+  socket.send({
+    type: "mic",
+    pcm: int16ToBase64(pcm),
+    source: "clip",
+    speaker: meta.speaker,
+    clip: meta.clip,
+    tail: Boolean(tail),
+    reply: reply?.reply ?? null,
+    played_ms: reply?.played_ms ?? null,
+    at: narration.position(),
+  });
+}
+
+/** The clip's audio played to its end (its silence still streams): the next step's cues may hold now. @param {ClipMeta} meta */
+function onClipAudioEnd(meta) {
+  meeting.clipStopped();
+  demo?.clipEnded(meta.clip);
+}
+
+function onClipStreamIdle() {
+  clearInterval(pumpTimer);
+  pumpTimer = undefined;
+}
+
+/**
+ * An action step of the script: it presses the phase button, or starts the presentation (R). Disclosed in the chat.
+ * @param {DemoStep} step
+ */
+function runAction(step) {
+  if (!S.armed) return false;
+  if (step.action === "phase") {
+    const label = phaseButton(S.agendaPhase ?? "presentation").label;
+    onKeyAction("phase", null);
+    meeting.scriptNote(`The demo script pressed “${label}”`);
+  } else if (step.action === "start") {
+    onKeyAction("relay", null);
+    meeting.scriptNote("The demo script started the presentation");
+  }
+  return true;
+}
+
+/**
+ * Stop the clip playing, at once. With `tail` the second of silence still streams (the backend hears it end).
+ * @param {boolean} tail
+ */
+function stopClip(tail) {
+  clips.stop();
+  clipStream.stop(tail);
+  meeting.clipStopped();
+}
+
+/** Run demo / Stop demo. Run in the opening also starts the presentation (unless the script's first step does). */
+function onDemoRun() {
+  if (!S.armed) {
+    showOverlay();
+    return;
+  }
+  if (!demo) return;
+  if (demo.running) {
+    demo.stop();
+    stopClip(true);
+    return;
+  }
+  const opening = S.phase === "opening" && S.state === "IDLE" && (S.agendaPhase ?? "presentation") === "presentation";
+  const first = demo.index === 0 ? demo.next : null;
+  if (!demo.run()) return;
+  if (opening && first && first.action !== "start" && demo.index === 0) {
+    onKeyAction("relay", null);
+    meeting.scriptNote("Run demo started the presentation");
+  }
+  syncDemo();
+}
+
+/** Play next: the next step now, by hand (disclosed). */
+function onDemoPlay() {
+  if (!S.armed) {
+    showOverlay();
+    return;
+  }
+  if (demo && !demo.playNext()) renderDemo();
 }
 
 /** A slide of the loaded talk by id or deck index. @param {unknown} ref @returns {TalkSlide|null} */
@@ -256,9 +499,12 @@ function onArmClick() {
   } catch (err) {
     checklist.set("audio", "fail", `${errText(err)}: narration will be captions only`);
   }
-  const micRequest = Microphone.request();
+  // A simulated online meeting never asks for the microphone (the participants are clips). Before /api/talk has
+  // answered the page can't know yet: then it asks once the talk is in (the prompt just shows a moment later).
+  /** @type {Promise<MediaStream|null>} */
+  const micRequest = S.talk ? (clipsOn() ? Promise.resolve(null) : Microphone.request()) : talkReady.then(() => (clipsOn() ? null : Microphone.request()));
   micRequest.catch(() => {}); // reported in armFlow
-  checklist.set("mic", "working", "asking for permission…");
+  if (!clipsOn()) checklist.set("mic", "working", "asking for permission…");
   armFlow(resumed, micRequest)
     .catch((err) => report("error", `arm: ${errText(err)}`))
     .finally(() => {
@@ -272,7 +518,7 @@ function onArmClick() {
  * of it has settled, whatever failed: the checklist says what, and the show can go on with what works. With every
  * check passed the dialog closes by itself; with a failure it stays, and its second button says "Join anyway".
  * @param {Promise<void>|null} resumed
- * @param {Promise<MediaStream>} micRequest
+ * @param {Promise<MediaStream|null>} micRequest  null: no microphone (a simulated online meeting)
  */
 async function armFlow(resumed, micRequest) {
   const audio = (async () => {
@@ -289,16 +535,22 @@ async function armFlow(resumed, micRequest) {
     }
   })();
   const preload = talkReady.then(preloadNarration);
+  const clipLoad = talkReady.then(preloadClips);
   await audio;
   try {
     const stream = await micRequest;
-    mic.attach(stream);
-    checklist.set("mic", "ok", mic.label || "granted");
+    if (stream) {
+      mic.attach(stream);
+      checklist.set("mic", "ok", mic.label || "granted");
+    } else {
+      checklist.set("mic", "ok", MIC_OFF);
+    }
   } catch (err) {
     checklist.set("mic", "fail", micErrorText(err));
     report("warning", `arm: microphone failed: ${micErrorText(err)}`);
   }
   await preload;
+  await clipLoad;
   S.armed = true;
   send({ type: "arm" });
   ui.arm.hidden = true;
@@ -309,6 +561,7 @@ async function armFlow(resumed, micRequest) {
   startLevelLoop();
   if (checklist.failing()) ui.done.textContent = "Join anyway";
   else joinClose = setTimeout(hideOverlay, JOIN_CLOSE_MS);
+  renderDemo();
 }
 
 /** Fetch + decode every narration chunk, with progress in the checklist. @param {Talk} talk */
@@ -401,6 +654,7 @@ function liveAudio() {
 function cutReply(reply = null) {
   const snap = replies.flush(reply);
   if (snap) captions.replyCut({ heard: Math.round((snap.played_ms * RATE) / 1000), received: replies.received, ended: replies.ended });
+  if (snap) syncDemo(); // the facilitator is quiet from now
   return snap !== null;
 }
 
@@ -447,6 +701,12 @@ function onKeyAction(action, event) {
     return;
   }
   if (action === "esc" && meeting.closeMenus()) return; // likewise over the open More menu
+  if ((action === "space" || action === "space_up") && clipsOn()) {
+    // A simulated online meeting has no microphone: Space would cut the facilitator and open a floor nobody can
+    // speak into. It opens the typed box instead, as the Mic off button does (a typed line is the live fallback).
+    if (action === "space") focusTyped();
+    return;
+  }
   hideOverlay();
   meeting.closeMenus();
   meeting.showLeft(false);
@@ -612,10 +872,18 @@ function onResetMeeting() {
     return;
   }
   onKeyAction("reset", null);
+  resetDemo();
   meeting.resetLocal();
   captions.clear();
   S.roomMuted = false;
   syncMicUi();
+}
+
+/** The meeting restarts (from here or elsewhere): the clip stops at once and the script goes back to its first step. */
+function resetDemo() {
+  if (!demo) return;
+  stopClip(false);
+  demo.reset();
 }
 
 /**
@@ -635,18 +903,28 @@ function onSpeaker(name) {
  * turn (LISTENING) saying how it ends. A plain talk never gets here with anything to do.
  */
 function syncMicUi() {
-  const room = S.micOpen && ROOM_STATES.has(S.state);
+  // a simulated online meeting has no room mic: the facilitator hears the participants' clips
+  const room = S.micOpen && ROOM_STATES.has(S.state) && !clipsOn();
   if (!room && !inDiscussion()) S.roomMuted = false;
   meeting.roomMic(room ? { muted: S.roomMuted } : null);
   if (!S.talk?.meeting || !S.micOpen) return;
-  if (room) {
+  if (clipsOn() && ROOM_STATES.has(S.state)) {
+    captions.setFlag("listening", S.state === "ROOM");
+    captions.hint("");
+  } else if (room) {
     const on = S.state === "ROOM" && !S.roomMuted;
     captions.setFlag("listening", on);
     captions.hint(on ? ROOM_HINT : "");
   } else if (S.state === "LISTENING") {
     captions.setFlag("listening", true);
-    captions.hint(S.micMode === "hold" ? LISTEN_HINTS.hold : LISTEN_HINTS.tap);
+    captions.hint(listenHint());
   }
+}
+
+/** How an open turn ends, under "Listening…": Space (tap / hold). A participant's clip turn ends with the clip. */
+function listenHint() {
+  if (clipsOn()) return "";
+  return S.micMode === "hold" ? LISTEN_HINTS.hold : LISTEN_HINTS.tap;
 }
 
 /** The room mic is muted here (the discussion): its frames stay in the browser. */
@@ -699,6 +977,8 @@ function relayAudible() {
 function levelFrame() {
   levelRaf = requestAnimationFrame(levelFrame);
   meeting.outputLevel(engine.analyser ? engine.outputLevel() : relayAudible() ? AUDIBLE_LEVEL : 0);
+  // the participants' rings: each from their own clip's bus (never the facilitator's output)
+  if (demo) for (const name of clips.speakers()) meeting.participantLevel(name, clips.level(name));
   meeting.tick(performance.now());
 }
 
@@ -723,6 +1003,7 @@ function onChunkEnded(playId) {
   stopCaptionLoop();
   captions.chunkDone();
   send({ type: "chunk_ended", play_id: playId });
+  syncDemo();
 }
 
 /**
@@ -738,6 +1019,12 @@ function onSilentChunk(req, why) {
 function onReplyDrained(reply, playedMs) {
   captions.replyDone();
   send({ type: "reply_drained", reply, played_ms: playedMs });
+  if (demo) {
+    syncDemo(); // quiet from now
+    // Only a reply the room heard is a cue: a silent one (a tool call alone, e.g. save_decision, whose spoken
+    // confirmation is the next reply of the same kind) drains at once and must not start the next step's gap.
+    if (playedMs > 0) demo.replyDrained(S.replyKind && S.replyKind.reply === reply ? S.replyKind.kind : "answer");
+  }
 }
 
 function captionFrame() {
@@ -746,6 +1033,11 @@ function captionFrame() {
   if (!pos) return;
   captions.follow(chunkKey(pos.slide, pos.chunk), pos.t_ms);
   watchAudioClock();
+  const now = performance.now();
+  if (demo && demo.running && now - demoSyncAt >= DEMO_SYNC_MS) {
+    demoSyncAt = now;
+    syncDemo(); // (a live reply's progress events do this for it)
+  }
   raf = requestAnimationFrame(captionFrame);
 }
 
@@ -792,7 +1084,7 @@ function setMicOpen(open) {
   status.micOpen(open);
   meeting.micOpen(open);
   // The room mic of the discussion is not a turn: the captions keep what the room and the facilitator said.
-  if (open && !ROOM_STATES.has(S.state)) captions.listening(S.micMode === "hold" ? LISTEN_HINTS.hold : LISTEN_HINTS.tap);
+  if (open && !ROOM_STATES.has(S.state)) captions.listening(listenHint());
   else if (!open) captions.listeningDone();
   syncMicUi();
 }
@@ -812,8 +1104,13 @@ function onSocketOpen() {
 function onSocketClose(info) {
   const wasUp = S.serverUp;
   S.serverUp = false;
-  // The backend goes IDLE when the deck drops (design §5.1); mirror it so nothing keeps talking.
+  // The backend goes IDLE when the deck drops (design §5.1); mirror it so nothing keeps talking. The demo script
+  // stops too: a clip the backend can't hear must not play on (Run demo carries on once the server is back).
   silence();
+  if (demo && (demo.running || clipStream.active)) {
+    demo.stop();
+    stopClip(false);
+  }
   // The next server may be a restarted one that numbers its replies from 1 again: forget the last reply's id.
   replies.reset();
   clearTimeout(pendingSpaceUp);
@@ -841,7 +1138,14 @@ const HANDLERS = new Map([
   ["cut", onCut],
   ["mic", (m) => setMicOpenFromServer(Boolean(m.open))],
   ["reply_start", onReplyStart],
-  ["reply_audio", (m) => replies.push(toInt(m.reply, null), m.pcm)],
+  [
+    "reply_audio",
+    (m) => {
+      const silent = !relayAudible();
+      replies.push(toInt(m.reply, null), m.pcm);
+      if (silent) syncDemo(); // the facilitator is audible from now
+    },
+  ],
   ["reply_end", (m) => replies.end(toInt(m.reply, null))],
   ["reply_flush", onReplyFlush],
   ["caption", onCaption],
@@ -855,6 +1159,8 @@ const HANDLERS = new Map([
   ["evidence", (m) => meeting.evidence(normalizeLookup(m))],
   ["transcript", onTranscript],
   ["alignment", (m) => meeting.alignment(normalizeEvent(m))],
+  // a simulated online meeting: the backend heard a participant's clip start while the facilitator spoke
+  ["barge_in", (m) => meeting.bargeIn(typeof m.speaker === "string" ? m.speaker : "", /** @type {number|null} */ (toInt(m.played_ms, null)))],
 ]);
 
 /** @param {Msg} msg */
@@ -950,8 +1256,18 @@ function onHello(m) {
     }
     meeting.meetingInfo(info);
   }
+  // The demo script, if /api/talk didn't have it. Only before joining: a page that joined with the mic stays so.
+  const demoInfo = normalizeDemo(m.demo);
+  if (S.talk && !S.armed && !S.arming) {
+    if (demoInfo && !S.talk.demo) S.talk.demo = demoInfo;
+    if (clipsOn() && !demo) setupDemo(S.talk);
+  }
   const snap = m.snapshot;
   if (snap && typeof snap === "object") {
+    // A (re)connect to a backend back in the opening, while the script is past its start: the server restarted (a
+    // clean take). The script starts over too, or Run demo would wait mid-way for cues that never come.
+    const opening = snap.phase === "opening" && snap.state === "IDLE" && (snap.agenda_phase ?? "presentation") === "presentation";
+    if (demo && demo.index > 0 && opening) resetDemo();
     onState(snap);
     const conn = snap.connection;
     if (typeof conn === "string") onConnection({ type: "connection", status: conn });
@@ -983,18 +1299,36 @@ function onTalkMeeting(talk) {
 function onMeetingState(m) {
   if (!S.talk?.meeting) return;
   const st = normalizeMeetingState(m, S.talk.meeting);
-  S.agendaPhase = st.phase;
-  if (st.checkpoint) S.status = st.checkpoint.status;
+  setAgendaPhase(st.phase);
+  if (st.checkpoint) {
+    S.status = st.checkpoint.status;
+    S.checkpoint = st.checkpoint;
+  }
   meeting.meetingState(st);
   syncMeeting();
   syncMicUi();
+  syncDemo();
 }
 
-/** `transcript`: one utterance of the discussion: the Transcript tab, and the captions with who said it. @param {Msg} m */
+/**
+ * The agenda phase. Back to the presentation from a later phase = the meeting restarted (from this page or not):
+ * the demo script starts over too.
+ * @param {string} phase
+ */
+function setAgendaPhase(phase) {
+  if (phase === "presentation" && (S.agendaPhase === "discussion" || S.agendaPhase === "wrapup")) resetDemo();
+  S.agendaPhase = phase;
+}
+
+/**
+ * `transcript`: one utterance of the discussion: the Transcript tab, and the captions with who said it (a
+ * prerecorded participant's line: "Alice (recorded)").
+ * @param {Msg} m
+ */
 function onTranscript(m) {
   const u = normalizeUtterance(m);
   meeting.transcript(u);
-  if (S.talk?.meeting && u.text) captions.user(u.text, u.speaker || "Room");
+  if (S.talk?.meeting && u.text) captions.user(u.text, u.source === "clip" && u.speaker ? clipLabel(u.speaker) : u.speaker || "Room");
 }
 
 /** @param {Msg} m */
@@ -1006,11 +1340,12 @@ function onState(m) {
   if ("thinking" in m) S.thinking = Boolean(m.thinking);
   if (typeof m.mic_mode === "string") setMicMode(m.mic_mode);
   if (m.slide !== undefined && m.slide !== null) S.slideRef = m.slide;
-  if (typeof m.agenda_phase === "string" && m.agenda_phase) S.agendaPhase = m.agenda_phase;
+  if (typeof m.agenda_phase === "string" && m.agenda_phase) setAgendaPhase(m.agenda_phase);
   if (typeof m.status === "string" && m.status) S.status = m.status;
   const cp = normalizeCheckpoint(m.checkpoint);
   if (cp) {
     S.status = cp.status;
+    S.checkpoint = cp;
     meeting.checkpoint(cp);
   }
   // The checklist never covers Relay presenting, the open mic or a live reply (nor the facilitator listening).
@@ -1023,6 +1358,7 @@ function onState(m) {
   syncMeeting();
   syncMicUi();
   updateWhere();
+  syncDemo();
 }
 
 /** @param {Msg} m */
@@ -1071,12 +1407,14 @@ function onPlay(m) {
   });
   startCaptionLoop();
   updateWhere();
+  syncDemo();
 }
 
 function onStop() {
   narration.stop();
   stopCaptionLoop();
   captions.freeze();
+  syncDemo();
 }
 
 /** @param {Msg} m */
@@ -1123,6 +1461,7 @@ function onReplyStart(m) {
   if (kind === "narration") captions.narrationReply();
   meeting.replyStarted(kind);
   syncMeeting();
+  syncDemo();
 }
 
 /** @param {Msg} m */
@@ -1134,8 +1473,12 @@ function onReplyFlush(m) {
 function onCaption(m) {
   const text = typeof m.text === "string" ? m.text : "";
   if (m.role === "user") {
-    captions.user(text);
-    meeting.caption(m, null);
+    // a simulated online meeting: a turn a prerecorded participant's clip started carries their name (the backend
+    // labels it); any other line (a typed question) is live, never "(recorded)", and keeps the label it has
+    const who = typeof m.speaker === "string" && m.speaker ? m.speaker : null;
+    const label = clipsOn() && who ? clipLabel(who) : null;
+    captions.user(text, label);
+    meeting.caption(m, null, label ?? "You");
     return;
   }
   if (m.role !== "assistant") return;
@@ -1148,12 +1491,14 @@ function onCaption(m) {
 /** @param {Msg} m */
 function onConnection(m) {
   const st = typeof m.status === "string" ? m.status : "offline";
+  S.realtime = st;
   const detail = m.detail === null || m.detail === undefined ? "" : String(m.detail);
   status.connection(st, detail);
   meeting.connection(st, detail);
   /** @type {import("./status.js").CheckStatus} */
   const check = st === "ready" ? "ok" : st === "error" ? "fail" : st === "offline" ? "pending" : "working";
   checklist.set("realtime", check, detail ? `${st}: ${detail}` : st);
+  syncDemo(); // (a talking-point cue on the backup narration needs Realtime to hear the clip)
 }
 
 /** @param {Msg} m */
@@ -1189,6 +1534,8 @@ function boot() {
     onPhase: onPhaseButton,
     onReset: onResetMeeting,
     onSpeaker,
+    onDemoRun,
+    onDemoPlay,
   });
   status = new StatusStrip(el(".strip"), el(".ticker"));
   banner = new Banner(el(".banner"));
@@ -1200,9 +1547,14 @@ function boot() {
   narration = new NarrationPlayer(engine, { onEnded: onChunkEnded, onSilent: onSilentChunk });
   replies = new ReplyPlayer(engine, {
     onStart: (reply) => captions.replyStart(reply),
-    onProgress: () => captions.replyProgress(liveAudio()),
+    onProgress: () => {
+      captions.replyProgress(liveAudio());
+      syncDemo(); // a talking-point cue waits for this much of the facilitator heard
+    },
     onDrained: onReplyDrained,
   });
+  clips = new ClipPlayer(engine);
+  clipStream = new ClipStream({ now: () => engine.now(), send: sendClipFrame, onAudioEnd: onClipAudioEnd, onIdle: onClipStreamIdle });
   mic = new Microphone(engine, {
     onFrame: onMicFrame,
     onLost: (why) => {

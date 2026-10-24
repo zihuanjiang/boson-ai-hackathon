@@ -6,6 +6,7 @@ Chrome can't start inside Claude Code's sandbox, so run this yourself (the `!` p
     ! uv run --with playwright python scripts/e2e_chrome.py --headed                # watch it happen
     ! uv run --with playwright python scripts/e2e_chrome.py --narration rendered    # the pre-rendered narration flow
     ! uv run --with playwright python scripts/e2e_chrome.py --talk talks/rollout-review   # On the Same Page, ~2 min
+    ! uv run --with playwright python scripts/e2e_chrome.py --talk talks/rollout-review --input mic   # typed lines
 
 Flow (brief §12 on talks/test): fake-render (the backup) → `python -m relay serve talks/test --fake-realtime
 --narration <mode>` on a free port → open the meeting with a fake microphone → Join with Computer Audio → tap Space on
@@ -28,6 +29,16 @@ Bob's two conflicts, no reply → Carol's confirmation → the intervention: the
 Carol's correction → resolved, a save_decision, the decision with owner Bob in the Notes → Wrap up → the summary and
 the meeting notes.
 
+A meeting talk with a demo.yaml (the simulated online meeting, contract v3.1; the server's input `clips`, its default
+for such a talk) runs the demo script instead: fake clips (`python -m relay.clips <talk> --fake`) → the disclosure
+(badge, the participants' "Recorded" tiles, the routing line, the join dialog: microphone off) → Join (getUserMedia is
+never called) → Run demo (it starts the presentation) → Alice's clip plays while the facilitator presents the cue's
+talking point and streams as `mic` frames (source "clip", the narration reply and the ms heard) → the backend's
+`barge_in` during the narration, the cut, "Interrupted by Alice" → the lookup's evidence card and callout → the answer
+→ the resume at that talking point → the hand-over → Bob's clip, Carol's, silent until the confirmation → the
+intervention and its alignment card → Carol's correction → the decision with owner Bob → the script presses Wrap up →
+the summary and the notes. `--input mic` runs the typed-lines flow above on the same talk.
+
 Asserts on deck-socket frames and on the meeting window (the AI's tile status, no scrollbars, the slides 16:9), and
 fails on any console error. Artifacts in out/e2e/: server.log, frames.jsonl, console.log, and screenshots of each stage
 (overlay, armed, narrating, live, qa, final; the meeting: m-presenting, m-evidence, m-discussion, m-intervention,
@@ -38,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 import socket
@@ -103,6 +115,14 @@ class Frames:
             return
         kind = msg.get("type")
         self.counts[f"{direction}:{kind}"] = self.counts.get(f"{direction}:{kind}", 0) + 1
+        if direction == "out" and kind == "mic" and msg.get("source") == "clip":
+            # a participant clip's frame (the simulated online meeting): kept without its audio, with its length and
+            # whether it is the silence after the clip
+            self.counts["out:mic:clip"] = self.counts.get("out:mic:clip", 0) + 1
+            pcm = base64.b64decode(msg.get("pcm") or "")
+            slim = {k: v for k, v in msg.items() if k != "pcm"}
+            self.items.append((self.now(), direction, {**slim, "samples": len(pcm) // 2, "silent": not any(pcm)}))
+            return
         if (direction, kind) in QUIET:
             return
         self.items.append((self.now(), direction, msg))
@@ -171,6 +191,18 @@ def utterance_of(text: str):
     return lambda m: m.get("type") == "transcript" and (m.get("utterance") or {}).get("text") == text
 
 
+# Counts getUserMedia calls (the simulated online meeting must never ask for the microphone). Runs before the page.
+GUM_SPY = """(() => {
+  window.__gumCalls = 0;
+  const md = navigator.mediaDevices;
+  if (!md || typeof md.getUserMedia !== "function") return;
+  const original = md.getUserMedia.bind(md);
+  md.getUserMedia = (...args) => {
+    window.__gumCalls += 1;
+    return original(...args);
+  };
+})();"""
+
 # The meeting window in real Chrome: no scrollbars, the slides a visible 16:9 box inside the shared screen.
 LAYOUT_JS = """() => {
   const doc = document.documentElement;
@@ -194,6 +226,9 @@ class Run:
         relay = [s for s in talk["slides"] if s["speaker"] == "relay"]
         self.first = relay[0]["id"]  # the first slide Relay presents
         self.meeting = talk.get("meeting")  # On the Same Page: the agenda, participants and documents (else None)
+        demo = talk.get("demo") or {}
+        # the simulated online meeting: the demo script, when the server's input is the participants' clips
+        self.demo = demo if self.meeting and demo.get("input") == "clips" and demo.get("steps") else None
 
     async def shot(self, name: str) -> None:
         await self.page.screenshot(path=str(OUT / f"{name}.png"))
@@ -418,6 +453,193 @@ class Run:
         await self.layout("wrap-up")
         await self.shot("m-notes")
 
+    # ---- the simulated online meeting (contract v3.1: prerecorded participants, the mic off)
+
+    def step(self, **when) -> dict:
+        """The first clip step of the demo script whose cue has these keys (e.g. talking_point=…, after_reply=…)."""
+        for s in self.demo["steps"]:
+            cue = s.get("when") or {}
+            if not s.get("action") and all(cue.get(k) is not None if v is None else cue.get(k) == v
+                                           for k, v in when.items()):
+                return s
+        raise AssertionError(f"the demo script has no clip step with a cue {when}")
+
+    def clip_frames(self, clip: str, since: int = 0) -> list[tuple[float, dict]]:
+        return [(t, m) for t, d, m in self.frames.items[since:]
+                if d == "out" and m.get("type") == "mic" and m.get("clip") == clip]
+
+    async def demo_names(self) -> None:
+        """Before joining: the disclosure, the participants' tiles, the strip, the join dialog with the mic off."""
+        await self.expect_text(".demo-pill", "Simulated participants · prerecorded audio")
+        names = [p["name"] for p in self.meeting.get("participants") or []]
+        tiles = self.page.locator(".tile-participant")
+        if await tiles.count() != len(names):
+            self.problems.append(f"{await tiles.count()} participant tiles, expected {len(names)}")
+        for name in names:
+            await self.expect_text(f'.tile-participant[data-name="{name}"] .name', name)
+        if await self.page.locator(".tile-participant .tile-tag", has_text="Recorded").count() != len(names):
+            self.problems.append("every participant tile should say Recorded")
+        if await self.page.locator(".tile-you").is_visible():
+            self.problems.append("the room's tile should give way to the participants' tiles")
+        await self.expect_visible(".demo-run", "Run demo")
+        await self.expect_text(".demo-next-text", "Next: ", contains=True)
+        await self.expect_text('[data-item="mic"] .detail', "off — participants are prerecorded")
+        await self.expect_visible('[data-item="clips"]', "the participant clips row")
+        await self.expect_visible(".panel-demo", "the join dialog's disclosure")
+        await self.expect_text(".strip-routing", "Higgs input: participant clips only (facilitator audio is not sent)")
+        await self.expect_text(".mic-button .tb-label", "Mic off")
+
+    async def demo_flow(self) -> None:
+        frames, page = self.frames, self.page
+        alice = self.step(talking_point=None)
+        point = alice["when"]["talking_point"]
+        heard_ms = alice["when"].get("heard_ms") or 0
+        clips = [s for s in self.demo["steps"] if not s.get("action")]
+        await self.expect_text('[data-item="clips"] .detail', f"{len(clips)}/{len(clips)}", contains=True)  # · FAKE …
+        gum = await page.evaluate("window.__gumCalls")
+        if gum:
+            self.problems.append(f"getUserMedia was called {gum} time(s) in clips mode (the mic must stay off)")
+
+        print("2. Run demo: the script starts the presentation")
+        mark = len(frames.items)
+        await page.locator(".demo-run").click()
+        await frames.wait("out", lambda m: m.get("type") == "key" and m.get("key") in ("relay", "space"),
+                          "Run demo started the presentation", 5, mark)
+        await self.expect_text(".demo-run", "Stop demo")
+        await frames.wait("in", is_kind("narration"), "the facilitator presents live", 30, mark)
+        await self.expect_status("Presenting")
+        await self.layout("presenting")
+        await self.shot("d-presenting")
+
+        print(f"3. {alice['speaker']}'s clip while the facilitator presents {point}: a genuine barge-in")
+        cue = await frames.wait("in", lambda m: m.get("type") == "state" and m.get("state") == "NARRATING"
+                                and (m.get("checkpoint") or {}).get("talking_point_id") == point,
+                                f"presenting {point}", 90, mark)
+        spk = await frames.wait("out", lambda m: m.get("type") == "speaker" and m.get("name") == alice["speaker"],
+                                f"speaker {alice['speaker']} before the clip", 30, cue)
+        first = await frames.wait("out", lambda m: m.get("type") == "mic" and m.get("clip") == alice["id"],
+                                  f"{alice['id']} streams as clip frames", 5, spk)
+        f0 = frames.msg(first)
+        narr = [m for _, d, m in frames.items[mark:first] if d == "in" and is_kind("narration")(m)]
+        if f0.get("source") != "clip" or f0.get("speaker") != alice["speaker"]:
+            self.problems.append(f"the clip frame should carry source clip and the speaker: {f0}")
+        if not narr or f0.get("reply") != narr[-1].get("reply"):
+            self.problems.append(f"the clip's first frame should carry the narration reply playing: {f0}")
+        if (f0.get("played_ms") or 0) < heard_ms - 150:
+            self.problems.append(f"the clip started before {heard_ms} ms of {point} were heard: {f0.get('played_ms')}")
+        await asyncio.sleep(0.15)
+        await self.expect_text(f'.tile-participant[data-name="{alice["speaker"]}"] .tile-status', "Speaking")
+        await self.shot("d-alice")
+        barge = await frames.wait("in", lambda m: m.get("type") == "barge_in" and m.get("speaker") == alice["speaker"],
+                                  "the backend's barge_in", 10, first)
+        last_state = [m for _, d, m in frames.items[cue:barge] if d == "in" and m.get("type") == "state"]
+        if not last_state or last_state[-1].get("state") != "NARRATING":
+            self.problems.append(f"the barge-in should come during the narration: last state {last_state[-1:] or None}")
+        if frames.msg(barge).get("clip") != alice["id"]:
+            self.problems.append(f"barge_in should name the clip: {frames.msg(barge)}")
+        await frames.wait("in", is_type("reply_flush", reply=f0.get("reply")), "the narration is cut", 5, first)
+        await self.expect_text(".tile-relay .tile-status", f"Interrupted by {alice['speaker']}")
+        await self.shot("d-barge-in")
+        ev = await frames.wait("in", is_type("evidence"), "an evidence lookup (lookup_evidence ran)", 30, barge)
+        results = (frames.msg(ev).get("lookup") or {}).get("results") or []
+        if not results:
+            self.problems.append("lookup_evidence found nothing for Alice's question")
+        await page.wait_for_selector(".lookup .src-chip", timeout=5_000)
+        await self.expect_visible(".callout", "the evidence callout")
+        if results:
+            await self.expect_text(".lookup .src-chip", results[0]["source_id"])
+        await self.shot("d-evidence")
+        answer = await frames.wait("in", is_kind("answer"), "the live answer", 20, ev)
+        resumed = await frames.wait("in", is_kind("narration"), "the presentation resumes", 40, answer)
+        st = frames.find("in", lambda m: m.get("type") == "state" and m.get("state") == "NARRATING", answer)
+        cp = (frames.msg(st).get("checkpoint") or {}) if st is not None else {}
+        if cp.get("talking_point_id") != point:
+            self.problems.append(f"the resume should pick up {point}: {cp}")
+        aliceframes = self.clip_frames(alice["id"])
+        audio = [m for _, m in aliceframes if not m["silent"]]
+        if sum(m["samples"] for m in audio) < 0.9 * 24 * (alice.get("duration_ms") or 0):
+            self.problems.append(f"{alice['id']}: {sum(m['samples'] for m in audio)} samples streamed, the clip has "
+                                 f"{alice.get('duration_ms')} ms")
+        if aliceframes and len(audio) > 1:
+            span = aliceframes[len(audio) - 1][0] - aliceframes[0][0]
+            want = (len(audio) - 1) * 0.1
+            if not want - 0.15 <= span <= want + 0.3:
+                self.problems.append(f"{alice['id']}'s frames went out over {span:.2f} s, the audio lasts {want:.2f} s")
+
+        print("4. The rest of the presentation, the hand-over, the discussion: the participants' clips")
+        await frames.wait("in", is_kind("handover"), "the hand-over", 120, resumed)
+        room = await frames.wait("in", is_state(state="ROOM", agenda_phase="discussion"), "listening to the room", 30,
+                                 resumed)
+        bob = self.step(phase="discussion")
+        carol = self.step(after=bob["id"])
+        correction = self.step(after_reply="intervention")
+        b0 = await frames.wait("out", lambda m: m.get("type") == "mic" and m.get("clip") == bob["id"],
+                               f"{bob['speaker']}'s clip after the quiet", 20, room)
+        await frames.wait("in", lambda m: m.get("type") == "transcript"
+                          and (m.get("utterance") or {}).get("speaker") == bob["speaker"],
+                          f"{bob['speaker']}'s line in the transcript", 20, b0)
+        await frames.wait("in", alignment("conflict"), f"{bob['speaker']}'s line conflicts with the sources", 10, b0)
+        c0 = await frames.wait("out", lambda m: m.get("type") == "mic" and m.get("clip") == carol["id"],
+                               f"{carol['speaker']}'s clip after {bob['speaker']}'s", 20, b0)
+        bob_audio = [t for t, m in self.clip_frames(bob["id"]) if not m["silent"]]
+        gap = frames.at(c0) - (bob_audio[-1] + 0.1 if bob_audio else frames.at(b0))
+        if gap < (carol["when"].get("gap_ms") or 0) / 1000 - 0.2:
+            self.problems.append(f"{carol['id']} started {gap:.2f} s after {bob['id']}'s audio ended")
+        await self.layout("discussion")
+        await self.shot("d-discussion")
+        early = frames.find("in", lambda m: m.get("type") == "reply_start", room + 1)
+        iv = await frames.wait("in", alignment("intervene"), "the gate: intervene before it is confirmed", 30, c0)
+        if early is not None and early < c0:
+            self.problems.append("the facilitator spoke before the group confirmed anything (silent by default)")
+        await frames.wait("in", lambda m: m.get("type") == "evidence"
+                          and (m.get("lookup") or {}).get("purpose") == "intervention",
+                          "the intervention's evidence", 10, iv)
+        asked = await frames.wait("in", is_kind("intervention"), "the facilitator speaks up", 20, iv)
+        await asyncio.sleep(0.5)
+        card = '.align-card[data-kind="intervention"]'
+        await self.expect_visible(card, "the alignment card")
+        await self.expect_text(f"{card} .align-status", "Asked")
+        await self.expect_visible('.callout[data-kind="intervention"]', "the intervention's evidence callout")
+        await self.shot("d-intervention")
+        done = await frames.wait("out", is_type("reply_drained", reply=frames.msg(asked).get("reply")),
+                                 "the intervention played to its end", 30, asked)
+
+        print(f"5. {correction['speaker']} corrects it: the decision with its owner")
+        k0 = await frames.wait("out", lambda m: m.get("type") == "mic" and m.get("clip") == correction["id"],
+                               f"{correction['id']} after the intervention", 20, done)
+        if frames.at(k0) - frames.at(done) < (correction["when"].get("gap_ms") or 0) / 1000 - 0.2:
+            self.problems.append(f"{correction['id']} came {frames.at(k0) - frames.at(done):.2f} s after the intervention")
+        await frames.wait("in", alignment("resolved"), "the conflict is resolved", 20, k0)
+        await frames.wait("in", is_kind("decision"), "the facilitator confirms the decision", 20, k0)
+        await frames.wait("in", lambda m: m.get("type") == "meeting"
+                          and any(d.get("owner") == "Bob" for d in m.get("decisions") or []),
+                          "a decision owned by Bob in the meeting state", 20, k0)
+        await asyncio.sleep(0.4)
+        await self.expect_text(f"{card} .align-status", "Resolved")
+        await page.locator('.tab[data-tab="notes"]').click()
+        await self.expect_text('.notes-pane [data-section="decisions"] .owner-chip', "Owner: Bob")
+        await self.shot("d-decision")
+
+        print("6. The script presses Wrap up: the summary and the notes")
+        wrap = await frames.wait("out", is_type("key", key="phase"), "the script pressed Wrap up", 20, k0)
+        await frames.wait("in", is_kind("summary"), "the summary", 20, wrap)
+        await frames.wait("in", lambda m: m.get("type") == "meeting" and m.get("phase") == "wrapup" and m.get("notes"),
+                          "the meeting notes", 20, wrap)
+        await asyncio.sleep(0.6)
+        await self.expect_text(".demo-next-text", "Demo script done")
+        if "The demo script pressed" not in await self.text_of(".chat-log"):
+            self.problems.append("the script's Wrap up should be disclosed in the chat")
+        if "played by hand" in await self.text_of(".chat-log"):
+            self.problems.append("a clip was played by hand: the script should have run on its cues")
+        await self.layout("wrap-up")
+        await self.shot("d-notes")
+        if await page.evaluate("window.__gumCalls"):
+            self.problems.append("getUserMedia was called during the demo")
+        plain = frames.counts.get("out:mic", 0) - frames.counts.get("out:mic:clip", 0)
+        if plain:
+            self.problems.append(f"{plain} mic frames without source clip went out (the physical mic must stay off)")
+        print(f"  clip frames: {frames.counts.get('out:mic:clip', 0)}, getUserMedia calls: 0")
+
     async def live_flow(self, mark: int) -> int:
         frames, first = self.frames, self.first
         await frames.wait("in", lambda m: m.get("type") == "slide" and m.get("slide") == first
@@ -523,6 +745,7 @@ async def run(port: int, headed: bool, narration: str) -> list[str]:
             browser = await p.chromium.launch(headless=not headed, args=args)
         context = await browser.new_context(viewport={"width": 1280, "height": 720})
         await context.grant_permissions(["microphone"], origin=f"http://127.0.0.1:{port}")
+        await context.add_init_script(GUM_SPY)
         page = await context.new_page()
 
         def on_console(m) -> None:
@@ -549,15 +772,18 @@ async def run(port: int, headed: bool, narration: str) -> list[str]:
             await asyncio.sleep(0.5)
             if steps.meeting:
                 await steps.meeting_names()
+            if steps.demo:
+                await steps.demo_names()
             await steps.shot("overlay")
             await steps.join()
-            mark = await steps.opening()
-            if steps.meeting:
-                await steps.meeting_flow(mark)
+            if steps.demo:
+                await steps.demo_flow()
+            elif steps.meeting:
+                await steps.meeting_flow(await steps.opening())
             elif narration == "live":
-                await steps.live_flow(mark)
+                await steps.live_flow(await steps.opening())
             else:
-                await steps.rendered_flow(mark)
+                await steps.rendered_flow(await steps.opening())
             if not steps.meeting:
                 await steps.qa()
         except Exception as exc:  # keep the evidence, then report
@@ -582,6 +808,9 @@ def main() -> int:
     parser.add_argument("--talk", default="talks/test")
     parser.add_argument("--narration", choices=("live", "rendered"), default="live",
                         help="live: Higgs Realtime (here the fake) presents every slide; rendered: the TTS 3 renders")
+    parser.add_argument("--input", choices=("clips", "mic"), default=None,
+                        help="a talk with demo.yaml: clips (the server's default: the demo script, mic off) or mic "
+                             "(the typed-lines meeting flow)")
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
     for old in OUT.glob("*.png"):
@@ -592,16 +821,26 @@ def main() -> int:
     if render.returncode:
         print(render.stdout, render.stderr)
         return 1
+    if (ROOT / args.talk / "demo.yaml").exists():  # the simulated online meeting: fake participant clips (tones)
+        clips = subprocess.run([sys.executable, "-m", "relay.clips", args.talk, "--fake"], cwd=ROOT, env=env,
+                               capture_output=True, text=True)
+        if clips.returncode:
+            print(clips.stdout, clips.stderr)
+            return 1
     port = free_port()
+    serve = [sys.executable, "-m", "relay", "serve", args.talk, "--fake-realtime", "--narration", args.narration,
+             "--port", str(port)]
+    if args.input:
+        serve += ["--input", args.input]
     with (OUT / "server.log").open("w") as log:
-        server = subprocess.Popen([sys.executable, "-m", "relay", "serve", args.talk, "--fake-realtime",
-                                   "--narration", args.narration, "--port", str(port)],
-                                  cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
-    meeting = False
+        server = subprocess.Popen(serve, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
+    meeting = demo = False
     try:
         wait_http(f"http://127.0.0.1:{port}/healthz", 20)
         print(f"server on http://127.0.0.1:{port} (log: {OUT / 'server.log'}), narration {args.narration}")
-        meeting = bool(get_json(f"http://127.0.0.1:{port}/api/talk").get("meeting"))
+        talk = get_json(f"http://127.0.0.1:{port}/api/talk")
+        meeting = bool(talk.get("meeting"))
+        demo = meeting and (talk.get("demo") or {}).get("input") == "clips"
         if meeting and args.narration != "live":
             print("a meeting talk runs with live narration only (the facilitator presents through Higgs Realtime)")
             return 2
@@ -618,7 +857,12 @@ def main() -> int:
         for problem in problems:
             print("  -", problem)
         return 1
-    if meeting:
+    if demo:
+        print("PASS: Run demo → Alice's prerecorded clip streams while the facilitator presents → barge-in during the "
+              "narration → lookup_evidence on screen → answer → resume at the talking point → Bob's and Carol's clips "
+              "→ silent until the confirmation → intervention with the alignment card → Carol's correction → the "
+              "decision with owner Bob → the script's Wrap up, with the microphone never asked for, in Chrome")
+    elif meeting:
         print("PASS: the facilitator presents → a typed question → lookup_evidence on screen → resume → discussion → "
               "silent until the confirmation → intervention with the alignment card → the corrected decision with "
               "owner Bob in the notes → wrap-up, in Chrome")

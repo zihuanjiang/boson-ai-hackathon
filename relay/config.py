@@ -28,6 +28,12 @@ MIC_MODES = ("tap", "hold")  # "open" (hands-free) is a nice-to-have, not in v1
 # live: Higgs Realtime presents every slide in its own words (D52); rendered: the TTS 3 renders play, as in v1.
 # In live mode the renders are the offline backup (D53).
 NARRATION_MODES = ("live", "rendered")
+# Where the participants' voices come from (contract v3.1, doc/online_meeting_patch.md). clips: an online meeting, the
+# participants are prerecorded clips the deck plays and streams (talks/<id>/demo.yaml), the physical mic is off and a
+# participant who starts talking while the facilitator speaks barges in. mic: the room microphone with tap-to-talk
+# (in-room; the facilitator's voice would reach the mic, so no voice barge-in). Unset: clips for a talk with
+# demo.yaml, else mic.
+INPUT_MODES = ("clips", "mic")
 # Manual turns by default (On the Same Page): `turn_detection: null` for the whole session, and the backend ends user
 # turns itself (relay/segmenter.py) and decides every response.create. Live 2026-10-23: turn detection cannot be
 # changed after the session starts, and the discussion must be transcribed without replies (a commit with turn
@@ -50,6 +56,7 @@ class Settings:
     temperature: float | None = None
     full_session_update: bool = False
     fake_realtime: bool = False
+    input: str | None = None  # INPUT_MODES; None: clips for a talk with demo.yaml, else mic
     host: str = "127.0.0.1"
     port: int = 8000
     out_dir: Path = OUT
@@ -103,6 +110,7 @@ def load_settings(**overrides) -> Settings:
         "temperature": float(temperature) if temperature else None,
         "full_session_update": _flag(env.get("RELAY_FULL_SESSION_UPDATE")),
         "fake_realtime": _flag(env.get("RELAY_FAKE_REALTIME")),
+        "input": (env.get("RELAY_INPUT") or "").strip().lower() or None,
         "host": (env.get("RELAY_HOST") or "127.0.0.1").strip(),
         "port": int(env.get("RELAY_PORT") or 8000),
     }
@@ -112,4 +120,13 @@ def load_settings(**overrides) -> Settings:
         raise ValueError(f"MIC_MODE must be one of {MIC_MODES}, got {settings.mic_mode!r}")
     if settings.narration not in NARRATION_MODES:
         raise ValueError(f"RELAY_NARRATION must be one of {NARRATION_MODES}, got {settings.narration!r}")
+    if settings.input is not None and settings.input not in INPUT_MODES:
+        raise ValueError(f"RELAY_INPUT must be one of {INPUT_MODES}, got {settings.input!r}")
     return settings
+
+
+def input_mode(settings: Settings, demo: object) -> str:
+    """The input the server runs with: the setting, else clips when the talk has a demo script, else mic."""
+    if settings.input in INPUT_MODES:
+        return settings.input
+    return "clips" if demo is not None else "mic"

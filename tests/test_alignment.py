@@ -302,7 +302,7 @@ def test_the_brief_scenario(package):
     assert (resolved_audience["value"], resolved_audience["owner"]) == ("beta_users", "Bob")
     assert {k: draft[k] for k in ("decision", "owner", "follow_up", "source_ids", "clarification_ids", "slots",
                                   "conflict_ids", "plan_changed", "supersedes", "utterance_ids")} == {
-        "decision": DRAFT, "owner": "Bob", "follow_up": CAROL_RESOLVE, "source_ids": ["REQ-1"],
+        "decision": DRAFT, "owner": "Bob", "follow_up": "Bob owns the announcement.", "source_ids": ["REQ-1"],
         "clarification_ids": ["CL-1"], "slots": ["friday_stage", "friday_audience"],
         "conflict_ids": [stage["id"], audience["id"]], "plan_changed": False, "supersedes": None,
         "utterance_ids": ["U2", "U4"]}
@@ -545,6 +545,21 @@ def test_the_owner(package, answer, speaker, bob_speaker, owner):
     room.say(CAROL_CONFIRM, "Carol")
     events = room.say(answer, speaker)
     assert [e["owner"] for e in events if e["type"] in ("resolved", "decision_draft")] == [owner] * 3
+
+
+@pytest.mark.parametrize("answer,speaker,follow_up", [
+    (CAROL_RESOLVE, "Carol", "Bob owns the announcement."),  # the sentence that gave the owner the task
+    ("Yes, beta users only. I'll send it.", "Carol", "I'll send it."),
+    ("Yes, beta users only.", "Carol", "Yes, beta users only."),  # no such sentence: the whole answer
+])
+def test_the_drafts_follow_up_is_the_owners_task_not_the_whole_answer(package, answer, speaker, follow_up):
+    room = Room(package)
+    room.say(BOB, "Bob")
+    room.say(CAROL_CONFIRM, "Carol")
+    events = room.say(answer, speaker)
+    draft = next(e for e in events if e["type"] == "decision_draft")
+    assert draft["follow_up"] == follow_up
+    assert all(e["follow_up_quote"] == answer for e in events if e["type"] == "resolved")  # (the card's quote)
 
 
 def test_public_resolve(package):

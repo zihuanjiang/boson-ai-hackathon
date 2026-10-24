@@ -1,5 +1,5 @@
-# The meeting around the deck (contract §2). Participants are fictional; the people who play them in the demo
-# are in run_of_show.md.
+# The meeting around the deck (contract §2). Participants are fictional; in the demo they are prerecorded remote
+# participants (demo.yaml: their clips, voices and cues; run_of_show.md: the walkthrough).
 title: Release 4.3 rollout review
 host: Alice
 participants:

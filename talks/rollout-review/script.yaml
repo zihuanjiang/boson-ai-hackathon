@@ -12,13 +12,14 @@
 # the answer must come from lookup_evidence, live.
 # The talking points are about fifty seconds of speech; with the greeting, the answer and the hand-over the
 # facilitator presents for about seventy (brief §13: the whole video is two to three minutes).
-# CUE comments mark the live moments; the exact lines are in run_of_show.md.
+# CUE comments mark the live moments. The participants are prerecorded clips (online-meeting patch): their words and
+# cues are in demo.yaml, the walkthrough in run_of_show.md.
 talk: rollout-review
 voice: default        # D54: lowest latency, never voice-validated; re-render after any change to a `say`
-presenter: Alice      # the host: opens the meeting and holds the floor control
+presenter: Alice      # the host (agenda.yaml)
 slides:
   - id: agenda
-    speaker: human    # Alice opens. She taps Space: "...Facilitator, please take us through the plan." -> set_presentation_state(start)
+    speaker: human    # demo.yaml step `start` (Run demo, = R) starts the presentation from here
 
   - id: plan
     speaker: relay
@@ -36,9 +37,9 @@ slides:
     speaker: relay
     plain: "Like a smoke alarm with a clear threshold: if errors cross the line, Carol pulls the alarm and everyone is back on the old version within the hour."
     chunks:
-      # CUE (interruption, brief §13 0:20): as this slide appears and the facilitator starts on the rollback plan,
-      # Alice taps Space: "Wait, I thought Friday was production. Which one is it?" -> lookup_evidence -> answer
-      # from REQ-2/REQ-3 -> resume HERE (status `resuming`), not at the start of `plan`.
+      # CUE (interruption, brief §13 0:20; demo.yaml `alice-question`): 1.5 s into this point, live, Alice's clip
+      # barges in: "Wait, I thought Friday was production. Which one is it?" -> lookup_evidence -> answer from
+      # REQ-2/REQ-3 -> resume HERE (status `resuming`), not at the start of `plan`.
       - id: rollback-trigger
         say: "Next, the rollback plan. If the beta runs into trouble, with an error rate above two percent for thirty minutes or any data loss at all, we roll back."
         fragment: 1
@@ -53,7 +54,8 @@ slides:
       - id: beta-notes
         say: "Announcements follow the stage. On Friday, release notes go to the beta group only."
         fragment: 1
-      # After this point drains: the hand-over (one live sentence), then the discussion phase (room mic open).
+      # After this point drains: the hand-over (one live sentence), then the discussion phase (the facilitator
+      # listens to the participant clips; demo.yaml `bob-announce` follows 1.5 s later).
       - id: customer-announcement
         say: "The customer-wide announcement goes out with production on Wednesday, and Bob owns customer communications for both."
         fragment: 2

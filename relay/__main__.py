@@ -4,8 +4,11 @@
     uv run python -m relay serve talks/test                     # live: open http://localhost:8000, click Join
     uv run python -m relay serve talks/test --mic-mode hold     # noisy room: hold Space to talk
     uv run python -m relay serve talks/test --narration rendered  # play the TTS 3 renders instead of presenting live
+    uv run python -m relay serve talks/rollout-review             # the online meeting: prerecorded participants
+    uv run python -m relay serve talks/rollout-review --input mic # in the room instead: the mic, tap Space to talk
 
-Flags override the environment / `.env` (RELAY_HOST, RELAY_PORT, RELAY_FAKE_REALTIME, MIC_MODE, RELAY_NARRATION).
+Flags override the environment / `.env` (RELAY_HOST, RELAY_PORT, RELAY_FAKE_REALTIME, MIC_MODE, RELAY_NARRATION,
+RELAY_INPUT).
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .config import MIC_MODES, NARRATION_MODES, ROOT, TALKS, Settings, load_settings
+from .config import INPUT_MODES, MIC_MODES, NARRATION_MODES, ROOT, TALKS, Settings, load_settings
 from .talk import Talk, TalkError
 from .timeline import RenderedChunk, RenderMissing
 
@@ -39,6 +42,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--narration", choices=NARRATION_MODES, default=None,
                        help="live (default: Higgs Realtime presents every slide, the TTS 3 renders are the offline "
                             "backup) or rendered (the renders play)")
+    serve.add_argument("--input", choices=INPUT_MODES, default=None,
+                       help="clips (default for a talk with demo.yaml: an online meeting, the participants are "
+                            "prerecorded clips the page plays and streams, the mic stays off, voice barge-in) or mic "
+                            "(the room microphone, tap Space to talk); or RELAY_INPUT")
     return parser
 
 
@@ -88,6 +95,24 @@ def meeting_note(meeting: Any) -> str | None:
             "facilitator listens to the discussion with manual turns (turn detection off)")
 
 
+def input_note(demo: Any, mode: str) -> str | None:
+    """The startup line about where the participants' voices come from (contract v3.1); None for a plain mic run
+    without a demo script."""
+    if mode == "clips":
+        if not demo:
+            return "input: clips, but the talk has no demo.yaml (no participants to play)"
+        steps = demo.get("steps") or []
+        speakers = ", ".join(dict.fromkeys(step["speaker"] for step in steps if step.get("speaker")))
+        ready = sum(1 for step in steps if step.get("audio"))
+        clips = sum(1 for step in steps if step.get("say"))
+        return (f"input: clips — an online meeting with prerecorded participants ({speakers}; {ready}/{clips} clips "
+                "loaded): the page plays each clip and streams the same samples to Higgs, the microphone stays off, "
+                "and a participant who starts talking while the facilitator speaks interrupts it")
+    if demo:
+        return "input: mic (--input mic): the room microphone with tap-to-talk; the demo's clips are not played"
+    return None
+
+
 def startup_notes(talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], settings: Settings,
                   meeting: Any = None) -> list[str]:
     """Warnings printed under the URL: what will not sound or behave like the real show."""
@@ -123,7 +148,7 @@ def startup_notes(talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], s
 def serve(args: argparse.Namespace) -> int:
     try:
         settings = load_settings(host=args.host, port=args.port, fake_realtime=args.fake_realtime,
-                                 mic_mode=args.mic_mode, narration=args.narration)
+                                 mic_mode=args.mic_mode, narration=args.narration, input=args.input)
     except ValueError as exc:
         print(f"relay: bad setting: {exc}", file=sys.stderr)
         return 1
@@ -150,8 +175,13 @@ def serve(args: argparse.Namespace) -> int:
     note = meeting_note(meeting)
     if note:
         print(f"Relay: {note}")
+    note = input_note(getattr(app.state, "demo", None), getattr(app.state, "input", "mic"))
+    if note:
+        print(f"Relay: {note}")
     print(f"Relay: open {deck_url(settings)} in Chrome, then click Join with Computer Audio")
     for note in startup_notes(talk, chunks, settings, meeting):
+        print(f"  warning: {note}")
+    for note in getattr(app.state, "clip_warnings", None) or []:
         print(f"  warning: {note}")
     sys.stdout.flush()
 

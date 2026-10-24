@@ -145,6 +145,8 @@ async function run() {
   await settle(10);
   advance(700);
   eq("joined", sent("arm").length, 1);
+  // a meeting without demo.yaml: the room mic, nothing of the simulated online meeting (contract v3.1)
+  eq("…the mic asked for once, no participant tiles, no demo strip or badge", [env.gum.length, doc.querySelectorAll(".tile-participant").length, $(".demo").hidden, $(".demo-pill").hidden, $(".strip-routing").hidden, $(".tile-you").hidden], [1, 0, true, true, true, false]);
 
   // ---- presenting: the checkpoint follows
   server({ type: "slide", slide: "plan", fragment: null });

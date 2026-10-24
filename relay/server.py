@@ -9,6 +9,11 @@ a render writes meanwhile. A re-render takes effect at the next server restart. 
 can tell that a restarted server presents different narration. A wav whose length disagrees with its timings (a
 render still writing it) stops the server from starting.
 
+An online meeting (talks/<id>/demo.yaml, contract v3.1): the prerecorded participant clips (`relay.clips`) are read
+into memory at startup too and served at `/clips/<step>.wav`; `/api/talk` and the controller's `hello` carry the same
+`demo` object (the script, each clip's audio url or null when it is missing) and the `input` (clips · mic), resolved
+once here. With `--fake-realtime` and clips, the fake "hears" the clips' lines in the order they are committed.
+
 The app owns one `RealtimeLink` and one `Controller`, wired to each other, and a `DeckHub` (the controller's
 `BrowserPort`): one deck socket at a time; a new deck replaces the old one, which is closed with code 4000 (the
 client does not reconnect after it). A deck that stops reading for 5 s is dropped and closed with code 4001 (it
@@ -36,7 +41,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .config import OUT, WEB, Settings, load_settings
+from .config import OUT, WEB, Settings, input_mode, load_settings
 from .eventlog import EventLog
 from .ports import LogFn, null_log
 from .realtime import RealtimeLink
@@ -56,6 +61,7 @@ STALLED_REASON = "the deck stopped reading"
 DECK_SEND_TIMEOUT_S = 5.0
 DECK_CLOSE_TIMEOUT_S = 1.0  # closing the current deck at shutdown; a detached deck's close is never abandoned
 MEDIA_NAME_RE = re.compile(r"([0-9]{1,6})\.wav")
+CLIP_NAME_RE = re.compile(r"([a-z0-9][a-z0-9-]{0,39})\.wav")  # /clips/<step>.wav (demo.yaml step ids)
 WAV_MATCH_TOLERANCE_MS = 10  # the render takes `duration_ms` from these very bytes: a bigger gap is another take
 WAV_HEADER_BYTES = 44  # the render's guess for a wav header it can't read: PCM16 mono 24 kHz after 44 bytes
 WAV_BYTES_PER_MS = 48
@@ -68,12 +74,33 @@ def default_controller_factory(talk: Talk, chunks: Chunks, settings: Settings, *
     return Controller(talk, chunks, settings, browser=browser, realtime=realtime, log=log)
 
 
-def talk_json(talk: Talk, chunks: Chunks, settings: Settings) -> dict:
+_AUTO = object()
+
+
+def demo_payload(talk: Talk, settings: Settings, out_root: Path = OUT) -> tuple[dict | None, str, dict, list[str]]:
+    """(the `demo` object of /api/talk and hello, the input mode, the clip snapshot, startup warnings) for a talk:
+    its demo script (demo.yaml) with the participant clips read into memory now (`/clips` serves them until the
+    server restarts)."""
+    from .clips import demo_json, load_clips
+    from .meeting import load_demo
+
+    demo = load_demo(talk)  # None without demo.yaml (or without a meeting)
+    mode = input_mode(settings, demo)
+    clips, warnings = load_clips(talk, demo, out_root)
+    if mode == "clips" and demo is None:
+        warnings.append("input clips without a demo.yaml: there are no participants to play (use --input mic)")
+    return demo_json(demo, clips, mode), mode, clips, warnings
+
+
+def talk_json(talk: Talk, chunks: Chunks, settings: Settings, *, demo: Any = _AUTO) -> dict:
     """The `GET /api/talk` payload (design §3). `meeting` is the meeting package as the deck shows it (title,
     participants, agenda phases, documents with their statement ids, the discussion slide), null for a plain talk;
-    every chunk carries its talking point `id`."""
+    every chunk carries its talking point `id`. `demo` (contract v3.1 §2): the simulated participants' script and
+    clips, null without demo.yaml; `input`: clips (prerecorded participants, mic off) or mic."""
     from .meeting import load_meeting
 
+    if demo is _AUTO:
+        demo = demo_payload(talk, settings)[0]
     meeting = load_meeting(talk)
     slides = []
     for slide in talk.slides:
@@ -96,7 +123,8 @@ def talk_json(talk: Talk, chunks: Chunks, settings: Settings) -> dict:
     return {"id": talk.id, "presenter": talk.presenter, "voice": talk.voice, "mic_mode": settings.mic_mode,
             "narration_mode": settings.narration, "fake_audio": any(chunk.fake for chunk in chunks.values()),
             "version": render_version(talk, dict(chunks)), "slides": slides,
-            "meeting": meeting.to_json() if meeting is not None else None}
+            "meeting": meeting.to_json() if meeting is not None else None,
+            "demo": demo, "input": demo["input"] if isinstance(demo, dict) else input_mode(settings, None)}
 
 
 # --- the narration snapshot ---------------------------------------------------------------------------------
@@ -482,11 +510,17 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     `controller_factory(talk, chunks, settings, browser=, realtime=, log=)` replaces the real controller (tests);
     `chunks` replaces the rendered narration on disk (tests); `web_dir` replaces `web/` (tests).
     """
+    import dataclasses
+
     settings = settings if settings is not None else load_settings()
     talk = load_talk(talk_dir)
     chunks = dict(chunks) if chunks is not None else load_rendered(talk, out_root)
     narration = load_narration(talk, chunks)  # what /media serves until the next start, whatever renders meanwhile
     version = render_version(talk, chunks)
+    # the online meeting's prerecorded participants (contract v3.1): the script, and the clips /clips serves until the
+    # next start; the input (clips · mic) is resolved once, so the controller and the page agree on it
+    demo, mode, clips, clip_warnings = demo_payload(talk, settings, out_root)
+    settings = dataclasses.replace(settings, input=mode)
     web_dir = Path(web_dir)
     log = EventLog.for_talk(talk.id, out_root)
     log("server_start", {"talk": talk.id, "root": str(talk.root), "voice": talk.voice, "mic_mode": settings.mic_mode,
@@ -495,19 +529,27 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
                          "realtime_url": settings.realtime_url, "turn_detection": settings.turn_detection,
                          "temperature": settings.temperature, "full_session_update": settings.full_session_update,
                          "chunks": len(chunks), "fake_audio": any(chunk.fake for chunk in chunks.values()),
-                         "version": version, "narration_bytes": sum(len(wav.body) for wav in narration.values())})
+                         "version": version, "narration_bytes": sum(len(wav.body) for wav in narration.values()),
+                         "input": mode, "demo_steps": len(demo["steps"]) if demo else 0,
+                         "clips": sorted(clips), "clip_warnings": clip_warnings})
 
     hub = DeckHub(log)
     ref = _ControllerRef()
     if connect is None and settings.fake_realtime:
-        from .fake_realtime import fake_connect
+        from .fake_realtime import FakeConnector, fake_connect
         connect = fake_connect
+        if demo is not None and mode == "clips":
+            # Offline Run demo: the fake "hears" the participants' lines, in the order their clips are committed
+            # (the real model transcribes the audio; the fake can't).
+            connect = FakeConnector(transcripts=tuple(step["say"] for step in demo["steps"] if step.get("say")))
     link = RealtimeLink(settings, session_config=ref.session_config, on_event=ref.on_event,
                         on_status=ref.on_status, connect=connect, log=log)
     factory = controller_factory or default_controller_factory
     controller = factory(talk, chunks, settings, browser=hub, realtime=link, log=log)
     ref.controller = controller
-    talk_payload = talk_json(talk, chunks, settings)
+    if hasattr(controller, "demo_payload"):
+        controller.demo_payload = demo  # the hello describes the same clips /api/talk does
+    talk_payload = talk_json(talk, chunks, settings, demo=demo)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -533,6 +575,10 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     app.state.chunks = chunks
     app.state.narration = narration
     app.state.version = version
+    app.state.demo = demo
+    app.state.input = mode
+    app.state.clips = clips
+    app.state.clip_warnings = clip_warnings
     app.state.controller = controller
     app.state.link = link
     app.state.hub = hub
@@ -565,6 +611,17 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
         if _etag_matches(request.headers.get("if-none-match"), wav.etag):
             return Response(status_code=304, headers={"etag": wav.etag})
         return Response(wav.body, media_type="audio/wav", headers={"etag": wav.etag})
+
+    @app.get("/clips/{name}")
+    async def clip(name: str, request: Request) -> Response:
+        """A prerecorded participant clip (contract v3.1 §2), from the snapshot taken at startup."""
+        match = CLIP_NAME_RE.fullmatch(name)
+        audio = clips.get(match.group(1)) if match else None
+        if audio is None:
+            raise HTTPException(status_code=404, detail="not a participant clip of this talk")
+        if _etag_matches(request.headers.get("if-none-match"), audio.etag):
+            return Response(status_code=304, headers={"etag": audio.etag})
+        return Response(audio.body, media_type="audio/wav", headers={"etag": audio.etag})
 
     @app.get("/healthz")
     async def healthz() -> dict:

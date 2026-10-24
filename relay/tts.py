@@ -101,14 +101,17 @@ class TTSError(Exception):
 
 
 def synthesize(text: str, voice: str, settings: Settings, *, session: Any = None, timeout: float = 120.0,
-               retries: int = 3, sleep: Callable[[float], None] = time.sleep) -> TTSResult:
-    """One TTS 3 request: wav + word timestamps for `text` (tags included) in preset `voice`.
+               retries: int = 3, sleep: Callable[[float], None] = time.sleep, timestamps: bool = True) -> TTSResult:
+    """One TTS 3 request: wav + word timestamps for `text` (tags included) in preset `voice`. Without
+    `timestamps` (participant clips) the response is the wav itself and `words` is None; text normalisation stays on.
 
     429 `rate_limit_error`, 5xx, timeouts and connection errors are retried `retries` times after the first try,
     waiting 1, 2, 4 … s. Key, billing and other 4xx errors raise a fatal TTSError at once.
     """
     url = settings.base_url + SPEECH_PATH
-    payload = {"model": TTS_MODEL, "input": text, "voice": voice, "response_format": "wav", "timestamps": True}
+    payload: dict[str, Any] = {"model": TTS_MODEL, "input": text, "voice": voice, "response_format": "wav"}
+    if timestamps:
+        payload["timestamps"] = True
     http = session if session is not None else requests
     error = TTSError("no attempt made", type="request_error")
     for attempt in range(1 + max(0, retries)):

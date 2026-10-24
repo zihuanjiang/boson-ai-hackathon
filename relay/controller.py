@@ -26,6 +26,15 @@ room mic open, every utterance committed and transcribed, the facilitator silent
 utterance, and the facilitator speaking up only at its gate (state INTERVENING: one neutral question with the evidence
 on screen), saving the corrected decision (validated against what was said), and summing up at the wrap-up. A talk
 without agenda.yaml behaves exactly as before.
+
+An online meeting (contract v3.1, doc/online_meeting_patch.md; input `clips`, the default with demo.yaml): the
+participants are prerecorded clips the deck plays and streams as `mic` frames with `source: "clip"` (speaker, step id,
+and where the deck's reply player is). The facilitator's own audio never reaches this input, so one participant
+segmenter listens to it in every state: a participant who starts talking while the facilitator presents or answers
+barges in exactly like Space (cut, truncate to what the deck played, LISTENING, the segmenter's end sends the turn); in
+a pause it is a question; in the discussion it is a line labelled by the clip (`source: "clip"`), and cuts the
+facilitator if it was speaking up. The facilitator never speaks up over a participant who is talking. Input `mic`
+ignores clip frames: the room mic and tap-to-talk exactly as before.
 """
 
 from __future__ import annotations
@@ -42,8 +51,8 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
 
 from . import alignment, evidence, prompts, tools
-from .config import RATE, STT_MODEL, Settings
-from .meeting import MeetingState, load_meeting
+from .config import RATE, STT_MODEL, Settings, input_mode
+from .meeting import MeetingState, load_demo, load_meeting
 from .ports import AsyncioClock, BrowserPort, Clock, LogFn, RealtimePort, Timer, null_log
 from .prompts import TurnContext, build_instructions, narration_instructions
 from .segmenter import Segmenter
@@ -81,6 +90,7 @@ NO_TOOL_KINDS = frozenset({KIND_INTERVENTION, KIND_HANDOVER, KIND_SUMMARY})
 PRESENTATION, DISCUSSION, WRAPUP = "presentation", "discussion", "wrapup"  # agenda phases
 MAX_FOLLOWUPS = 2  # follow-up responses per turn (after data tools, or to confirm a silent state call)
 ROOM_ECHO_S = 0.3  # half duplex: the room mic is ignored this long after the facilitator's reply drained
+WRAPUP_WAIT_S = 2.0  # the wrap-up waits this long at most for the transcript of a line still in flight
 POINT_MIN_S = 3  # the length a live talking point is asked for: its backup length, within these bounds
 POINT_MAX_S = 30
 POINT_CONTINUE_MIN_S = 3
@@ -133,6 +143,7 @@ BANNER_OFFLINE_BACK = "Realtime is back — {presenter} has the floor (R resumes
 BANNER_END = "End of the talk"
 BANNER_DISCUSSION = "Discussion: {prompt} — the facilitator is listening"
 BANNER_WRAPPED = "Meeting wrapped up"
+BANNER_WRAPPING = "Wrapping up…"
 
 ERR_SILENCE = "Didn't catch that"
 ERR_TOO_LONG = "Turn too long — try MIC_MODE=hold"
@@ -141,7 +152,14 @@ ERR_NO_REPLY = "No reply"
 ERR_LINK_LOST = "Realtime connection lost"
 ERR_OFFLINE_TYPED = "Realtime offline — the typed question was not sent"
 ERR_OFFLINE_ROOM = "Realtime offline — the facilitator can't answer; typed lines still reach the alignment check"
+ERR_OFFLINE_CLIP = "Realtime offline — the facilitator can't hear the participants (typed lines still work)"
 ERROR_MAX_CHARS = 200
+INPUT_CLIPS, INPUT_MIC = "clips", "mic"  # config.INPUT_MODES (contract v3.1)
+CLIP_ID_MAX_CHARS = 40
+# A participant's line ends where the clip ends (the deck flags the silence it streams after a clip: `tail`). The
+# segmenter's own end is only the fallback for frames without the flag: longer than the room mic's 700 ms, so a pause
+# inside a recording doesn't split the line, and shorter than the 1.2 s of silence after every clip.
+CLIP_END_MS = 1100
 
 
 @dataclass(frozen=True)
@@ -236,6 +254,10 @@ class Turn:
     events: list[dict] = field(default_factory=list)  # the alignment events an intervention answers
     draft: dict | None = None  # a decision turn: the alignment check's decision draft
     decision_saved: bool = False
+    # an online meeting (contract v3.1): a turn a participant's prerecorded clip opened by speaking
+    source: str = "mic"  # mic (Space, typed) · clip
+    speaker: str | None = None  # the clip's participant (prepared clip metadata, no diarization)
+    clip: str | None = None  # the demo step id of the clip
 
 
 def summary_text(exchanges: list[tuple[str, str]], limit: int = SUMMARY_MAX_CHARS) -> str | None:
@@ -380,6 +402,7 @@ def meeting_info(meeting: Any) -> dict | None:
 
 
 _LOAD = object()  # Controller(meeting=…): load the talk's meeting package (agenda.yaml) unless one is given
+_SELECTED = object()  # _room_commit(speaker=…): the speaker the deck's selector names
 
 
 class Controller:
@@ -406,10 +429,24 @@ class Controller:
         self.speaker: str | None = None  # the participant the deck says is talking (None: the room)
         self._room_seg: Segmenter | None = None  # ROOM: ends each utterance
         self._room_quiet_until = 0.0  # half duplex: room frames before this are ignored
-        self._room_commits: collections.deque[str | None] = collections.deque()  # speakers of room commits in flight
-        self._room_items: dict[str, str | None] = {}  # room audio item id → speaker, until its transcript
-        self._room_commit_held = False  # a room commit waits for the active response to end
+        # (speaker, source) of the room commits in flight, then of their audio items until the transcript comes
+        self._room_commits: collections.deque[tuple[str | None, str]] = collections.deque()
+        self._room_items: dict[str, tuple[str | None, str]] = {}
+        self._room_commit_held: tuple[str | None, str] | None = None  # a room commit waits for the active response
+        # The online meeting (contract v3.1): the participants are prerecorded clips the deck plays and streams; the
+        # facilitator's own audio never reaches this input, so a clip that starts while it speaks is a barge-in.
+        self.demo = self._load_demo(talk)
+        self.input_mode = input_mode(settings, self.demo)
+        self.demo_payload: dict | None = self._default_demo_payload()  # the server sets the one with its clips
+        self._clip_seg: Segmenter | None = Segmenter(end_ms=CLIP_END_MS) if self.input_mode == INPUT_CLIPS else None
+        self._clip_on: str | None = None  # the clip id of the latest clip frame…
+        self._clip_tail = False  # …and whether it was the silence after the clip (`tail`)
+        self._clip_target: tuple | None = None  # the utterance being streamed: ("turn", Turn) · ("room", speaker,
+        # clip) · ("drop",) (its audio goes nowhere, e.g. Realtime offline or the floor closed under it)
+        self._clip_frame: dict = {}  # the latest clip frame's speaker, clip, reply, played_ms and position
+        self._clip_ignored = False  # a clip frame arrived in mic mode (logged once)
         self._flows: list[tuple[str, Any]] = []  # interventions and decisions waiting for the facilitator
+        self._wrapup_pending = False  # the wrap-up waits for the transcript of the room's last line (WRAPUP_WAIT_S)
         self._last_point: tuple[str, int] | None = None  # the talking point presented last (slide, chunk)
         self._link_action: str | None = None  # "restart": a fresh Realtime session after this handler (reset)
 
@@ -505,6 +542,32 @@ class Controller:
         async with self._lock:
             await self._guard("realtime_status", self._realtime_status, status, detail)
 
+    def _load_demo(self, talk: Talk) -> Any:
+        """The demo script (demo.yaml) of a meeting, None for a plain talk or without one. A broken one (the server
+        refuses those at startup) leaves the participants silent rather than the controller unbuilt."""
+        if self.meeting is None:
+            return None
+        try:
+            return load_demo(talk, self.meeting)
+        except Exception as exc:  # noqa: BLE001 - TalkError, or a talk object without a folder (tests)
+            self._note("demo_unavailable", {"error": repr(exc)})
+            return None
+
+    def _default_demo_payload(self) -> dict | None:
+        """hello's `demo` until the server hands over its own (with the clips it serves): the script, no audio."""
+        if self.demo is None:
+            return None
+        from .clips import demo_json  # late: relay.clips pulls in the TTS client
+
+        return demo_json(self.demo, {}, self.input_mode)
+
+    def _participant_name(self, name: Any) -> str | None:
+        """A participant's canonical name for a clip frame's `speaker` (prepared clip metadata), else None."""
+        if self.meeting is None or not isinstance(name, str) or not name.strip():
+            return None
+        found = self.meeting.participant(name)
+        return found.name if found is not None else None
+
     @property
     def turn_detection(self) -> dict | None:
         """The session's `turn_detection`: the setting (null by default: manual turns; null in hold mode), and always
@@ -551,7 +614,7 @@ class Controller:
             checkpoint = self.checkpoint()
             snap.update({"agenda_phase": self.mstate.phase, "status": checkpoint["status"],
                          "talking_point": checkpoint["talking_point_id"], "checkpoint": checkpoint,
-                         "speaker": self.speaker})
+                         "speaker": self.speaker, "input": self.input_mode})
         return snap
 
     # --- derived state ----------------------------------------------------------------------------------------
@@ -612,6 +675,8 @@ class Controller:
             return "paused"
         if self._countdown_running() and self.cursor is not None:
             return "resuming"
+        if self._wrapup_pending:
+            return "wrapping_up"
         return "idle"
 
     def _point_id(self, slide_id: str, chunk: int) -> str | None:
@@ -839,7 +904,8 @@ class Controller:
                 self._set_state(IDLE, BANNER_PAUSED_R)
         await self._send({"type": "hello", "talk": self.talk.id, "version": self._version(),
                           "mic_mode": self.settings.mic_mode, "narration_mode": self.settings.narration,
-                          "meeting": meeting_info(self.meeting), "snapshot": self.snapshot()})
+                          "meeting": meeting_info(self.meeting), "input": self.input_mode, "demo": self.demo_payload,
+                          "snapshot": self.snapshot()})
         if self.state != NARRATING:
             await self._send({"type": "stop"})
         await self._send({"type": "mic", "open": self._mic_open})  # open only while listening to the room
@@ -860,6 +926,7 @@ class Controller:
 
     async def _browser_gone(self) -> None:
         await self._halt(None, cut=False)
+        await self._clip_reset(commit=True)  # the deck stopped streaming the clip it was playing
         if self.agenda_phase == DISCUSSION:  # still the discussion: the next deck streams the room mic at once
             await self._resume_room(run_flows=False)
             return
@@ -867,6 +934,9 @@ class Controller:
         self._set_state(IDLE, self._idle_banner())
 
     async def _on_mic(self, msg: dict) -> None:
+        if msg.get("source") == "clip":
+            await self._on_clip_frame(msg)
+            return
         turn = self.turn
         pcm = msg.get("pcm")
         if not self._mic_open or not isinstance(pcm, str) or not pcm:
@@ -910,6 +980,175 @@ class Controller:
             if mark_position >= position:
                 return arrived - (mark_position - position) / 1000
         return None
+
+    # --- the participants' clips (an online meeting, contract v3.1 §3) -------------------------------------------
+
+    async def _on_clip_frame(self, msg: dict) -> None:
+        """A 100 ms frame of a prerecorded participant's clip, streamed by the deck while it plays the clip (then 1.2 s
+        of silence). The facilitator's own audio is never in this stream, so it is listened to in every state: one
+        participant segmenter buffers it locally and, at an utterance's start, decides what the participant's words
+        are — a barge-in on the facilitator, a question in a pause, or a line of the discussion."""
+        if self.input_mode != INPUT_CLIPS or self._clip_seg is None:
+            if not self._clip_ignored:
+                self._clip_ignored = True
+                self._note("clip_frame_ignored", {"input": self.input_mode, "clip": msg.get("clip")})
+            return
+        pcm = msg.get("pcm")
+        audio = _pcm(pcm) if isinstance(pcm, str) and pcm else None
+        if not audio:
+            return
+        clip = msg.get("clip")
+        clip = clip if isinstance(clip, str) and 0 < len(clip) <= CLIP_ID_MAX_CHARS else None
+        tail = msg.get("tail") is True  # the silence the deck streams after a clip (or after stopping it)
+        self._clip_frame = {
+            "speaker": self._participant_name(msg.get("speaker")) or self.speaker,
+            "clip": clip,
+            "position": {"reply": msg.get("reply"), "reply_played_ms": msg.get("played_ms"), "at": msg.get("at")},
+        }
+        boundary = (tail and not self._clip_tail) or clip != self._clip_on
+        self._clip_on, self._clip_tail = clip, tail
+        if boundary and self._clip_seg.speaking:
+            # The clip ended (its silent tail began, or another clip cut it off): so did the participant's words.
+            # A pause inside a recording never ends a line, and two clips in a row never merge into one.
+            heard = self._clip_seg.in_speech
+            self._clip_seg.reset(keep_floor=True)
+            if heard:
+                await self._clip_end(lag_ms=0)
+        for kind, data in self._clip_seg.feed(audio):
+            if kind == "start":
+                await self._clip_start(data or b"")
+            elif kind == "audio" and data:
+                await self._clip_audio(data)
+            elif kind == "end":  # (frames without `tail`: the segmenter's silence ends the line, within the tail)
+                await self._clip_end()
+        if (self._flows and self.state == ROOM and not self._clip_speaking() and self._clip_target is None
+                and not self._room_line_in_flight()):
+            await self._run_flows()  # held for an onset that came to nothing (a click): it goes ahead now
+
+    def _clip_speaking(self) -> bool:
+        """A participant is talking in the clip stream, or has just started to (the segmenter's onset, before its
+        start_ms of speech): the facilitator never starts speaking up over that."""
+        return self._clip_seg is not None and self._clip_seg.speaking
+
+    async def _clip_start(self, preroll: bytes) -> None:
+        """A participant started talking (the segmenter heard start_ms of speech; `preroll` = the audio so far)."""
+        frame = self._clip_frame
+        speaker, clip, position = frame.get("speaker"), frame.get("clip"), frame.get("position") or {}
+        if not self.realtime.ready:
+            self._clip_target = ("drop",)
+            self._note("clip_unheard", {"speaker": speaker, "clip": clip, "state": self.state})
+            await self._send_error(ERR_OFFLINE_CLIP)
+            return
+        if self.agenda_phase == DISCUSSION and self.state != LISTENING:
+            if self._replying:  # the facilitator is speaking up (or answering): the participant cuts it off
+                turn = self.turn
+                unheard = turn is not None and turn.kind == KIND_INTERVENTION and turn.first_audio_at is None
+                if not unheard:
+                    await self._barge_in(position, speaker, clip)
+                await self._halt(position, cut=True)
+                if unheard:  # not a word of the question was heard yet: it is asked after this line instead
+                    self._flows.insert(0, (KIND_INTERVENTION, list(turn.events)))
+                    self._note("intervention_deferred", {"speaker": speaker, "clip": clip, "reply": turn.reply})
+                await self._resume_room(run_flows=False)
+            self._clip_target = ("room", speaker, clip)
+            self._note("clip_utterance", {"speaker": speaker, "clip": clip})
+            await self._room_append(preroll)
+            return
+        turn = self.turn
+        if self.state == LISTENING and turn is not None:  # the floor is open already: the words join that turn
+            turn.speech_started = True
+            turn.speaker = turn.speaker or speaker
+            turn.clip = turn.clip or clip
+            self._cancel_timer("listen_silence")
+            self._clip_target = ("turn", turn)
+            await self._clip_turn_audio(turn, preroll)
+            return
+        if self.state == NARRATING or self._replying:
+            await self._barge_in(position, speaker, clip)
+        turn = await self._take_floor(position)  # exactly the Space path: cut, truncate to what was heard
+        turn.source, turn.speaker, turn.clip = "clip", speaker, clip
+        await self._open_clip_floor(turn)
+        self._clip_target = ("turn", turn)
+        await self._clip_turn_audio(turn, preroll)
+
+    async def _barge_in(self, position: dict, speaker: str | None, clip: str | None) -> None:
+        """The participant interrupts the facilitator: logged, and told to the deck (its tile/caption cue) just before
+        the cut flushes the facilitator's reply."""
+        live, turn = self.live, self.turn
+        if self.state == NARRATING:
+            reply, kind = (live.reply if live is not None else None), "narration"
+        else:
+            reply, kind = (turn.reply if turn is not None else None), (turn.kind if turn is not None else None)
+        played = _int(position.get("reply_played_ms"))
+        self._note("barge_in", {"speaker": speaker, "clip": clip, "played_ms": played, "reply": reply,
+                                "state": self.state, "kind": kind, "deck_reply": position.get("reply")})
+        await self._send({"type": "barge_in", "speaker": speaker, "clip": clip, "played_ms": played, "reply": reply,
+                          "state": self.state})
+
+    async def _open_clip_floor(self, turn: Turn) -> None:
+        """LISTENING for a participant's clip: like Space, but the speech has started already and no mic opens (the
+        deck streams the clip by itself); the segmenter's end sends the turn."""
+        self.turn = turn
+        turn.stream_start_ms = self._stream_ms
+        turn.speech_started = True
+        await self._rt(self._turn_update())
+        await self._rt({"type": "input_audio_buffer.clear"})
+        self._set_state(LISTENING, None)
+        self._start_timer("listen_max", LISTEN_MAX_S, self._on_listen_max)
+
+    async def _clip_turn_audio(self, turn: Turn, audio: bytes) -> None:
+        for start in range(0, len(audio), APPEND_MAX_BYTES):
+            piece = audio[start:start + APPEND_MAX_BYTES]
+            if await self._rt({"type": "input_audio_buffer.append", "audio": base64.b64encode(piece).decode()}):
+                self._stream_ms += len(piece) / BYTES_PER_MS
+                turn.marks.append((self._stream_ms, self.clock.now()))  # where the stream was, when (latency)
+                turn.mic_frames += 1
+
+    async def _clip_audio(self, audio: bytes) -> None:
+        target = self._clip_target
+        if target is None or target[0] == "drop":
+            return
+        if target[0] == "turn":
+            turn = target[1]
+            if self.turn is turn and self.state == LISTENING:
+                await self._clip_turn_audio(turn, audio)
+            else:  # the floor closed under it (Esc, a phase key, listen_max): the rest goes nowhere
+                self._clip_target = ("drop",)
+        else:
+            await self._room_append(audio)
+
+    async def _clip_end(self, *, lag_ms: float | None = None) -> None:
+        """The participant stopped (their clip ended, or the segmenter's end_ms of silence): a turn is sent (commit +
+        response.create, its latency counted from the end of the speech: `lag_ms` before the stream's end, by default
+        the segmenter's silence), a discussion line is committed (transcribed, never answered)."""
+        target, self._clip_target = self._clip_target, None
+        if target is None or target[0] == "drop":
+            return
+        if target[0] == "room":
+            await self._room_commit(target[1], "clip")
+            return
+        turn = target[1]
+        if self.turn is not turn or self.state != LISTENING:
+            return
+        end_ms = getattr(self._clip_seg, "end_frames", 70) * SEGMENTER_FRAME_MS if lag_ms is None else lag_ms
+        estimate = self._stream_time(turn, self._stream_ms - end_ms)
+        await self._send_turn(turn, "vad")
+        if self.turn is turn and turn.ended_by == "vad" and estimate is not None:
+            turn.speech_end_at = min(estimate, turn.turn_end_at or estimate)
+            turn.speech_end_estimated = True
+
+    async def _clip_reset(self, *, commit: bool) -> None:
+        """Forget the clip being heard (reset, a new deck, a new session): a discussion line half heard is committed
+        (or dropped); the segmenter starts afresh."""
+        target, self._clip_target = self._clip_target, None
+        if target is not None and target[0] == "room":
+            if commit:
+                await self._room_commit(target[1], "clip")
+            else:
+                await self._rt({"type": "input_audio_buffer.clear"})
+        if self._clip_seg is not None:
+            self._clip_seg.reset()
+        self._clip_on, self._clip_tail = None, False
 
     async def _on_key(self, msg: dict) -> None:
         key = msg.get("key")
@@ -1082,11 +1321,14 @@ class Controller:
         await self._halt(msg, cut=False)
         await self._room_close(commit=False)
         await self._close_mic(clear=True)
+        await self._clip_reset(commit=False)
         self._room_seg = None
         self._room_commits.clear()
         self._room_items.clear()
-        self._room_commit_held = False
+        self._room_commit_held = None
         self._flows.clear()
+        self._wrapup_pending = False
+        self._cancel_timer("wrapup_wait")
         self.mstate.reset()
         self.engine.reset()
         self._t0 = self.clock.now()
@@ -1262,10 +1504,10 @@ class Controller:
         user item + response.create), a follow-up or a facilitator request, or a narration request."""
         if self._active:
             return
-        if self._room_commit_held:
-            self._room_commit_held = False
+        if self._room_commit_held is not None:
+            held, self._room_commit_held = self._room_commit_held, None
             if await self._rt({"type": "input_audio_buffer.commit"}):
-                self._room_commits.append(self.speaker)
+                self._room_commits.append(held)
         turn, live = self.turn, self.live
         if turn is not None and turn.pending and self._replying and turn.response_id is None:
             events, turn.pending = turn.pending, []
@@ -2331,16 +2573,27 @@ class Controller:
             if await self._rt({"type": "input_audio_buffer.append", "audio": base64.b64encode(piece).decode()}):
                 self._stream_ms += len(piece) / BYTES_PER_MS
 
-    async def _room_commit(self) -> None:
-        """Commit the utterance (its transcript comes back, no response); held while a response is still active."""
+    async def _room_commit(self, speaker: Any = _SELECTED, source: str = "voice") -> None:
+        """Commit the utterance (its transcript comes back, no response); held while a response is still active.
+        Its label: `speaker` (a clip's participant), else the deck's speaker selector; `source` voice or clip."""
+        label = (self.speaker if speaker is _SELECTED else speaker, source)
         if self._active:
-            self._room_commit_held = True
+            if self._room_commit_held is None:  # (a second one would commit the same buffer: one item)
+                self._room_commit_held = label
             return
         if await self._rt({"type": "input_audio_buffer.commit"}):
-            self._room_commits.append(self.speaker)
+            self._room_commits.append(label)
 
     async def _room_close(self, *, commit: bool) -> None:
-        """Stop listening to the room for now: an utterance being spoken is committed (or dropped)."""
+        """Stop listening to the room for now: an utterance being spoken (the room mic's, or a participant clip's)
+        is committed (or dropped); the rest of a clip that is still playing goes nowhere."""
+        target = self._clip_target
+        if target is not None and target[0] == "room":
+            self._clip_target = ("drop",)
+            if commit:
+                await self._room_commit(target[1], "clip")
+            else:
+                await self._rt({"type": "input_audio_buffer.clear"})
         seg = self._room_seg
         if seg is None:
             return
@@ -2375,6 +2628,32 @@ class Controller:
             self._flows.append((KIND_DECISION, {"draft": draft, "resolved": resolved, "utterance": utterance}))
         if self.agenda_phase == DISCUSSION:
             await self._run_flows()
+        elif self.agenda_phase == WRAPUP:
+            await self._late_line()
+
+    def _room_line_in_flight(self) -> bool:
+        """A room line was committed (or waits to be) and its transcript hasn't come yet."""
+        return bool(self._room_commits or self._room_items or self._room_commit_held is not None)
+
+    async def _late_line(self) -> None:
+        """A line transcribed after the discussion ended (it was still in flight at the wrap-up). Nobody speaks up
+        any more, but what it settled goes into the notes (the check's draft, by=auto), and an open question it
+        answered is closed; the wrap-up then goes on if it was waiting for this line."""
+        flows, self._flows = self._flows, []
+        for kind, payload in flows:
+            if kind == KIND_DECISION:
+                await self._save_draft(payload["draft"])
+        if self._wrapup_pending:
+            if not self._room_line_in_flight():
+                await self._finish_wrapup()
+            return
+        still_open = set(self._unresolved_questions())
+        closed = [question for question in self.mstate.open_questions
+                  if not question.resolved and question.text not in still_open]
+        for question in closed:
+            self.mstate.resolve_open_question(question.id)
+        if closed:
+            await self._send_meeting()
 
     def _pending_conflicts(self, events: list[dict]) -> list[dict]:
         """The intervene events with a conflict that has not been resolved meanwhile (the facilitator was busy)."""
@@ -2385,7 +2664,8 @@ class Controller:
     async def _run_flows(self) -> None:
         """The next thing the alignment check asks the facilitator to say, once it is free (ROOM): an intervention or
         a decision. Without the link a decision is saved silently and an intervention stays on screen only."""
-        while self._flows and self.state == ROOM and self.turn is None and self.agenda_phase == DISCUSSION:
+        while (self._flows and self.state == ROOM and self.turn is None and self.agenda_phase == DISCUSSION
+               and not self._clip_speaking()):  # never over a participant who is talking: after their line
             kind, payload = self._flows.pop(0)
             if kind == KIND_INTERVENTION:
                 payload = self._pending_conflicts(payload)
@@ -2452,13 +2732,32 @@ class Controller:
         await self._request_events(turn, [{"type": "response.create", "response": response}])
 
     async def _enter_wrapup(self) -> None:
-        """Phase wrap-up: the room mic closes, what is still unresolved becomes open questions, the notes go to the
-        deck, and the facilitator sums up (two or three sentences, no tools) → IDLE "Meeting wrapped up"."""
+        """Phase wrap-up: the room mic closes, a decision still waiting for the facilitator goes into the notes as
+        drafted (by=auto), what is still unresolved becomes open questions, the notes go to the deck, and the
+        facilitator sums up (two or three sentences, no tools) → IDLE "Meeting wrapped up". The room's last line, if
+        its transcript is still on the way (Wrap up right after someone spoke), is waited for first, up to
+        WRAPUP_WAIT_S: what it settles belongs in the notes and the summary, not among the open questions."""
         await self._room_close(commit=True)
         self._room_seg = None
         await self._close_mic(clear=False)
-        self._flows.clear()
+        flows, self._flows = self._flows, []
+        for kind, payload in flows:
+            if kind == KIND_DECISION:
+                await self._save_draft(payload["draft"])
         self.mstate.set_phase(WRAPUP)
+        if self._room_line_in_flight():
+            self._wrapup_pending = True
+            self._set_state(IDLE, BANNER_WRAPPING)
+            self._start_timer("wrapup_wait", WRAPUP_WAIT_S, self._finish_wrapup)
+            self._note("wrapup_wait", {"commits": len(self._room_commits), "items": len(self._room_items),
+                                       "held": self._room_commit_held is not None})
+            return
+        await self._finish_wrapup()
+
+    async def _finish_wrapup(self) -> None:
+        """The rest of the wrap-up, once the room's last line is in (or WRAPUP_WAIT_S passed without it)."""
+        self._wrapup_pending = False
+        self._cancel_timer("wrapup_wait")
         if self.engine is not None:
             for event in self.engine.flush():  # conflicts still pending: silent suggestions now
                 await self._send({"type": "alignment", "event": event})
@@ -2469,6 +2768,8 @@ class Controller:
                               "open_questions": len(self.mstate.open_questions)})
         if not self.realtime.ready:
             self._set_state(IDLE, BANNER_WRAPPED)
+            return
+        if self.turn is not None:  # a participant took the floor while the wrap-up waited: never sum up over them
             return
         turn = Turn(origin=ORIGIN_WRAPUP, kind=KIND_SUMMARY, phase=WRAPUP)
         await self._flow_request(turn, prompts.wrapup_instructions(self.mstate.notes_text(), meeting=self.meeting),
@@ -2576,9 +2877,9 @@ class Controller:
         room utterance's commit comes first (the server acknowledges commits in order)."""
         item_id = event.get("item_id")
         if self._room_commits:
-            speaker = self._room_commits.popleft()
+            label = self._room_commits.popleft()
             if isinstance(item_id, str) and item_id:
-                self._room_items[item_id] = speaker
+                self._room_items[item_id] = label
             return
         turn = self.turn
         if turn is not None and self.state in (LISTENING, REPLYING) and turn.mic_frames > 0:
@@ -2594,9 +2895,14 @@ class Controller:
         item_id = item_id if isinstance(item_id, str) and item_id else None
         if self.mstate is not None and (item_id in self._room_items or (
                 item_id is None and self._room_items and self.state not in (LISTENING, REPLYING))):
-            speaker = self._room_items.pop(item_id if item_id in self._room_items else next(iter(self._room_items)))
+            speaker, source = self._room_items.pop(item_id if item_id in self._room_items
+                                                   else next(iter(self._room_items)))
             if text:
-                await self._room_utterance(text, speaker, "voice")
+                await self._room_utterance(text, speaker, source)
+            elif self.agenda_phase == DISCUSSION:
+                await self._run_flows()  # nothing was heard: what waited for this line goes ahead
+            elif self.agenda_phase == WRAPUP:
+                await self._late_line()  # (the wrap-up may have been waiting for it)
             return
         if not text:
             return
@@ -2608,7 +2914,10 @@ class Controller:
             self._remember_user_item(current, item_id)
         if owner is not None and owner is current:
             owner.user_text = text
-            await self._send({"type": "caption", "role": "user", "text": text, "final": True, "reply": owner.reply})
+            caption = {"type": "caption", "role": "user", "text": text, "final": True, "reply": owner.reply}
+            if owner.speaker:
+                caption["speaker"] = owner.speaker  # a participant's clip: its prepared label
+            await self._send(caption)
             return
         if owner is not None:
             owner.user_text = text
@@ -2889,7 +3198,7 @@ class Controller:
         await self._send({"type": "metric", "name": "reply_latency_ms", "value": latency})
         if not turn.speech_end_estimated:
             start = f"end of turn ({turn.ended_by})"
-        elif turn.segmenter is not None:
+        elif turn.segmenter is not None or turn.source == "clip":
             start = "end of speech (segmenter)"
         else:
             start = "end of speech (from audio_end_ms)"
@@ -2978,9 +3287,13 @@ class Controller:
         # the room's audio items (and an utterance being appended) were the old session's
         self._room_commits.clear()
         self._room_items.clear()
-        self._room_commit_held = False
+        self._room_commit_held = None
         if self._room_seg is not None:
             self._room_seg.reset()
+        self._clip_target = None  # (the audio of a clip being heard went to the old session)
+        if self._clip_seg is not None:
+            self._clip_seg.reset()
+        self._clip_on, self._clip_tail = None, False
 
     async def _link_lost(self) -> None:
         """Mid-turn drop: LISTENING goes back to its origin; a reply without response.done counts as done. Mid

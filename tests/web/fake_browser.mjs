@@ -2,6 +2,8 @@
 // an HTML parser + DOM with a selector engine, fake reveal.js, fake Web Audio / AudioWorklet / analyser nodes, fake
 // WebSocket, fetch, getUserMedia and ResizeObserver, and a manual clock (setTimeout, setInterval,
 // requestAnimationFrame, performance.now, AudioContext.currentTime all move only when the test calls advance()).
+// The simulated online meeting's clips: fetch serves env.clips (/clips/<step>.wav), AudioContext.createBuffer makes
+// real sample buffers, and each analyser hears its own `level` (else env.outputLevel).
 
 const nativeSetTimeout = globalThis.setTimeout;
 
@@ -391,6 +393,8 @@ export const env = {
   /** @type {string[]} */ fetches: [],
   /** @type {any} */ talk: null,
   /** @type {Map<string, number>} */ media: new Map(),
+  /** @type {Map<string, ArrayBuffer>} /clips/<step>.wav → the WAV's bytes (a simulated online meeting's clips) */
+  clips: new Map(),
   /** @type {any[]} */ contexts: [],
   /** @type {string[]} */ modules: [],
   /** @type {Record<string, any>} */ worklets: {},
@@ -513,9 +517,24 @@ class FakeAnalyser extends FakeAudioNode {
     this.fftSize = 2048;
     /** @type {any[]} nodes connected into this one */
     this.inputs = [];
+    /** @type {number|undefined} what this analyser hears (a test sets it); else env.outputLevel */
+    this.level = undefined;
   }
   getFloatTimeDomainData(buf) {
-    buf.fill(env.outputLevel);
+    buf.fill(this.level ?? env.outputLevel);
+  }
+}
+
+class FakeAudioBuffer {
+  constructor(channels, length, sampleRate) {
+    this.numberOfChannels = channels;
+    this.length = length;
+    this.sampleRate = sampleRate;
+    this.duration = length / sampleRate;
+    this.data = Array.from({ length: channels }, () => new Float32Array(length));
+  }
+  getChannelData(c) {
+    return this.data[c];
   }
 }
 
@@ -598,6 +617,9 @@ class FakeAudioContext {
   }
   decodeAudioData(data) {
     return Promise.resolve({ duration: data.durationS ?? 1, numberOfChannels: 1, sampleRate: 24000 });
+  }
+  createBuffer(channels, length, sampleRate) {
+    return new FakeAudioBuffer(channels, length, sampleRate);
   }
 }
 
@@ -809,6 +831,11 @@ export function install(indexHtml) {
       const data = new ArrayBuffer(8);
       /** @type {any} */ (data).durationS = seconds;
       return Promise.resolve({ ok: true, status: 200, arrayBuffer: () => Promise.resolve(data) });
+    }
+    if (String(url).startsWith("/clips/")) {
+      const bytes = env.clips.get(String(url));
+      if (!bytes) return Promise.resolve({ ok: false, status: 404, arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)) });
+      return Promise.resolve({ ok: true, status: 200, arrayBuffer: () => Promise.resolve(bytes.slice(0)) });
     }
     return Promise.resolve({ ok: false, status: 404, json: () => Promise.reject(new Error("404")) });
   };

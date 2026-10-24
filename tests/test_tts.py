@@ -97,6 +97,15 @@ def test_request_shape():
     assert kwargs["timeout"] == 7.5
 
 
+def test_without_timestamps_the_request_asks_for_a_plain_wav_and_takes_the_body_as_it_is():
+    """Participant clips (contract v3.1 §2): `response_format: "wav"` alone; the response body is the wav itself."""
+    session = FakeSession(FakeResponse(200, content=WAV))
+    result, _ = run(session, timestamps=False)
+    [(_, kwargs)] = session.calls
+    assert kwargs["json"] == {"model": TTS_MODEL, "input": TEXT, "voice": "chloe", "response_format": "wav"}
+    assert (result.wav, result.words) == (WAV, None)
+
+
 def test_decodes_audio_and_returns_words_as_the_api_sent_them():
     stamps = [{"word": "<|emotion:enthusiasm|>Here", "start": 0.08, "end": 0.16}, {"word": "is", "start": 0.2,
                                                                                      "end": 0.31}]

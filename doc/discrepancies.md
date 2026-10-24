@@ -64,12 +64,28 @@ check, decision capture and notes, the meeting inputs with source ids, and the p
    document, excerpt, why it was looked up), a Notes panel (decisions with owner and sources, clarifications,
    action items, open questions) and the discussion transcript with the alignment card (heard claim vs. source).
 
+## Online-meeting patch (`doc/online_meeting_patch.md`, 2026-10-23 ~21:30)
+
+Ken: "Use JS", naming is fine, voice interruption per the patch. The patch changes the input source and the demo
+deployment, not the product:
+
+| Patch says | Before the patch (7488da5) | Change |
+| --- | --- | --- |
+| Online meeting; Alice/Bob/Carol are **prerecorded clips**, played locally **and** streamed to Higgs at real-time pace; mic **off** | browser mic, tap floor control, room mic in the discussion | `talks/<id>/demo.yaml` (steps: speaker, words, cue); `python -m relay.clips` generates the clips with TTS 3 preset voices (a recording in `talks/<id>/clips/` wins); the page's Demo Audio Controller plays each clip and streams the same samples; no `getUserMedia` |
+| AI output never reaches the Higgs input | half duplex on one room mic | by construction: only clip samples are sent |
+| Barge-in: a clip started **while the AI is audibly speaking** causes a genuine interruption; cancel stale output; resume from app state | interruption by tap only | the backend's participant segmenter detects speech in the clip stream in any state → the Space path (truncate to the frame's reported playback position) → the participant's turn |
+| Event-driven sync, not fixed timers | — | cues: `talking_point` + `heard_ms`, `phase` + `quiet_ms`, `after` + `gap_ms`, `after_reply` + `gap_ms`; a manual **Play next** fallback, disclosed |
+| Speaker labels from clip metadata, not diarization | optional speaker selector | each clip's `speaker` travels with its frames |
+| Disclose real vs. prerecorded | — | "recorded" participant tiles, a topbar badge, the run of show's table and the judges' explanation (patch §5, §9) |
+| In-person AEC, diarization, Zoom/Teams: future work | in-room by design | `--input mic` keeps the in-room path; README/limits describe in-person audio as future work, never as a Higgs defect |
+
+Contract: `.scratch/same-page/contract_patch.md`.
+
 ## Deviations to confirm with Ken
 
-- **Plain JS instead of TypeScript + Vite** (needs Node; installing it is a system change). Say the word and I
-  install Node and port the client.
-- **Interruption by tap first**: with laptop speakers the room mic hears the facilitator, so voice barge-in would
-  trip on its own voice. Voice barge-in (start talking to interrupt) will be a setting for headphones.
-- **Product name** in UI and docs only; the Python package and CLI stay `relay` to avoid churn the day before.
+- ~~Plain JS instead of TypeScript + Vite~~ — **decided (Ken): plain JS.**
+- ~~Interruption by tap first~~ — **superseded by the online-meeting patch**: voice barge-in on the participant
+  clip stream (no echo path); tap stays for the in-room `--input mic` mode.
+- ~~Product name~~ — **decided (Ken): fine as is** (UI/docs "On the Same Page", package `relay`).
 - `talks/relay-intro` (the Relay self-introduction) stays in the repo as an example; the demo is
   `talks/rollout-review`.

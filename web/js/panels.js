@@ -4,8 +4,10 @@
  * phases, the checkpoint, the phase button), the side panel's tabs (Evidence: each lookup's sources, plus the
  * documents; Notes: decisions, action items, clarifications, open questions; Transcript: the discussion with claim
  * chips, alignment cards and silent suggestions; Chat: the meeting chat) with unread badges, the evidence callout over
- * the shared screen, and the speaker picker. A plain talk never enables any of it. DOM only: Meeting owns these
- * objects, main.js feeds them through Meeting.
+ * the shared screen, and the speaker picker. A simulated online meeting (contract v3.1 §4: `talk.demo`, input
+ * `clips`) adds the demo script's controls to the agenda strip (Run demo, the next step and its cue, Play next) and
+ * the prerecorded participants' tiles. A plain talk never enables any of it. DOM only: Meeting owns these objects,
+ * main.js feeds them through Meeting.
  */
 import {
   atText,
@@ -177,6 +179,136 @@ export class Agenda {
     if (!this.locked) return;
     this.locked = false;
     this.render();
+  }
+}
+
+// ---------------------------------------------------------------- the demo script's controls (in the agenda strip)
+
+/**
+ * @typedef {object} DemoStripView
+ * @property {boolean} running
+ * @property {boolean} done
+ * @property {boolean} playing  a clip is playing
+ * @property {boolean} waiting  the next step's cue timed out (or its clip is unavailable): Play next is the way on
+ * @property {string} text  "Next: Alice — while the facilitator presents rollback-trigger"
+ * @property {string} title
+ */
+
+export class DemoStrip {
+  /**
+   * @param {HTMLElement} el  the .demo group in the agenda strip
+   * @param {{onRun: () => void, onPlay: () => void}} handlers
+   */
+  constructor(el, handlers) {
+    this.el = el;
+    this.run = /** @type {HTMLButtonElement} */ (part(el, ".demo-run"));
+    this.play = /** @type {HTMLButtonElement} */ (part(el, ".demo-play"));
+    this.next = part(el, ".demo-next");
+    this.text = part(el, ".demo-next-text");
+    this.shown = "";
+    this.run.addEventListener("click", () => handlers.onRun());
+    this.play.addEventListener("click", () => {
+      if (!this.play.disabled) handlers.onPlay();
+    });
+  }
+
+  /** @param {boolean} on */
+  show(on) {
+    this.el.hidden = !on;
+  }
+
+  /** @param {DemoStripView} v */
+  render(v) {
+    const key = JSON.stringify(v);
+    if (key === this.shown) return; // called on every reply progress: write only what changed
+    this.shown = key;
+    this.run.textContent = v.running ? "Stop demo" : "Run demo";
+    this.run.setAttribute("aria-pressed", String(v.running));
+    this.run.disabled = v.done && !v.running;
+    this.run.title = v.running
+      ? "Stop the demo script: the clip playing stops at once"
+      : v.done
+        ? "The demo script has run (Restart meeting runs it again)"
+        : "Run the demo script: each prerecorded participant speaks on its cue";
+    this.play.disabled = v.playing || v.done;
+    this.play.dataset.waiting = String(v.waiting && !v.playing && !v.done);
+    this.text.textContent = v.text;
+    this.next.title = v.title;
+    this.el.dataset.state = v.playing ? "playing" : v.running ? "running" : v.done ? "done" : "stopped";
+  }
+}
+
+// ---------------------------------------------------------------- the prerecorded participants' tiles
+
+/**
+ * @typedef {object} ParticipantTile
+ * @property {HTMLElement} el
+ * @property {HTMLElement} ring
+ * @property {HTMLElement} status
+ * @property {number} ringLevel
+ */
+
+export class ParticipantTiles {
+  /** @param {HTMLElement} people  the .people column (the tiles go after the facilitator's) */
+  constructor(people) {
+    this.people = people;
+    /** @type {Map<string, ParticipantTile>} */
+    this.tiles = new Map();
+  }
+
+  /** One tile per participant: avatar, a "Recorded" tag, name and role. @param {Participant[]} participants */
+  setup(participants) {
+    for (const t of this.tiles.values()) t.el.remove();
+    this.tiles.clear();
+    for (const p of participants) {
+      const el = make("article", "tile tile-participant");
+      el.dataset.name = p.name;
+      el.dataset.speaking = "false";
+      el.dataset.playing = "false";
+      el.setAttribute("aria-label", `${p.name}${p.role ? `, ${p.role}` : ""}: a prerecorded participant`);
+      const tag = make("span", "tile-tag", "Recorded");
+      tag.title = `${p.name} is simulated: a prerecorded clip, played here and streamed to the facilitator as it plays`;
+      const avatar = make("div", "avatar");
+      const ring = make("span", "ring");
+      ring.setAttribute("aria-hidden", "true");
+      const face = make("span", "avatar-face");
+      face.append(make("span", "avatar-text", (p.name.trim()[0] ?? "?").toUpperCase()));
+      avatar.append(ring, face);
+      const status = make("span", "tile-status");
+      const plate = make("div", "nameplate");
+      const dot = make("span", "clip-dot");
+      dot.setAttribute("aria-hidden", "true");
+      plate.append(dot, make("span", "name", p.name), make("span", "role", p.role));
+      el.append(tag, avatar, status, plate);
+      this.people.append(el);
+      this.tiles.set(p.name, { el, ring, status, ringLevel: -1 });
+    }
+  }
+
+  /** Whose clip is playing now (null: nobody's). @param {string|null} name @param {boolean} manual */
+  playing(name, manual) {
+    for (const [who, t] of this.tiles) {
+      const on = who === name;
+      t.el.dataset.playing = String(on);
+      t.status.textContent = on ? (manual ? "Speaking · played by hand" : "Speaking") : "";
+    }
+  }
+
+  /**
+   * A participant's speaking border and ring, from their own clip's level.
+   * @param {string} name
+   * @param {boolean} speaking
+   * @param {number} ring  0..1, in steps (few style writes)
+   */
+  level(name, speaking, ring) {
+    const t = this.tiles.get(name);
+    if (!t) return;
+    const value = String(speaking);
+    if (t.el.dataset.speaking !== value) t.el.dataset.speaking = value;
+    if (ring !== t.ringLevel) {
+      t.ringLevel = ring;
+      t.ring.style.setProperty("--level", String(ring));
+    }
   }
 }
 
@@ -600,7 +732,7 @@ export class SidePanel {
    * @param {string} whoKind  participant | room | facilitator
    * @param {string} time
    * @param {string} text
-   * @param {string} source  voice | typed | ""
+   * @param {string} source  voice | typed | clip (a prerecorded participant) | ""
    */
   line(who, whoKind, time, text, source) {
     const li = make("li", "utt");
@@ -609,6 +741,7 @@ export class SidePanel {
     metaRow.append(make("span", "utt-who", who));
     if (time) metaRow.append(make("span", "utt-time", time));
     if (source === "typed") metaRow.append(make("span", "utt-source", "typed"));
+    if (source === "clip") metaRow.append(make("span", "utt-source", "recorded"));
     const claims = make("p", "utt-claims");
     claims.hidden = true;
     li.append(metaRow, make("p", "utt-text", text), claims);

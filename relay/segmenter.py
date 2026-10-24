@@ -94,6 +94,11 @@ class Segmenter:
         return low >= self.threshold_db and high - low <= STEADY_SPREAD_DB
 
     @property
+    def speaking(self) -> bool:
+        """In an utterance, or in a possible onset (speech heard, not yet start_ms of it): someone may be talking."""
+        return self.in_speech or self._candidate_speech > 0
+
+    @property
     def threshold_db(self) -> float:
         floor = self.noise_floor_db
         return self.floor_db if floor is None else max(self.floor_db, floor + self.margin_db)

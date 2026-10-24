@@ -48,6 +48,50 @@ No key? Everything runs offline with stand-ins: `uv run python -m relay.render t
 A re-render takes effect at the next server restart (the server serves the narration it loaded at startup); an open
 deck then reloads itself, and you click Arm again.
 
+### Run the meeting demo (On the Same Page, `talks/rollout-review`)
+
+The facilitator presents the rollout plan live, is interrupted by a participant's question, answers from the
+documents, resumes, then listens to the discussion and asks one clarification before a wrong decision is confirmed.
+The meeting is an **online meeting**: Alice, Bob and Carol are **prerecorded participant clips**, and the microphone
+stays off. Every clip has to be generated once per clone (they live in the gitignored `out/`):
+
+```bash
+uv run python -m relay.render talks/rollout-review   # the facilitator's backup narration (TTS 3)
+uv run python -m relay.clips talks/rollout-review    # the participants' clips (TTS 3, one voice each)
+uv run python -m relay serve talks/rollout-review    # open http://localhost:8000, Join, then Run demo
+```
+
+Offline: add `--fake` to the first two commands (tone bursts) and serve with `--fake-realtime`. A recording at
+`talks/rollout-review/clips/<step id>.wav` (mono, 16-bit, 24 kHz) replaces a generated clip. `--input mic` (or
+`RELAY_INPUT=mic`) runs the same meeting in the room instead: the microphone, tap Space to talk. The script and its
+cues are in [`talks/rollout-review/demo.yaml`](talks/rollout-review/demo.yaml); the run of show, fallbacks included,
+is [`talks/rollout-review/run_of_show.md`](talks/rollout-review/run_of_show.md).
+
+The page plays each clip on the speakers (the judges hear it) and streams the same samples to the backend at
+real-time pace, which feeds them to the one Higgs Realtime session; the facilitator's own audio is never sent back.
+So a clip that starts while the facilitator speaks is a genuine barge-in, detected in that stream. What is real and
+what is prerecorded:
+
+| Component | In the demo |
+| --- | --- |
+| Alice / Bob / Carol speech | **Prerecorded**, played and streamed at real-time speed |
+| Speaker labels | **Prepared clip metadata**, not AI diarization |
+| Slides, agenda, requirements, past decisions | **Prepared fictional demo assets** |
+| Higgs speech, answers, interruption response | **Live API behavior** |
+| Evidence lookup, alignment decision, state updates | **Live application logic** |
+| Final notes and action items | **Generated from live meeting state** |
+
+The page labels the participants *recorded* and says *Simulated participants · prerecorded audio*; every step the
+script takes by itself (starting the presentation, pressing Wrap up) or by hand (Play next) is disclosed in the chat.
+For the judges and Boson:
+
+> Our MVP targets online meetings, where participant audio can be routed directly to the AI rather than captured from
+> a shared room microphone. For this demonstration, Alice, Bob, and Carol are prerecorded participants. Their audio is
+> played for the audience and streamed to Higgs in real time. All AI speech, tool calls, contextual interruptions,
+> alignment checks, and decision updates happen live. Extending this to in-person or hybrid meetings would require
+> robust echo handling and possibly single-microphone speaker diarization, which we consider future work and useful
+> integration questions for Boson.
+
 ### Presenter keys
 
 | Key | Action |
@@ -100,5 +144,10 @@ key has access).
 
 ## Known limitations
 
-_TBD_ — English only; tap-to-talk floor control (no speaker identification); narration must be pre-rendered;
-in-room only.
+_TBD_ — English only; narration must be pre-rendered (live narration falls back to it); Relay's talks use
+tap-to-talk floor control in the room (no speaker identification).
+
+The meeting demo is an online meeting, simulated: the participants are prerecorded clips with prepared speaker
+labels, and the script is fixed. In-person or hybrid meetings, where one room microphone also hears the facilitator's
+speakers, would need echo handling and possibly single-microphone diarization: future work, and an integration
+question for Boson rather than a known Higgs limitation.

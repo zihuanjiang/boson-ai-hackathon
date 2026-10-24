@@ -19,7 +19,7 @@ function exists(path) {
   }
 }
 
-const JS = ["util", "facilitator", "talk", "socket", "deck", "audio", "captions", "status", "keys", "panels", "meeting", "main"].map(
+const JS = ["util", "demo", "facilitator", "talk", "socket", "deck", "audio", "captions", "status", "keys", "panels", "meeting", "main"].map(
   (n) => `web/js/${n}.js`,
 );
 const WORKLETS = ["web/worklets/pcm-player.js", "web/worklets/mic-capture.js"];
@@ -92,9 +92,16 @@ const rows = [...html.matchAll(/<li data-item="(\w+)"[^>]*>\s*<span class="ic"[^
 check(
   "join dialog rows, labelled for people",
   JSON.stringify(rows) ===
-    JSON.stringify(["server=Connected to Relay", "talk=Talk loaded", "audio=Speaker", "mic=Microphone", "narration=Backup narration", "realtime=Higgs Realtime"]),
+    JSON.stringify(["server=Connected to Relay", "talk=Talk loaded", "audio=Speaker", "mic=Microphone", "narration=Backup narration", "clips=Participant clips", "realtime=Higgs Realtime"]),
   rows.join(" | "),
 );
+// a simulated online meeting (contract v3.1 §4): everything it adds is hidden until the talk has a demo in clips mode
+check("the participant clips row is hidden until the talk is a simulated meeting", /<li data-item="clips"[^>]* hidden>/.test(html));
+check("the join dialog's disclosure is hidden, in the dialog's head", inside('<header class="panel-head">', '<p class="panel-demo"', "</header>") && /<p class="panel-demo"[^>]*hidden>/.test(html));
+check("the disclosure badge sits in the topbar, hidden", inside('<div class="topbar-center">', 'class="pill demo-pill"', '<div class="topbar-right">') && /class="pill demo-pill"[^>]*\shidden\s*>Simulated participants · prerecorded audio</.test(html));
+check("the demo script's controls sit in the agenda strip before the phase button, hidden", inside('<nav class="agenda"', '<div class="demo"', '<button type="button" class="phase-button"') && /<div class="demo"[^>]* hidden>/.test(html));
+check("Run demo and Play next are buttons named exactly so", />Run demo<\/button>/.test(html) && />Play next<\/button>/.test(html));
+check("the routing line sits in Meeting info, hidden", inside('<section class="strip"', '<p class="strip-routing" hidden>', "</section>") && html.includes("participant clips only (facilitator audio is not sent)"));
 
 // ---- assets referenced from JS
 for (const file of JS) {
@@ -156,6 +163,11 @@ check("narrow meeting talk: agenda, tiles, share", /@media \(max-width: 899px\)[
 check("the callout sits above the captions", /var\(--cap-h\)/.test(rule(".callout")) && /bottom:/.test(rule(".meeting.captions-off .callout")));
 check("plain talks keep the old toolbar-left (the meeting's flex row is scoped)", rule(".toolbar-left").trim() === "justify-self: start;");
 check("ticker: newest chip ellipsises", /min-width:\s*0/.test(rule(".tool:first-child")) && /text-overflow:\s*ellipsis/.test(rule(".tool .tool-name")));
+// a simulated online meeting: the tiles in a 2 × 2 grid, the badge in the viewing badge's room, the strip folds
+check("demo: the tiles share a 2 × 2 grid", /display:\s*grid/.test(rule(".meeting.has-demo .people")) && /repeat\(2,/.test(rule(".meeting.has-demo .people")));
+check("demo: the disclosure badge takes the viewing badge's room", /display:\s*none/.test(rule(".meeting.has-demo .viewing")));
+check("demo: the next step's text ellipsises", /text-overflow:\s*ellipsis/.test(rule(".demo-next")) && /min-width:\s*0/.test(rule(".demo-next")));
+check("demo: the other steps' titles fold", /display:\s*none/.test(rule('.meeting.has-demo .agenda-step:not([data-state=""]) .step-title, .meeting.has-demo .agenda-prompt'))); // strings are "" in `bare`
 check("icons never take a click from their button", /pointer-events:\s*none/.test(rule(".ico")));
 
 // ---- every class the JS looks up exists in index.html (or is created by the JS itself), on an HTML element: an
