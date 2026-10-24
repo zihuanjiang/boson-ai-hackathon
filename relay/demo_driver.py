@@ -52,6 +52,8 @@ PRESENTING = ("presenting", "resuming")  # a talking_point cue: the checkpoint s
 ACTION_KEYS = {"start": "relay", "phase": "phase"}
 FACILITATOR_KINDS = ("intervention", "decision", "summary", "handover")  # web/js/facilitator.js
 LOGGED_KINDS = ("barge_in", "reply_start", "tool", "evidence", "transcript", "error")
+# the alignment events worth a line in the run's log (legacy and model-based alike: both carry issue_type and topic)
+ALIGNMENT_SHOWN = ("intervene", "suggestion", "resolved", "withdrawn", "decision_draft")
 
 
 def pcm_from_wav(body: bytes) -> bytes:
@@ -203,9 +205,13 @@ class Deck:
 
     def _log_inbound(self, kind: str | None, msg: dict) -> None:
         if kind in LOGGED_KINDS or (kind == "state" and msg.get("state") is not None) or (
-                kind == "alignment" and (msg.get("event") or {}).get("type") in ("intervene", "resolved")) or (
+                kind == "alignment" and (msg.get("event") or {}).get("type") in ALIGNMENT_SHOWN) or (
                 kind == "caption" and msg.get("final")):
             brief = {k: v for k, v in msg.items() if k not in ("type", "snapshot")}
+            if kind == "alignment":  # one line per issue: its kind, type and topic (legacy: the slot label), no payload
+                event = msg.get("event") or {}
+                brief = {key: event.get(key) for key in ("type", "id", "issue_id", "issue_type", "topic", "status",
+                                                        "decision", "owner", "silent") if event.get(key) is not None}
             self.say(f"<- {kind} {json.dumps(brief)[:150]}")
 
     async def send(self, msg: dict) -> None:

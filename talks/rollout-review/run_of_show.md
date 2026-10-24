@@ -102,9 +102,9 @@ manual fallback.
 | ~0:40 | presentation · `rollback` | — | Resumes at `rollback-trigger`, bridged in a few words ("Back to the rollback plan: if the beta runs into trouble…"), not at the start of the plan | The resumed point | Checkpoint `Slide 3 · rollback-trigger · resuming`. **Notes** tab: clarification CL-1 (Friday = beta, citing the lookup's top results) |
 | 0:50 | presentation · `rollback` → `comms` | — | `rollback-call`, `beta-notes`, `customer-announcement` | — | Fragments, checkpoints |
 | ~1:10 | presentation → discussion | — | One hand-over sentence: the plan is done; over to you on what goes out on Friday and who sends it; it will listen and only speak up if something doesn't match the documents | The hand-over | Slide `discussion`; agenda strip *Launch announcement*; tile *Listening to the room* |
-| ~1:15 | discussion | 1.5 s of quiet, then **Bob's clip** | **Silent**: nobody has confirmed anything yet | "I'll announce Friday's production launch to all customers." | **Transcript**: `Bob (recorded)` with two amber chips: Friday's release stage *production* ≠ beta, audience *all customers* ≠ beta users |
-| ~1:19 | discussion | 1 s later, **Carol's clip** | The gate opens. Its evidence goes on screen, and it speaks once, live: "Before we confirm: didn't we establish that Friday is beta? Should the announcement go only to beta users?" | "Great, let's finalize that." / the facilitator's question | Tile *Speaking up*. **Evidence**: *Alignment check* → DEC-2, REQ-2. Alignment card: Bob's sentence vs. REQ-2/DEC-2 and CL-1, status *asked*. Notes: no decision yet |
-| ~1:29 | discussion | 0.8 s after the question, **Carol's clip** | Calls `save_decision`, then confirms in one sentence: "Confirmed. I've updated the action items." | "Yes, beta users only. Bob owns the announcement." / the confirmation | Alignment card *resolved*. **Notes**: decision D1 (Friday is the beta; the announcement goes to beta users only: the model's wording, or the check's draft tagged `auto`), owner chip **Bob**, sources REQ-2, DEC-2; action item A1 for Bob |
+| ~1:15 | discussion | 1.5 s of quiet, then **Bob's clip** | **Silent**: nobody has confirmed anything yet | "I'll announce Friday's production launch to all customers." | **Transcript**: `Bob (recorded)` with a claim chip (Friday's production launch to all customers). The analysis of his line (a model round trip, a few seconds) may add a silent alignment card: an **evidence conflict**, Bob's proposal vs. REQ-2/DEC-2 and CL-1, nothing spoken because nobody has confirmed |
+| ~1:19 | discussion | 1 s later, **Carol's clip** | The analysis of Carol's line comes back a few seconds later (the latency is in `doc/gotchas.md`): the group is confirming, the evidence is verified, so it speaks once, live, with the evidence on screen: "Before we confirm: didn't we establish that Friday is beta? Should the announcement go only to beta users?" (the model's own wording) | "Great, let's finalize that." / the facilitator's question | Tile *Speaking up*. **Evidence**: *Alignment check* → DEC-2, REQ-2. Alignment card (evidence conflict): Bob's sentence vs. REQ-2/DEC-2 and CL-1, the question, status *asked*. Notes: no decision yet |
+| ~1:29 | discussion | 0.8 s after the question, **Carol's clip** | Calls `save_decision`, then confirms in one sentence: "Confirmed. I've updated the action items." | "Yes, beta users only. Bob owns the announcement." / the confirmation | Alignment card *resolved*. **Notes**: decision D1 (Friday is the beta; the announcement goes to beta users only: the model's wording, or the analysis's validated proposal tagged `analysis`), owner chip **Bob**, sources REQ-2, DEC-2; action item A1 for Bob |
 | ~1:36 | discussion → wrap-up | 2 s after the confirmation, step `wrap` presses **Wrap up**. The operator: "The script presses Wrap up, the same as the button." | Two or three sentences built from the notes: the decision with its owner, then open questions (none) | The live summary | Agenda strip *Decisions and next steps*, button *Done*; tile *Wrapping up*; Notes: *Meeting notes* header with the time |
 | 1:50–2:20 | wrap-up | (video) hold on **Notes**, then the alignment card. Caption: "The clarification from the presentation, CL-1, is what the facilitator cited in the discussion." | silent | — | Decision, owner, sources, action item, and the clarification that carried over |
 
@@ -124,8 +124,8 @@ manual fallback.
   Carol's confirmation, it intervenes once: a neutral question that cites the earlier clarification and the
   documents. It never says anyone is wrong, and it speaks in two short sentences at most.
 - **Correction**: `save_decision` with owner Bob and sources REQ-2 and DEC-2, then one sentence of confirmation. If
-  the model's call is invalid or missing, the controller saves the alignment check's draft, and the Notes tab tags
-  that decision `auto`.
+  the model's call is invalid or missing, the controller saves the decision the analysis extracted from Carol's words
+  (owner, agreeing utterances and sources verified), and the Notes tab tags that decision `analysis`.
 - **Wrap-up**: a summary built from the notes: decisions with owners, then open questions.
 
 ## Fallbacks (disclose every manual step out loud: brief §9, patch §5)
@@ -143,15 +143,19 @@ manual fallback.
 - **It doesn't resume**: the *Resuming… 2, 1* countdown resumes it. **R** resumes at once.
 - **It doesn't hand over after `customer-announcement`**: click **Start discussion** in the agenda strip ("I'll move
   us to the discussion"). Bob's cue then fires after 1.5 s of quiet.
-- **A discussion line is missing or garbled in the Transcript** (no amber chips on Bob's line: the transcript changed
-  a key word such as Friday, production or all customers): click **Run demo** to stop the script, pick the speaker
-  chip, press **T**, type the exact line and press Enter ("Higgs misheard Bob's line, I'm typing it"). A typed line
-  is an utterance like a streamed one, and the alignment check works on it without Realtime. A confirmation only
-  counts after the conflict, so then type Carol's lines too, in order: "Great, let's finalize that." and, once the
-  facilitator has asked its question, "Yes, beta users only. Bob owns the announcement." The rest is by hand:
-  click **Wrap up** at the end.
-- **Chips, but no alignment card after Carol's line** (her transcript lost the key words): type "Let's finalize
-  that." as Carol (the check looks three utterances back). The script then carries on by itself.
+- **A discussion line is missing or garbled in the Transcript** (Bob's line is absent, or the words that carry the
+  claim changed: Friday, production, all customers): click **Run demo** to stop the script, pick the speaker chip,
+  press **T**, type the exact line and press Enter ("Higgs misheard Bob's line, I'm typing it"). A typed line is an
+  utterance like a streamed one, and the analysis runs on it without Realtime. The question comes only when the
+  group confirms, so then type Carol's lines too, in order: "Great, let's finalize that." and, once the facilitator
+  has asked its question, "Yes, beta users only. Bob owns the announcement." The rest is by hand: click **Wrap up**
+  at the end.
+- **No alignment card a few seconds after Carol's line** (the analysis is a model round trip; the topbar shows the
+  alignment status): wait for it. If it comes back silent, the model read Carol's line as less than a confirmation:
+  type "Agreed, Friday production to all customers, Bob sends it." as Carol. The script then carries on by itself.
+- **Alignment unavailable** in the topbar (no `ANTHROPIC_API_KEY`, or the Anthropic API is down): the meeting runs
+  without the check and nothing will be asked. Say so, read REQ-2 and DEC-2 from the Documents list yourself after
+  Carol's confirmation, and let Carol's correction play; `save_decision` still records the decision.
 - **An alignment card (*asked*), but the facilitator stays silent**: read the card's question aloud and say that
   the facilitator didn't speak. Then click **Play next** for Carol's correction ("played by hand").
 - **The correction isn't picked up** (the card stays *asked*): type as Carol "Yes, Friday is beta, beta users only.
@@ -178,7 +182,7 @@ manual fallback.
 | Live answer grounded in a prepared document | ~0:34 | Evidence tab: the query, the REQ-2 card (Rollout plan v3), the excerpt, and the same line under Documents. The callout over the slide |
 | The presentation resumes in context | ~0:40 | Checkpoint `Slide 3 · rollback-trigger · resuming`. The captions show it picking up the rollback plan, with no replay of slide 2 |
 | It does not answer every statement | ~1:15 | Bob's line has amber chips while the facilitator stays silent |
-| The contradiction is caught before confirmation | ~1:19 | The alignment card (heard vs. REQ-2/DEC-2 and CL-1) appears as soon as Carol's line is transcribed. The Notes tab has no decision until Carol corrects it |
+| The contradiction is caught before confirmation | ~1:19 | The alignment card (heard vs. REQ-2/DEC-2 and CL-1) appears a few seconds after Carol's line is transcribed, when the analysis returns. The Notes tab has no decision until Carol corrects it |
 | The decision record reflects the correction | ~1:29–2:20 | Notes: D1 (Friday = beta, announcement to beta users only), owner Bob, REQ-2, DEC-2; CL-1; A1. The card shows *resolved* |
 | Routing: participants reach judges and Higgs; AI output reaches judges only | any time | Meeting info: "Higgs input: participant clips only (facilitator audio is not sent)". No microphone indicator in Chrome's address bar |
 
@@ -226,15 +230,17 @@ backup narration from the same talking points.
 - The participants are prerecorded and the order of their lines is fixed. That is the patch's simulated online
   meeting, not an open conversation. Higgs receives one participant stream, and the cues never let two clips
   overlap. The speaker comes from clip metadata, not diarization.
-- The alignment check matches patterns written for this meeting (`checks.yaml`), not open-ended understanding. Say
-  so if a judge asks: it is the brief's "structured claim extraction" MVP. The patterns cover these exact lines and
-  close speech-to-text variants (checked on Higgs-style transcripts: no punctuation, curly apostrophes, "finalise",
-  "Fridays").
+- The alignment check is a language model's reading of the discussion (Claude through the Anthropic API,
+  `doc/design.md` §12), not patterns written for this meeting. Say so if a judge asks: every id and quote on the card
+  is verified against the documents and the meeting's own records before the facilitator may speak, and it stays
+  silent when the model is unsure or nobody is confirming. It is not instant: the question comes a few seconds after
+  Carol's line (the measured latency per model is in `doc/gotchas.md`). `checks.yaml` is still in the package for
+  `--alignment legacy`, the old regex check, and is otherwise ignored.
 - The facilitator's wording, and so the exact length of each segment, changes from run to run. The cues follow the
   facilitator's actual playback, so the clips still land at the right moments.
-- CL-1 holds "Friday is beta" only if the facilitator's answer says so in a sentence that names Friday. The checks
-  read the likely answers ("Friday is beta; production is next Wednesday", "beta on Friday and production next
-  Wednesday", "Friday is the beta release, not production"). An answer that only says "the beta group gets it
-  first" still records CL-1, but the alignment card then cites only the documents.
+- CL-1 is the facilitator's own answer to Alice, recorded with the sources it looked up. The analysis reads it as a
+  clarification in context, so an answer that only says "the beta group gets it first" still lets the card cite CL-1
+  together with REQ-2 and DEC-2; whether it settles the point is the model's call, and the documents alone are enough
+  for the conflict.
 - In-person or hybrid meetings would need echo handling and possibly single-microphone diarization. That is future
   work and an integration question for Boson, not something this demo claims.

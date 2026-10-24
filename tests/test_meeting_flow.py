@@ -2,6 +2,11 @@
 test_controller.py's recording ports and manual clock, on a small meeting package written into tmp_path (so these
 tests don't depend on talks/rollout-review).
 
+**Legacy alignment tests** (contract v5 §5): the discussion scenarios here were written for the regex engine
+(relay/alignment.py over checks.yaml) and pin the controller to `alignment="legacy"` explicitly; the default,
+model-based alignment (relay/semantic.py) is covered by tests/test_semantic_flow.py. The presentation, the tools,
+the room mic and the wrap-up mechanics they exercise are the same in both modes.
+
 The brief's milestones as scenarios: an interruption → lookup_evidence round trip → spoken answer → automatic
 clarification → resume at the same talking point (Milestone 1); the presentation's end → hand-over → the room; the
 brief §3 discussion lines → an intervention with the engine's evidence → the resolution → save_decision validated
@@ -12,6 +17,7 @@ with the segmenter, half duplex, typed utterances, follow-up limits and Space in
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import math
 import struct
@@ -168,13 +174,16 @@ def meeting_talk(tmp_path: Path) -> Talk:
     return load_talk(write_meeting(tmp_path / "meeting"))
 
 
+LEGACY = Settings(narration="live", alignment="legacy")  # these scenarios drive the regex engine (see the docstring)
+
+
 @pytest.fixture
 def mk(meeting_talk: Talk):
     made: list[Harness] = []
 
     def factory(*, settings: Settings | None = None, ready: bool = True) -> Harness:
-        harness = Harness(meeting_talk, synthetic_chunks(meeting_talk), settings or Settings(narration="live"),
-                          ready=ready)
+        chosen = dataclasses.replace(settings, alignment="legacy") if settings is not None else LEGACY
+        harness = Harness(meeting_talk, synthetic_chunks(meeting_talk), chosen, ready=ready)
         made.append(harness)
         return harness
 
@@ -885,6 +894,32 @@ async def test_the_wrap_up_without_the_link_says_nothing(mk):
     h.realtime.ready = False
     await h.key("phase")
     assert (h.c.state, h.c.banner, h.c.agenda_phase) == (IDLE, BANNER_WRAPPED, "wrapup")
+
+
+def test_legacy_mode_is_explicit_and_labelled(h: Harness):
+    """Contract v5 §0: the regex engine runs only on `--alignment legacy` with a checks.yaml, and says so."""
+    assert h.c.alignment_mode == "legacy" and h.c.engine is not None and h.c._analysis is None
+    assert h.c.alignment_info() == {"mode": "legacy", "model": None, "available": True}
+    assert h.c.alignment_status()["mode"] == "legacy" and h.c.mstate.alignment["available"] is True
+
+
+async def test_legacy_events_name_their_issue_type_and_topic(h: Harness):
+    """The deck shows every alignment event by issue type (contract v5 §4): the engine's events are forwarded with
+    `issue_type: evidence_conflict` and the slot label as `topic`."""
+    await to_intervention(h)
+    events = [msg["event"] for msg in browser_history(h, "alignment")]
+    assert events and all(event["issue_type"] == "evidence_conflict" for event in events)
+    assert {event["topic"] for event in events if event["type"] == "conflict"} == {
+        "Friday's release stage", "Friday's announcement audience"}
+    intervene = [event for event in events if event["type"] == "intervene"][-1]
+    assert intervene["topic"] == intervene["label"] == "Friday's release stage"
+    assert h.b("hello") == []  # (the hello carries the mode too: see test_hello_carries_the_alignment_mode)
+
+
+async def test_hello_carries_the_alignment_mode(h: Harness):
+    await h.c.on_browser_connected()
+    assert h.b("hello")[0]["alignment"] == {"mode": "legacy", "model": None, "available": True}
+    assert h.last("state")["alignment"]["mode"] == "legacy" and h.last("meeting")["alignment"]["mode"] == "legacy"
 
 
 async def test_reset_starts_the_meeting_again_with_a_fresh_session(h: Harness):

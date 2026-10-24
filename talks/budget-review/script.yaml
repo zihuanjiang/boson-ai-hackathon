@@ -1,0 +1,39 @@
+# The second meeting package (contract v5 §5): Dana (finance lead, host), Eli (marketing) and Fay (engineering lead)
+# review the first-quarter marketing budget. Three talking points; the discussion is driven by typed lines in the
+# tests and scripts/alignment_eval.py (no demo.yaml, no checks.yaml: the alignment check is model-based).
+#   validate: uv run python -m relay.talk talks/budget-review     render: uv run python -m relay.render talks/budget-review
+# The `say` lines are the facilitator's talking points (Higgs Realtime presents them live in its own words) and the
+# backup narration (TTS 3 renders them word for word). So: whole sentences, at most 300 characters per `say`, numbers
+# spelled as words, no digits, URLs, parentheses or acronyms.
+# Keep the facts in step with sources/facts.md (the fact sheet without authored ids; the loader numbers its lines
+# FACTS-1 … in file order): thirty thousand dollars approved on the tenth of February (FACTS-1), more needs a new
+# approval (FACTS-2), the campaign starts on the first of March (FACTS-3), Eli runs it (FACTS-4) and can pause it
+# (FACTS-5), customer data is kept ninety days (FACTS-7) and Fay's team deletes it (FACTS-8).
+talk: budget-review
+voice: default
+presenter: Dana      # the host (agenda.yaml)
+slides:
+  - id: agenda
+    speaker: human
+
+  - id: budget
+    speaker: relay
+    plain: "Like a household budget pinned to the fridge: the number everyone agreed to is written down, and spending past it means going back to whoever signed it."
+    chunks:
+      - id: approved-budget
+        say: "The first-quarter campaign budget is thirty thousand dollars. Dana approved it on the tenth of February, and anything above that number needs a new approval from finance before it is committed."
+        fragment: 2
+
+  - id: campaign
+    speaker: relay
+    plain: "Like a six-week pop-up shop with one manager who holds the keys: it opens on the first of March, and the manager can close the doors early if something looks wrong."
+    chunks:
+      - id: campaign-start
+        say: "The spring campaign starts on the first of March and runs for six weeks, for existing customers in Canada only. Eli runs it day to day and can pause it at any time."
+        fragment: 1
+      - id: data-retention
+        say: "Customer data collected by the campaign is kept for ninety days after it ends and then deleted. Fay's team owns the deletion job and confirms it to Dana in writing."
+        fragment: 2
+
+  - id: discussion
+    speaker: human    # agenda.yaml discussion_slide: shown while the facilitator listens to the room

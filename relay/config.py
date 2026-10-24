@@ -1,6 +1,7 @@
 """Settings, paths and constants shared by the render CLI, the server and the verify checks.
 
-The API key comes from the repo-root `.env` (gitignored). Never log `Settings.api_key`.
+The API keys come from the repo-root `.env` (gitignored): BOSON_API_KEY for Higgs, ANTHROPIC_API_KEY for the Claude
+alignment analysis (separate billing). Never log `Settings.api_key` or `Settings.anthropic_api_key`.
 """
 
 from __future__ import annotations
@@ -47,11 +48,23 @@ DEFAULT_TURN_DETECTION: dict | None = None
 # The server-VAD setting of the old path (live 2026-10-23: semantic_vad's default 100 ms silence ended 3 of 4 spoken
 # lines at their first pause; with 700 ms every line was heard in full and replies started within ~0.7–1.2 s).
 VAD_TURN_DETECTION: dict = {"type": "semantic_vad", "silence_duration_ms": 700}
+# How the discussion is checked (doc/alignment_replacement_prompt.md, contract v5). claude: Claude reads the documents
+# and the discussion and finds evidence conflicts, hidden disagreements and ambiguous decisions (ANTHROPIC_API_KEY);
+# legacy: the regex engine over checks.yaml, explicit only; off: nobody checks (transcripts and notes still work).
+ALIGNMENT_MODES = ("claude", "legacy", "off")
+ALIGNMENT_MODEL = "claude-opus-5-5"  # the current Opus; RELAY_ALIGNMENT_MODEL overrides (see doc/gotchas.md for the measured tradeoff)
+ALIGNMENT_EFFORTS = ("low", "medium", "high")
 
 
 @dataclass(frozen=True)
 class Settings:
     api_key: str = field(default="", repr=False)
+    anthropic_api_key: str = field(default="", repr=False)
+    alignment: str = "claude"
+    alignment_model: str = ALIGNMENT_MODEL
+    alignment_effort: str = "low"
+    alignment_timeout_s: float = 20.0
+    alignment_max_tokens: int = 4000
     base_url: str = "https://api.boson.ai"  # without /v1
     realtime_url: str = "wss://api.boson.ai/v1/realtime"
     realtime_model: str = REALTIME_MODEL
@@ -104,8 +117,16 @@ def load_settings(**overrides) -> Settings:
     load_dotenv(ROOT / ".env", override=False)
     env = os.environ
     temperature = (env.get("RELAY_TEMPERATURE") or "").strip()
+    timeout = (env.get("RELAY_ALIGNMENT_TIMEOUT_S") or "").strip()
+    max_tokens = (env.get("RELAY_ALIGNMENT_MAX_TOKENS") or "").strip()
     values = {
         "api_key": (env.get("BOSON_API_KEY") or "").strip(),
+        "anthropic_api_key": (env.get("ANTHROPIC_API_KEY") or "").strip(),
+        "alignment": (env.get("RELAY_ALIGNMENT") or "claude").strip().lower(),
+        "alignment_model": (env.get("RELAY_ALIGNMENT_MODEL") or ALIGNMENT_MODEL).strip(),
+        "alignment_effort": (env.get("RELAY_ALIGNMENT_EFFORT") or "low").strip().lower(),
+        "alignment_timeout_s": float(timeout) if timeout else 20.0,
+        "alignment_max_tokens": int(max_tokens) if max_tokens else 4000,
         "base_url": _base_url(env.get("BOSON_BASE_URL")),
         "realtime_url": (env.get("BOSON_REALTIME_URL") or "wss://api.boson.ai/v1/realtime").strip().rstrip("/"),
         "realtime_model": (env.get("BOSON_REALTIME_MODEL") or REALTIME_MODEL).strip(),
@@ -127,6 +148,12 @@ def load_settings(**overrides) -> Settings:
         raise ValueError(f"RELAY_NARRATION must be one of {NARRATION_MODES}, got {settings.narration!r}")
     if settings.input is not None and settings.input not in INPUT_MODES:
         raise ValueError(f"RELAY_INPUT must be one of {INPUT_MODES}, got {settings.input!r}")
+    if settings.alignment not in ALIGNMENT_MODES:
+        raise ValueError(f"RELAY_ALIGNMENT must be one of {ALIGNMENT_MODES}, got {settings.alignment!r}")
+    if settings.alignment_effort not in ALIGNMENT_EFFORTS:
+        raise ValueError(f"RELAY_ALIGNMENT_EFFORT must be one of {ALIGNMENT_EFFORTS}, got {settings.alignment_effort!r}")
+    if settings.alignment_timeout_s <= 0 or settings.alignment_max_tokens < 256:
+        raise ValueError("RELAY_ALIGNMENT_TIMEOUT_S must be > 0 and RELAY_ALIGNMENT_MAX_TOKENS at least 256")
     return settings
 
 

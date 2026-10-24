@@ -10,11 +10,18 @@
  * main.js feeds them through Meeting.
  */
 import {
+  CARD_STATUS_WORDS,
+  SUGGESTION_TITLE,
   atText,
+  cardMoves,
+  cardStatus,
+  cardTitle,
   checkpointWhere,
   claimChip,
   idKind,
+  issueTypeOf,
   lookupBy,
+  normalizeEvent,
   phaseButton,
   sourceIndex,
   speakerChoices,
@@ -27,6 +34,7 @@ import {
 /** @typedef {import("./facilitator.js").Lookup} Lookup */
 /** @typedef {import("./facilitator.js").Utterance} Utterance */
 /** @typedef {import("./facilitator.js").AlignmentEvent} AlignmentEvent */
+/** @typedef {import("./facilitator.js").Issue} Issue */
 /** @typedef {import("./facilitator.js").Checkpoint} Checkpoint */
 /** @typedef {import("./facilitator.js").Participant} Participant */
 /** @typedef {import("./facilitator.js").SourceRef} SourceRef */
@@ -80,6 +88,27 @@ function flash(el) {
   el.classList.remove("fresh");
   void el.offsetWidth; // restart the animation
   el.classList.add("fresh");
+}
+
+/** @param {unknown} v */
+function blank(v) {
+  return v === "" || v === null || v === undefined || (Array.isArray(v) && v.length === 0);
+}
+
+/**
+ * An intervention or suggestion event over the conflict it refers to: the event's own fields win, except where it
+ * leaves one empty and the conflict has it (the conflict carried the claim and the evidence first).
+ * @param {AlignmentEvent|undefined} conflict
+ * @param {AlignmentEvent} ev
+ * @returns {AlignmentEvent}
+ */
+function merged(conflict, ev) {
+  /** @type {AlignmentEvent} */
+  const out = { ...(conflict ?? {}), ...ev };
+  if (conflict) {
+    for (const [key, value] of Object.entries(ev)) if (blank(value) && !blank(conflict[key])) out[key] = conflict[key];
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- the agenda strip
@@ -444,9 +473,9 @@ export class Callout {
  * @typedef {object} Card  an alignment card in the transcript
  * @property {HTMLElement} el
  * @property {Set<string>} conflicts  conflict ids (and intervene ids) it shows
- * @property {Set<string>} slots
- * @property {Set<string>} refs
- * @property {Set<string>} resolved  slots resolved
+ * @property {Set<string>} issues  the issue ids it is about (model-based alignment)
+ * @property {Set<string>} rows  the rows it shows already (a slot, a view, a missing detail): a repeat adds nothing
+ * @property {Set<string>} refs  the ids its Sources block cites
  */
 
 export class SidePanel {
@@ -816,6 +845,7 @@ export class SidePanel {
   alignment(ev) {
     switch (ev.type) {
       case "claim":
+      case "assumption":
         this.chip(ev);
         break;
       case "conflict":
@@ -831,6 +861,9 @@ export class SidePanel {
       case "resolved":
         this.resolved(ev);
         break;
+      case "withdrawn":
+        this.withdrawn(ev);
+        break;
       case "decision_draft":
         this.decisionDraft(ev);
         break;
@@ -839,7 +872,7 @@ export class SidePanel {
     }
   }
 
-  /** A claim (or a conflict) as a chip on its utterance. @param {AlignmentEvent} ev */
+  /** A claim, an assumption or a conflict as a chip on its utterance. @param {AlignmentEvent} ev */
   chip(ev) {
     if (!ev.utterance_id) return;
     const li = this.utteranceEl(ev.utterance_id);
@@ -851,11 +884,12 @@ export class SidePanel {
   chipOn(li, ev) {
     const row = part(li, ".utt-claims");
     const { text, tone, title } = claimChip(ev);
-    const key = ev.slot || text;
+    const key = ev.type === "assumption" ? `assumes:${text}` : ev.slot || text;
     let el = Array.from(row.children).find((c) => c instanceof HTMLElement && c.dataset.slot === key);
     if (!(el instanceof HTMLElement)) {
       el = make("span", "claim");
       el.dataset.slot = key;
+      if (ev.type === "assumption") el.dataset.kind = "assumption";
       row.append(el);
     } else if (el.dataset.tone === "conflict" && tone !== "conflict") {
       return; // a conflict stays a conflict
@@ -866,27 +900,45 @@ export class SidePanel {
     row.hidden = false;
   }
 
+  /** The conflict an intervention or suggestion refers to, if the deck saw it. @param {AlignmentEvent} ev */
+  conflictOf(ev) {
+    return typeof ev.conflict_id === "string" ? this.conflicts.get(ev.conflict_id) : undefined;
+  }
+
   /**
-   * The alignment card for an intervention: what was heard against the source and the earlier clarification. One
-   * card per intervention, one row per conflicting slot (Bob's line conflicts on two: the event's own and `related`),
-   * placed after the line that was about to confirm it.
+   * The alignment card for an intervention: what was heard, the support appropriate to the kind of issue (the
+   * sources for an evidence conflict, each participant's words for a hidden disagreement, the proposal and its
+   * missing details for an ambiguous decision), the question, and the line that was about to confirm it. One card
+   * per intervention (a legacy pattern check adds one row per conflicting slot: the event's own and `related`),
+   * placed after the confirming line. A silent suggestion about the same issue becomes this card.
    * @param {AlignmentEvent} ev
    */
   intervene(ev) {
     const key = `iv:${ev.id || ev.utterance_id}`;
     if (this.cards.has(key)) return;
-    const conflict = typeof ev.conflict_id === "string" ? this.conflicts.get(ev.conflict_id) : undefined;
+    const conflict = this.conflictOf(ev);
     const u = ev.utterance_id ? this.utterances.get(ev.utterance_id) : undefined;
     const text = typeof ev.confirm_quote === "string" && ev.confirm_quote ? ev.confirm_quote : u?.text ?? "";
     const confirm = text ? { who: u?.speaker ?? "", text } : null;
-    const card = this.newCard("intervention", "Alignment check", ev, conflict, confirm);
+    const suggested = ev.issue_id ? this.cards.get(`sg:${ev.issue_id}`) : undefined;
+    let card;
+    if (suggested) {
+      this.cards.delete(`sg:${ev.issue_id}`);
+      card = suggested;
+      card.el.dataset.kind = "intervention";
+      part(card.el, ".align-title").textContent = cardTitle(merged(conflict, ev));
+      if (confirm) this.confirmBlock(card, confirm);
+      card.el.remove(); // it moves after the confirming line
+    } else {
+      card = this.newCard("intervention", ev, conflict, confirm);
+    }
     this.cards.set(key, card);
-    this.addConflict(card, ev, conflict);
+    this.addIssue(card, ev, conflict);
     for (const id of Array.isArray(ev.conflict_ids) ? ev.conflict_ids : []) if (typeof id === "string") card.conflicts.add(id);
     for (const rel of Array.isArray(ev.related) ? ev.related : []) {
       if (!rel || typeof rel !== "object") continue;
       const other = typeof rel.conflict_id === "string" ? this.conflicts.get(rel.conflict_id) : undefined;
-      this.addConflict(card, { ...ev, ...rel, id: "" }, other);
+      this.addIssue(card, normalizeEvent({ ...ev, ...rel, id: "" }), other);
       this.addQuote(card, String(rel.quote || ""));
     }
     this.setStatus(card, "pending");
@@ -902,32 +954,44 @@ export class SidePanel {
     if (quote && !shown.includes(quoted(quote))) heard.append(make("p", "align-quote", quoted(quote)));
   }
 
-  /** A conflict that fell out of the window unconfirmed: shown, never said. @param {AlignmentEvent} ev */
+  /**
+   * An issue shown, never said: a conflict that fell out of the window unconfirmed (legacy), or an issue the policy
+   * kept silent (uncertain, premature, or left pending at the wrap-up).
+   * @param {AlignmentEvent} ev
+   */
   suggestion(ev) {
-    const conflict = typeof ev.conflict_id === "string" ? this.conflicts.get(ev.conflict_id) : undefined;
-    const key = `sg:${ev.conflict_id ?? ev.id}`;
+    const conflict = this.conflictOf(ev);
+    const key = `sg:${ev.issue_id ?? ev.conflict_id ?? ev.id}`;
     if (this.cards.has(key)) return;
-    const card = this.newCard("suggestion", "Possible mismatch (not raised)", ev, conflict);
+    const existing = ev.issue_id ? this.cardForIssue(ev.issue_id) : null;
+    if (existing) {
+      // the intervention's card shows it already; one never spoken is silent after all
+      if (existing.el.dataset.status === "pending") this.setStatus(existing, "suggestion");
+      return;
+    }
+    const card = this.newCard("suggestion", ev, conflict);
     this.cards.set(key, card);
-    this.addConflict(card, ev, conflict);
+    this.addIssue(card, ev, conflict);
     this.setStatus(card, "suggestion");
     this.place(card.el, ev.utterance_id ?? conflict?.utterance_id ?? null);
     this.bump("transcript");
   }
 
   /**
+   * An empty card of a kind: the title, the heard quote, and every block the kinds of issue use (shown as they fill).
    * @param {string} kind  intervention | suggestion
-   * @param {string} title
    * @param {AlignmentEvent} ev
    * @param {AlignmentEvent|undefined} conflict
    * @param {{who: string, text: string}|null} [confirm]  the line that was about to confirm it
    * @returns {Card}
    */
-  newCard(kind, title, ev, conflict, confirm = null) {
+  newCard(kind, ev, conflict, confirm = null) {
+    const src = merged(conflict, ev);
     const li = make("li", "align-card");
     li.dataset.kind = kind;
+    li.dataset.issueType = issueTypeOf(src);
     const head = make("header", "align-head");
-    head.append(make("span", "align-title", title), make("span", "align-status"));
+    head.append(make("span", "align-title", kind === "suggestion" ? SUGGESTION_TITLE : cardTitle(src)), make("span", "align-status"));
     const heard = make("div", "align-heard");
     const heardId = typeof ev.quote_utterance_id === "string" ? ev.quote_utterance_id : kind === "suggestion" ? ev.utterance_id : conflict?.utterance_id;
     const heardUtt = heardId ? this.utterances.get(heardId) : undefined;
@@ -936,66 +1000,155 @@ export class SidePanel {
     const when = heardUtt ? atText(heardUtt.at_s) : "";
     heard.append(make("span", "align-label", ["Heard", who, when].filter(Boolean).join(" · ")));
     heard.append(make("p", "align-quote", sentence ? quoted(sentence) : ""));
-    const sources = make("div", "align-sources");
-    sources.append(make("span", "align-label", "Sources say"), make("ol", "align-refs"));
-    li.append(head, heard, make("ul", "align-diffs"), sources);
-    if (confirm) {
-      const p = make("div", "align-confirm");
-      p.append(make("span", "align-label", `Before confirming${confirm.who ? ` · ${confirm.who}` : ""}`), make("p", "align-quote", quoted(confirm.text)));
-      li.append(p);
-    }
+    /** A labelled block, hidden until it fills. @param {HTMLElement} el @param {string} label @param {HTMLElement} body */
+    const block = (el, label, body) => {
+      el.hidden = true;
+      el.append(make("span", "align-label", label), body);
+      return el;
+    };
+    li.append(
+      head,
+      heard,
+      make("ul", "align-diffs"),
+      block(make("div", "align-views"), "Views", make("ul", "align-view-list")),
+      block(make("div", "align-proposed"), "Proposed", make("p", "align-proposed-text")),
+      block(make("div", "align-missing"), "Unresolved", make("ul", "align-missing-list")),
+      block(make("div", "align-sources"), "Sources say", make("ol", "align-refs")),
+      block(make("div", "align-question"), "Question", make("p", "align-question-text")),
+    );
     const outcome = make("div", "align-outcome");
     outcome.hidden = true;
     li.append(outcome);
-    return { el: li, conflicts: new Set(), slots: new Set(), refs: new Set(), resolved: new Set() };
+    const card = { el: li, conflicts: new Set(), issues: new Set(), rows: new Set(), refs: new Set() };
+    if (confirm) this.confirmBlock(card, confirm);
+    return card;
+  }
+
+  /** The line that was about to confirm it, before the outcome (once). @param {Card} card @param {{who: string, text: string}} confirm */
+  confirmBlock(card, confirm) {
+    if (card.el.querySelector(".align-confirm")) return;
+    const p = make("div", "align-confirm");
+    p.append(make("span", "align-label", `Before confirming${confirm.who ? ` · ${confirm.who}` : ""}`), make("p", "align-quote", quoted(confirm.text)));
+    card.el.insertBefore(p, part(card.el, ".align-outcome"));
   }
 
   /**
-   * One conflicting slot on a card: heard vs established, and the ids that establish it.
+   * One issue on a card, by its kind: an evidence conflict's heard-vs-established row and the sources that establish
+   * it; a hidden disagreement's views; an ambiguous decision's proposal and missing details (and never a source: none
+   * specifies the absent detail); then the model's question.
    * @param {Card} card
    * @param {AlignmentEvent} ev
    * @param {AlignmentEvent|undefined} conflict
    */
-  addConflict(card, ev, conflict) {
-    const src = { ...(conflict ?? {}), ...ev };
+  addIssue(card, ev, conflict) {
+    const src = merged(conflict, ev);
     if (typeof src.conflict_id === "string") card.conflicts.add(src.conflict_id);
     if (ev.id) card.conflicts.add(ev.id);
-    const slot = src.slot || src.label;
-    if (!card.slots.has(slot)) {
-      card.slots.add(slot);
-      const row = make("li", "align-diff");
-      row.dataset.slot = slot;
-      row.append(
-        make("span", "diff-slot", src.label || slot),
-        make("span", "diff-heard", String(src.claimed_label || valueLabel(src.claimed))),
-        make("span", "diff-vs", "≠"),
-        make("span", "diff-source", String(src.established_label || valueLabel(src.established))),
-      );
-      part(card.el, ".align-diffs").append(row);
+    if (src.issue_id) card.issues.add(src.issue_id);
+    const type = issueTypeOf(src);
+    const claim = String(src.claimed_label || valueLabel(src.claimed) || src.claim || "");
+    if (type === "evidence_conflict") this.addDiff(card, src, claim);
+    else if (type === "hidden_disagreement") this.addViews(card, src);
+    else this.addProposal(card, src, claim);
+    if (type !== "ambiguous_decision") this.addRefs(card, src);
+    const question = String(src.question || "");
+    if (question) {
+      part(card.el, ".align-question-text").textContent = question;
+      part(card.el, ".align-question").hidden = false;
     }
+    const el = card.el;
+    part(el, ".align-diffs").hidden = part(el, ".align-diffs").children.length === 0;
+    part(el, ".align-sources").hidden = part(el, ".align-refs").children.length === 0;
+  }
+
+  /** Heard vs established, one row per slot (topic). @param {Card} card @param {AlignmentEvent} src @param {string} claim */
+  addDiff(card, src, claim) {
+    const slot = src.slot || src.label;
+    const established = String(src.established_label || valueLabel(src.established));
+    const key = `slot:${slot}`;
+    if (card.rows.has(key) || !(claim || established)) return;
+    card.rows.add(key);
+    const row = make("li", "align-diff");
+    row.dataset.slot = slot;
+    row.append(make("span", "diff-slot", src.label || slot), make("span", "diff-heard", claim));
+    if (established) row.append(make("span", "diff-vs", "≠"), make("span", "diff-source", established));
+    part(card.el, ".align-diffs").append(row);
+  }
+
+  /**
+   * Each participant's own words and what they take them to mean ("Alice · “…” → beta release"); the cited
+   * utterances when the event has views for none.
+   * @param {Card} card
+   * @param {AlignmentEvent} src
+   */
+  addViews(card, src) {
+    const views = src.participant_views.length
+      ? src.participant_views
+      : src.evidence.filter((r) => r.kind === "utterance").map((r) => ({ speaker: r.speaker, utterance_id: r.id, quote: r.quote || r.text, view: "" }));
+    const listEl = part(card.el, ".align-view-list");
+    for (const v of views) {
+      const key = `view:${v.utterance_id}|${v.quote}|${v.view}`;
+      if (card.rows.has(key)) continue;
+      card.rows.add(key);
+      const li = make("li", "align-view");
+      li.dataset.utt = v.utterance_id;
+      const who = v.speaker || this.utterances.get(v.utterance_id)?.speaker || "Room";
+      li.append(make("span", "view-who", who), make("span", "view-sep", " · "), make("span", "view-quote", quoted(v.quote)));
+      if (v.view) li.append(make("span", "view-arrow", " → "), make("span", "view-meaning", v.view));
+      listEl.append(li);
+    }
+    if (listEl.children.length) part(card.el, ".align-views").hidden = false;
+  }
+
+  /** What is proposed, and the material details nobody has settled. @param {Card} card @param {AlignmentEvent} src @param {string} claim */
+  addProposal(card, src, claim) {
+    if (claim) {
+      part(card.el, ".align-proposed-text").textContent = claim;
+      part(card.el, ".align-proposed").hidden = false;
+    }
+    const listEl = part(card.el, ".align-missing-list");
+    for (const detail of Array.isArray(src.missing_details) ? src.missing_details : []) {
+      const key = `missing:${detail}`;
+      if (card.rows.has(key)) continue;
+      card.rows.add(key);
+      listEl.append(make("li", "align-missing-item", String(detail)));
+    }
+    if (listEl.children.length) part(card.el, ".align-missing").hidden = false;
+  }
+
+  /**
+   * The sources, earlier clarifications and decisions the issue cites: the event's `evidence` with the model's
+   * verbatim quotes first, then the id lists (a legacy pattern check names ids only: their text from the index).
+   * @param {Card} card
+   * @param {AlignmentEvent} src
+   */
+  addRefs(card, src) {
     const index = this.index();
     const refs = part(card.el, ".align-refs");
-    const all = [...(src.source_ids ?? []), ...(src.clarification_ids ?? []), ...(src.decision_ids ?? [])];
-    for (const id of all) {
-      if (card.refs.has(id)) continue;
+    /** @param {string} id @param {"source"|"clarification"|"decision"} kind @param {string} quote */
+    const add = (id, kind, quote) => {
+      if (!id || card.refs.has(id)) return;
       card.refs.add(id);
       const ref = index.get(id);
-      const kind = idKind(id, index);
       const li = make("li", "align-ref");
       li.dataset.kind = kind;
       const head = make("div", "align-ref-head");
-      head.append(chip(id, kind), make("span", "align-ref-title", ref?.title || (kind === "clarification" ? "Earlier clarification" : "")));
+      head.append(chip(id, kind), make("span", "align-ref-title", ref?.title || (kind === "clarification" ? "Earlier clarification" : kind === "decision" ? "Decision" : "")));
       li.append(head);
-      if (ref?.text) li.append(make("p", "align-ref-text", quoted(ref.text)));
+      const text = quote || ref?.text || "";
+      if (text) li.append(make("p", "align-ref-text", quoted(text)));
       refs.append(li);
+    };
+    for (const r of src.evidence) {
+      if (r.kind === "source" || r.kind === "clarification" || r.kind === "decision") add(r.id, r.kind, r.quote || r.text);
     }
+    for (const id of [...(src.source_ids ?? []), ...(src.clarification_ids ?? []), ...(src.decision_ids ?? [])]) add(id, idKind(id, index), "");
   }
 
-  /** @param {Card} card @param {string} status  pending | asked | resolved | suggestion */
+  /** @param {Card} card @param {string} status  pending | asked | resolved | partial | withdrawn | open | suggestion */
   setStatus(card, status) {
     card.el.dataset.status = status;
-    const words = { pending: "Pending", asked: "Asked", resolved: "Resolved", suggestion: "Silent" };
-    part(card.el, ".align-status").textContent = /** @type {Record<string, string>} */ (words)[status] ?? status;
+    part(card.el, ".align-status").textContent = /** @type {Record<string, string>} */ (CARD_STATUS_WORDS)[status] ?? status;
   }
 
   /**
@@ -1021,39 +1174,125 @@ export class SidePanel {
     }
   }
 
+  /** The card about an issue: the intervention's, else a silent suggestion's; null for none. @param {string} issueId */
+  cardForIssue(issueId) {
+    const cards = [...this.cards.values()].filter((c) => c.issues.has(issueId));
+    return cards.find((c) => c.el.dataset.kind === "intervention") ?? cards[0] ?? null;
+  }
+
   /**
-   * The intervention's card a resolved / decision_draft event is about: by its intervention id, else by a conflict id.
+   * The card a resolved / withdrawn / decision_draft event is about: by its intervention id, else by its issue id,
+   * else by a conflict id (an intervention's card before a suggestion's).
    * @param {AlignmentEvent} ev
    */
   cardFor(ev) {
     const byIntervention = typeof ev.intervene_id === "string" ? this.cards.get(`iv:${ev.intervene_id}`) : undefined;
     if (byIntervention) return byIntervention;
+    const issueIds = [ev.issue_id, ...(Array.isArray(ev.issue_ids) ? ev.issue_ids : [])].filter((x) => typeof x === "string" && x);
+    for (const issueId of issueIds) {
+      const byIssue = this.cardForIssue(issueId);
+      if (byIssue) return byIssue;
+    }
     const ids = [ev.conflict_id, ...(Array.isArray(ev.conflict_ids) ? ev.conflict_ids : [])].filter((x) => typeof x === "string");
-    return [...this.cards.values()].find((c) => c.el.dataset.kind === "intervention" && ids.some((id) => c.conflicts.has(id))) ?? null;
+    const cards = [...this.cards.values()].filter((c) => ids.some((id) => c.conflicts.has(id)));
+    return cards.find((c) => c.el.dataset.kind === "intervention") ?? cards[0] ?? null;
   }
 
-  /** @param {AlignmentEvent} ev */
+  /**
+   * The outcome's line about a slot (topic): written once, rewritten when the issue moves on (partly settled, then
+   * settled). The results come first, then the notes, the owner and the decision.
+   * @param {Card} card
+   * @param {string} slot
+   * @param {string} text
+   */
+  resultLine(card, slot, text) {
+    const outcome = part(card.el, ".align-outcome");
+    let line = Array.from(outcome.children).find((c) => c instanceof HTMLElement && c.classList.contains("align-result") && c.dataset.slot === slot);
+    if (!(line instanceof HTMLElement)) {
+      line = make("p", "align-result");
+      line.dataset.slot = slot;
+      const after = outcome.querySelector(".align-note") ?? outcome.querySelector(".owner-chip") ?? outcome.querySelector(".align-decision");
+      if (after) outcome.insertBefore(line, after);
+      else outcome.append(line);
+    }
+    line.textContent = text;
+  }
+
+  /**
+   * A note under the results ("Settled: …", "Still open: …"), one per part; an empty text removes it.
+   * @param {Card} card
+   * @param {string} which  settled | remaining
+   * @param {string} text
+   */
+  noteLine(card, which, text) {
+    const outcome = part(card.el, ".align-outcome");
+    let line = Array.from(outcome.children).find((c) => c instanceof HTMLElement && c.classList.contains("align-note") && c.dataset.part === which);
+    if (!text) {
+      line?.remove();
+      return;
+    }
+    if (!(line instanceof HTMLElement)) {
+      line = make("p", "align-note");
+      line.dataset.part = which;
+      const after = outcome.querySelector(".owner-chip") ?? outcome.querySelector(".align-decision");
+      if (after) outcome.insertBefore(line, after);
+      else outcome.append(line);
+    }
+    line.textContent = text;
+  }
+
+  /**
+   * The participants settled it (`partial`: in part): the card's status and outcome: what was confirmed (or how the
+   * plan changed), what a partial answer settled and left open, the owner named.
+   * @param {AlignmentEvent} ev
+   */
   resolved(ev) {
     const card = this.cardFor(ev);
     if (!card) return;
-    this.setStatus(card, "resolved");
+    const partial = ev.partial === true;
+    this.setStatus(card, partial ? "partial" : "resolved");
     this.lastResolved = card;
     const outcome = part(card.el, ".align-outcome");
     outcome.hidden = false;
-    const slot = ev.slot || ev.label;
-    if (!card.resolved.has(slot)) {
-      card.resolved.add(slot);
-      const value = String(ev.value_label || valueLabel(ev.value));
-      const line = make("p", "align-result", `${ev.plan_changed ? "Plan changed" : "Confirmed"} · ${ev.label}: ${value}`);
-      const after = outcome.querySelector(".owner-chip") ?? outcome.querySelector(".align-decision");
-      if (after) outcome.insertBefore(line, after); // the results first, then the owner, then the decision
-      else outcome.append(line);
-    }
+    const value = String(ev.value_label || valueLabel(ev.value) || ev.note || "");
+    const head = ev.plan_changed ? "Plan changed" : partial ? "Partly settled" : "Confirmed";
+    this.resultLine(card, ev.slot || ev.label, value ? `${head} · ${ev.label}: ${value}` : `${head} · ${ev.label}`);
+    const settled = Array.isArray(ev.settled) ? ev.settled : [];
+    const remaining = Array.isArray(ev.remaining) ? ev.remaining : [];
+    this.noteLine(card, "settled", settled.length ? `Settled: ${settled.join("; ")}` : "");
+    this.noteLine(card, "remaining", remaining.length ? `Still open: ${remaining.join("; ")}` : "");
     if (typeof ev.owner === "string" && ev.owner && !outcome.querySelector(".owner-chip")) {
       outcome.append(make("span", "owner-chip", `Owner: ${ev.owner}`));
     }
     flash(card.el);
     this.bump("transcript");
+  }
+
+  /** The participants corrected themselves before the facilitator spoke (or it no longer applies). @param {AlignmentEvent} ev */
+  withdrawn(ev) {
+    const card = this.cardFor(ev);
+    if (!card) return;
+    this.setStatus(card, "withdrawn");
+    part(card.el, ".align-outcome").hidden = false;
+    const note = String(ev.note || "");
+    this.resultLine(card, ev.slot || ev.label, note ? `Withdrawn · ${ev.label}: ${note}` : `Withdrawn · ${ev.label}`);
+    flash(card.el);
+    this.bump("transcript");
+  }
+
+  /**
+   * The backend's issue records (`meeting.issues`): a card whose issue moved on without an event of its own follows
+   * (an asked issue nobody answered is open; one settled or withdrawn while this page was away catches up). Forward
+   * only; and never to asked, which follows the facilitator actually speaking (`asked`).
+   * @param {Issue[]} list
+   */
+  issues(list) {
+    for (const issue of list) {
+      const next = cardStatus(issue.status);
+      if (!next || next === "asked") continue;
+      const card = this.cardForIssue(issue.id);
+      if (card && cardMoves(card.el.dataset.status ?? "", next)) this.setStatus(card, next);
+    }
   }
 
   /** The decision the resolution drafted: on the card, next to its outcome. @param {AlignmentEvent} ev */

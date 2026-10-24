@@ -68,13 +68,39 @@ WAV_BYTES_PER_MS = 48
 
 
 def default_controller_factory(talk: Talk, chunks: Chunks, settings: Settings, *, browser: Any, realtime: Any,
-                               log: LogFn) -> Any:
+                               log: LogFn, analyzer: Any = None) -> Any:
     from .controller import Controller  # imported late: the controller is built separately (design §5)
 
-    return Controller(talk, chunks, settings, browser=browser, realtime=realtime, log=log)
+    return Controller(talk, chunks, settings, browser=browser, realtime=realtime, log=log, analyzer=analyzer)
 
 
 _AUTO = object()
+
+
+def alignment_info(settings: Settings, meeting: Any, *, available: bool | None = None) -> dict:
+    """{mode, model, available}: how the discussion is checked (contract v5 §0). `available` is the controller's
+    word when it has one; else what the settings and the package say (claude needs the key, legacy a checks.yaml)."""
+    mode = settings.alignment
+    if mode == "legacy" and (meeting is None or getattr(meeting, "checks", None) is None):
+        mode = "off"
+    if available is None:
+        available = (mode == "claude" and bool(settings.anthropic_api_key)) or mode == "legacy"
+    return {"mode": mode, "model": settings.alignment_model if mode == "claude" else None,
+            "available": bool(available) and mode != "off"}
+
+
+def build_analyzer(settings: Settings, log: LogFn = null_log) -> Any:
+    """The Claude analysis adapter when claude mode has its key (ANTHROPIC_API_KEY), else None: claude mode without a
+    key is `unavailable`, never the legacy engine (contract v5 §0)."""
+    if settings.alignment != "claude" or not settings.anthropic_api_key:
+        return None
+    try:
+        from .semantic import ClaudeAnalyzer
+
+        return ClaudeAnalyzer(settings)
+    except Exception as exc:  # noqa: BLE001 - the SDK missing or refusing the settings: the meeting still runs
+        log("server_error", {"where": "ClaudeAnalyzer", "error": repr(exc)})
+        return None
 
 
 def demo_payload(talk: Talk, settings: Settings, out_root: Path = OUT) -> tuple[dict | None, str, dict, list[str]]:
@@ -92,16 +118,19 @@ def demo_payload(talk: Talk, settings: Settings, out_root: Path = OUT) -> tuple[
     return demo_json(demo, clips, mode), mode, clips, warnings
 
 
-def talk_json(talk: Talk, chunks: Chunks, settings: Settings, *, demo: Any = _AUTO) -> dict:
+def talk_json(talk: Talk, chunks: Chunks, settings: Settings, *, demo: Any = _AUTO, alignment: Any = _AUTO) -> dict:
     """The `GET /api/talk` payload (design §3). `meeting` is the meeting package as the deck shows it (title,
     participants, agenda phases, documents with their statement ids, the discussion slide), null for a plain talk;
     every chunk carries its talking point `id`. `demo` (contract v3.1 §2): the simulated participants' script and
-    clips, null without demo.yaml; `input`: clips (prerecorded participants, mic off) or mic."""
+    clips, null without demo.yaml; `input`: clips (prerecorded participants, mic off) or mic; `alignment` (contract
+    v5): {mode, model, available} of the discussion check, null for a plain talk."""
     from .meeting import load_meeting
 
     if demo is _AUTO:
         demo = demo_payload(talk, settings)[0]
     meeting = load_meeting(talk)
+    if alignment is _AUTO:
+        alignment = alignment_info(settings, meeting) if meeting is not None else None
     slides = []
     for slide in talk.slides:
         items = []
@@ -124,7 +153,8 @@ def talk_json(talk: Talk, chunks: Chunks, settings: Settings, *, demo: Any = _AU
             "narration_mode": settings.narration, "fake_audio": any(chunk.fake for chunk in chunks.values()),
             "version": render_version(talk, dict(chunks)), "slides": slides,
             "meeting": meeting.to_json() if meeting is not None else None,
-            "demo": demo, "input": demo["input"] if isinstance(demo, dict) else input_mode(settings, None)}
+            "demo": demo, "input": demo["input"] if isinstance(demo, dict) else input_mode(settings, None),
+            "alignment": alignment}
 
 
 # --- the narration snapshot ---------------------------------------------------------------------------------
@@ -580,13 +610,15 @@ class _NoCache:
 
 def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_root: Path = OUT,
                connect: Callable[..., Any] | None = None, controller_factory: ControllerFactory | None = None,
-               chunks: Chunks | None = None, web_dir: str | Path = WEB) -> FastAPI:
+               chunks: Chunks | None = None, web_dir: str | Path = WEB, analyzer: Any = None) -> FastAPI:
     """Build the app for one talk. Raises `TalkError` (invalid package) or `RenderMissing` (narration not rendered,
     or a wav that doesn't match its word timings).
 
     `connect` replaces `websockets.connect` for the Realtime link (`fake_connect` when `settings.fake_realtime`);
-    `controller_factory(talk, chunks, settings, browser=, realtime=, log=)` replaces the real controller (tests);
-    `chunks` replaces the rendered narration on disk (tests); `web_dir` replaces `web/` (tests).
+    `controller_factory(talk, chunks, settings, browser=, realtime=, log=, analyzer=)` replaces the real controller
+    (tests); `chunks` replaces the rendered narration on disk (tests); `web_dir` replaces `web/` (tests); `analyzer`
+    replaces the Claude analysis adapter (a `FakeAnalyzer` in tests; by default `ClaudeAnalyzer` when claude mode has
+    its key, else none: the deck then says the alignment check is unavailable).
     """
     import dataclasses
 
@@ -601,6 +633,8 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     settings = dataclasses.replace(settings, input=mode)
     web_dir = Path(web_dir)
     log = EventLog.for_talk(talk.id, out_root)
+    if analyzer is None:
+        analyzer = build_analyzer(settings, log)
     log("server_start", {"talk": talk.id, "root": str(talk.root), "voice": talk.voice, "mic_mode": settings.mic_mode,
                          "narration": settings.narration, "fake_realtime": settings.fake_realtime,
                          "key_set": bool(settings.api_key),
@@ -609,7 +643,11 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
                          "chunks": len(chunks), "fake_audio": any(chunk.fake for chunk in chunks.values()),
                          "version": version, "narration_bytes": sum(len(wav.body) for wav in narration.values()),
                          "input": mode, "demo_steps": len(demo["steps"]) if demo else 0,
-                         "clips": sorted(clips), "clip_warnings": clip_warnings})
+                         "clips": sorted(clips), "clip_warnings": clip_warnings,
+                         "alignment": {"mode": settings.alignment,
+                                       "model": settings.alignment_model if settings.alignment == "claude" else None,
+                                       "key_set": bool(settings.anthropic_api_key),
+                                       "analyzer": type(analyzer).__name__ if analyzer is not None else None}})
 
     hub = DeckHub(log)
     ref = _ControllerRef()
@@ -624,11 +662,18 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     link = RealtimeLink(settings, session_config=ref.session_config, on_event=ref.on_event,
                         on_status=ref.on_status, connect=connect, log=log)
     factory = controller_factory or default_controller_factory
-    controller = factory(talk, chunks, settings, browser=hub, realtime=link, log=log)
+    controller = factory(talk, chunks, settings, browser=hub, realtime=link, log=log, analyzer=analyzer)
     ref.controller = controller
     if hasattr(controller, "demo_payload"):
         controller.demo_payload = demo  # the hello describes the same clips /api/talk does
-    talk_payload = talk_json(talk, chunks, settings, demo=demo)
+    meeting = getattr(controller, "meeting", _AUTO)
+    if meeting is _AUTO:
+        from .meeting import load_meeting
+
+        meeting = load_meeting(talk)
+    alignment = (controller.alignment_info() if hasattr(controller, "alignment_info")
+                 else alignment_info(settings, meeting, available=analyzer is not None or settings.alignment == "legacy"))
+    talk_payload = talk_json(talk, chunks, settings, demo=demo, alignment=alignment if meeting is not None else None)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -639,7 +684,10 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
         try:
             yield
         finally:
-            for what, step in (("hub.close", hub.close), ("link.stop", link.stop)):
+            steps = [("hub.close", hub.close), ("link.stop", link.stop)]
+            if hasattr(controller, "shutdown"):
+                steps.insert(0, ("controller.shutdown", controller.shutdown))  # an analysis in flight is dropped
+            for what, step in steps:
                 try:
                     await step()
                 except Exception as exc:  # noqa: BLE001
@@ -662,6 +710,8 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     app.state.link = link
     app.state.hub = hub
     app.state.log = log
+    app.state.analyzer = analyzer
+    app.state.alignment = alignment
 
     @app.get("/", include_in_schema=False)
     async def index() -> Response:
@@ -708,8 +758,14 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
             state = controller.snapshot().get("state")
         except Exception:  # noqa: BLE001
             state = "unknown"
+        status = alignment
+        if hasattr(controller, "alignment_status"):
+            try:
+                status = controller.alignment_status()
+            except Exception:  # noqa: BLE001
+                status = alignment
         return {"ok": True, "realtime": link.status, "state": state, "detail": link.detail, "deck": hub.connected,
-                "observers": hub.observers}
+                "observers": hub.observers, "alignment": status}
 
     @app.websocket("/ws")
     async def deck_socket(ws: WebSocket) -> None:

@@ -40,7 +40,9 @@
   --c-clarify: #c3a6ff; /* an earlier clarification */
   --c-decision: #4be38b; /* a decision in the notes */
   --c-agree: #3ddc97;
-  --c-conflict: #ffb547;
+  --c-conflict: #ffb547; /* an evidence conflict (and a claim that differs from the sources) */
+  --c-disagree: #c3a6ff; /* a hidden disagreement: two readings of the same words */
+  --c-ambiguous: #62d2ff; /* an ambiguous decision: a material detail unresolved */
 
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -282,6 +284,12 @@ body {
   background: var(--leave);
 }
 
+/* Claude mode without a key: the discussion is recorded, nobody checks it (contract v5 §4) */
+.alignment-pill {
+  color: var(--c-fail);
+  border: 1px solid color-mix(in srgb, var(--c-fail) 55%, transparent);
+}
+
 .viewing {
   display: inline-flex;
   flex: none;
@@ -511,6 +519,47 @@ body {
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--fg-dim);
+}
+
+/* who checks the discussion: Claude (ready, analysing, unavailable), the legacy patterns, or nobody */
+.alignment-badge {
+  --al-c: var(--fg-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.alignment-badge .dot {
+  background: var(--al-c);
+}
+
+.alignment-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.alignment-badge[data-status="ready"] {
+  --al-c: var(--c-ok);
+}
+
+.alignment-badge[data-status="analysing"] {
+  --al-c: var(--c-replying);
+}
+
+.alignment-badge[data-status="analysing"] .dot {
+  animation: pulse 0.9s ease-in-out infinite;
+}
+
+.alignment-badge[data-status="legacy"] {
+  --al-c: var(--c-warn);
+}
+
+.alignment-badge[data-status="unavailable"] {
+  --al-c: var(--c-fail);
+  color: var(--c-fail);
 }
 
 .badge {
@@ -2595,6 +2644,12 @@ kbd {
   --claim-c: var(--c-conflict);
 }
 
+/* an attributed reading ("assumes: …"): grey, in italics; never a fact */
+.claim[data-kind="assumption"] {
+  font-style: italic;
+  font-weight: 600;
+}
+
 .align-card {
   --card-c: var(--c-conflict);
   display: flex;
@@ -2606,8 +2661,28 @@ kbd {
   border: 1px solid color-mix(in srgb, var(--card-c) 55%, transparent);
 }
 
-.align-card[data-status="resolved"] {
+/* the kind of issue colours the card: amber for an evidence conflict, violet for a hidden disagreement, blue for an
+   unresolved detail; a settled card goes green, a silent suggestion grey (below) whatever its kind */
+.align-card[data-issue-type="hidden_disagreement"] {
+  --card-c: var(--c-disagree);
+}
+
+.align-card[data-issue-type="ambiguous_decision"] {
+  --card-c: var(--c-ambiguous);
+}
+
+.align-card[data-status="resolved"],
+.align-card[data-status="partial"] {
   --card-c: var(--c-decision);
+}
+
+.align-card[data-status="withdrawn"] {
+  --card-c: var(--fg-dim);
+  opacity: 0.85;
+}
+
+.align-card[data-status="open"] {
+  border-style: dashed;
 }
 
 .align-card[data-kind="suggestion"] {
@@ -2697,8 +2772,66 @@ kbd {
   text-decoration: line-through 0.08em color-mix(in srgb, var(--c-conflict) 70%, transparent);
 }
 
-.align-card[data-kind="suggestion"] .diff-heard {
+.align-card[data-kind="suggestion"] .diff-heard,
+.align-card[data-status="withdrawn"] .diff-heard {
   text-decoration: none;
+}
+
+/* a hidden disagreement: each participant's own words and what they take them to mean */
+.align-view-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.align-view {
+  font-size: 0.95em;
+  color: var(--fg-2);
+}
+
+.view-who {
+  font-weight: 700;
+  color: var(--c-user);
+}
+
+.view-sep,
+.view-arrow {
+  color: var(--fg-faint);
+}
+
+.view-quote {
+  color: var(--fg);
+}
+
+.view-meaning {
+  font-weight: 700;
+  color: var(--card-c);
+}
+
+/* an ambiguous decision: what is proposed, and the details nobody has settled (no source pretends to) */
+.align-proposed-text {
+  margin: 2px 0 0;
+  color: var(--fg);
+}
+
+.align-missing-list {
+  margin: 2px 0 0;
+  padding-left: 1.1em;
+  color: var(--fg);
+}
+
+.align-missing-item::marker {
+  color: var(--card-c);
+}
+
+/* the model's suggested wording of the one neutral question */
+.align-question-text {
+  margin: 2px 0 0;
+  font-style: italic;
+  color: var(--fg);
 }
 
 .diff-vs {
@@ -2761,6 +2894,18 @@ kbd {
 .align-decision {
   font-weight: 500;
   color: var(--fg-2);
+}
+
+/* what a partial answer settled, and what it left open */
+.align-note {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 0.95em;
+  color: var(--fg-2);
+}
+
+.align-card[data-status="withdrawn"] .align-result {
+  color: var(--fg-dim);
 }
 
 /* ---- the evidence callout: what the facilitator cites, over the share's bottom-left corner */
@@ -3180,6 +3325,21 @@ kbd {
 }
 
 .routing-label {
+  margin-right: 3px;
+  color: var(--fg-dim);
+}
+
+/* Meeting info: the last analysis (its latency, the policy decision, an error) */
+.strip-analysis {
+  margin: 9px 0 0;
+  padding-top: 8px;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+  border-top: 1px solid var(--line);
+}
+
+.analysis-label {
   margin-right: 3px;
   color: var(--fg-dim);
 }

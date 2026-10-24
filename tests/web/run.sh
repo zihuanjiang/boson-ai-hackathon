@@ -10,7 +10,8 @@
 #    (tiles, toolbar, chat, panels, the join dialog; a plain talk shows none of On the Same Page), Relay presenting
 #    live (narration replies and the keys), and On the Same Page (a meeting talk: the agenda strip and phase button,
 #    the evidence callout, the Evidence / Notes / Transcript / Chat tabs and badges, the alignment card, the speaker
-#    picker, the room mic, Restart meeting), and the simulated online meeting (contract v3.1: demo.js's cues, WAV
+#    picker, the room mic, Restart meeting), model-based alignment (contract v5: the Alignment line and badge, claim
+#    and assumption chips, a card per kind of issue and its statuses), and the simulated online meeting (contract v3.1: demo.js's cues, WAV
 #    parsing and frame pacing on a fake audio clock; the page in clips mode: no getUserMedia, the participants'
 #    tiles and rings, the badge, the demo strip, the clips streamed as `mic` frames, the whole script, the barge-in
 #    cue, Play next, Stop / Restart; with `--input mic` everything as before), and the observer page the Zoom bot
@@ -62,6 +63,7 @@ run "live captions" "$JSC" -m tests/web/test_live_reveal.mjs
 run "meeting window" "$JSC" -m tests/web/test_meeting.mjs
 run "live narration" "$JSC" -m tests/web/test_live_narration.mjs
 run "facilitator view" "$JSC" -m tests/web/test_facilitator_view.mjs
+run "alignment view (claude)" "$JSC" -m tests/web/test_alignment_view.mjs
 run "demo.js" "$JSC" -m tests/web/test_demo.mjs
 run "demo view (clips)" "$JSC" -m tests/web/test_demo_view.mjs
 run "demo, backup narration" "$JSC" -m tests/web/test_demo_backup.mjs

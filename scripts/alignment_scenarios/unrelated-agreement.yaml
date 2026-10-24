@@ -1,0 +1,19 @@
+# Guide case 5 (and 16): "Agreed, let's finalize that" refers to the review time, not to Bob's conflicting
+# announcement two lines earlier. No clarification is spoken; the review time is a plain agreed decision; the
+# pending conflict stays tracked (open) rather than confirmed or forgotten.
+package: talks/rollout-review
+title: Unrelated agreement (a meeting time, not the conflicting announcement)
+lines:
+  - speaker: Bob
+    text: "I'll announce Friday's production launch to all customers."
+    expect: [silent, suggest]
+    issue_types: [evidence_conflict]
+    evidence_ids: [REQ-1, REQ-2, REQ-3, DEC-1, DEC-2]
+  - speaker: Alice
+    text: "Separately, can we do the beta exit review at ten on Tuesday instead of nine?"
+    expect: [silent, suggest]
+  - speaker: Carol
+    text: "Yes, ten works. Agreed, let's finalize that."
+    expect: [silent, suggest]
+    decision: {contains: ["ten|10"]}
+    open_questions_contain: ["Friday|production|announce|customers"]

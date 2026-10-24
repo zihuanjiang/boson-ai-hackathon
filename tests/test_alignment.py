@@ -1,5 +1,7 @@
-"""relay.alignment: claims, what is established, and the Engine's gate (contract §3.3 + the coordinator's
-clarifications of 2026-10-23: hedged questions, group resolution, finditer negation, curly apostrophes).
+"""**Legacy tests**: relay.alignment, the regex engine (contract §3.3 + the coordinator's clarifications of
+2026-10-23: hedged questions, group resolution, finditer negation, curly apostrophes). Since contract v5 the engine
+runs only on `--alignment legacy` with a checks.yaml; the default is the model-based analysis of relay/semantic.py
+(tests/test_semantic.py, tests/test_semantic_flow.py). Nothing here touches the semantic path.
 
 The scenario tests replay the brief's §3 lines (contract §8) on the inline package of tests/test_meeting.py; the last
 test replays them on talks/rollout-review when it exists.
@@ -11,6 +13,8 @@ import json
 import re
 
 import pytest
+
+pytestmark = pytest.mark.legacy  # the regex engine, kept for `--alignment legacy` (see tests/conftest.py)
 
 from relay.alignment import (Claim, Engine, Established, clauses, established, extract, normalize, question_flags,
                              statement_values, value_hits)

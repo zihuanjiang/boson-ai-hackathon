@@ -106,6 +106,9 @@ check("the routing line sits in Meeting info, hidden", inside('<section class="s
 check("the Live in Zoom badge sits in the topbar, hidden", inside('<div class="topbar-center">', 'class="pill zoom-pill"', '<div class="topbar-right">') && /class="pill zoom-pill"[^>]*\shidden\s*>Live in Zoom · participants are real people</.test(html));
 check("the observer's note sits by the mic button, hidden", inside('<div class="toolbar-left">', '<span class="observer-note"', "</footer>") && /<span class="observer-note"[^>]*\shidden\s*>Shared from the facilitator's Zoom window</.test(html));
 check("the page title is the product's (the share picker matches it)", /<title>Relay<\/title>/.test(html) && /OBSERVER_TITLE = "On the Same Page"/.test(read(`${ROOT}/web/js/meeting.js`)));
+// model-based alignment (alignment-worker's contract §4): the Alignment line in Meeting info and the badge in the topbar, hidden until a meeting talk says
+check("the alignment badge sits in the topbar, hidden", inside('<div class="topbar-center">', 'class="pill alignment-pill"', '<div class="topbar-right">') && /class="pill alignment-pill"[^>]*\shidden\s*>Alignment unavailable</.test(html));
+check("the Alignment row sits in Meeting info, hidden, the last analysis under the rows", inside('<section class="strip"', '<div class="strip-alignment" hidden>', "</dl>") && inside('<section class="strip"', '<p class="strip-analysis" hidden>', "</section>"));
 
 // ---- assets referenced from JS
 for (const file of JS) {

@@ -1,0 +1,23 @@
+# Guide case 3: the same conflict as the demo without its words. Bob never says "announce", "production" or
+# "all customers"; Carol's agreement is "go with that"; Bob's correction uses "it" and "I've got it" for ownership
+# (an unambiguous commitment by a labelled participant, and DEC-3 already makes him the comms owner).
+package: talks/rollout-review
+title: Paraphrase and pronouns (the demo conflict in other words)
+lines:
+  - speaker: Bob
+    text: "Friday morning I'm telling the whole customer base that four point three is live."
+    expect: [silent, suggest]
+    issue_types: [evidence_conflict]
+    evidence_ids: [REQ-1, REQ-2, REQ-3, DEC-1, DEC-2]
+  - speaker: Carol
+    text: "Sounds right to me, go with that."
+    expect: clarify
+    issue_types: [evidence_conflict]
+    cited_lines: [1, 2]
+    cited_speakers: [Bob]
+    evidence_ids: [REQ-1, REQ-2, REQ-3, DEC-1, DEC-2]
+  - speaker: Bob
+    text: "Ah, my mistake: it's the beta group only on Friday, everyone else hears on Wednesday. I've got it."
+    expect: silent
+    decision: {contains: ["beta"], owner: Bob}
+    closed_contain: ["Friday|customer|live"]

@@ -164,7 +164,7 @@ def test_every_relay_slides_screen_text_fits_the_prompt_unclipped(talk):
 # --- the sources and the alignment check ---------------------------------------------------------------------------
 
 def test_the_sources_establish_online_from_lim_2_alone(pkg):
-    assert [s.id for s in pkg.statements] == ([f"DES-{n}" for n in range(1, 9)] + [f"LIM-{n}" for n in range(1, 8)]
+    assert [s.id for s in pkg.statements] == ([f"DES-{n}" for n in range(1, 12)] + [f"LIM-{n}" for n in range(1, 9)]
                                              + [f"RES-{n}" for n in range(1, 5)])
     asserting = [s.id for s in pkg.statements
                  if any(not c.negated for c in alignment.extract(s.text, pkg.checks))]

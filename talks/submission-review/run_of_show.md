@@ -73,13 +73,13 @@ What each talking point says, and where its facts come from (the facilitator pre
 | Slide | Talking point | Gist | Source |
 | --- | --- | --- | --- |
 | 2 `background` | `problem` | Meetings end in apparent agreement; nobody checks the claim against the document; the mistake becomes a decision | brief §1 |
-| 2 `background` | `idea` | A facilitator that presents, answers from the documents, listens, speaks up only before a contradicting decision | DES-1, DES-6, DES-7 |
-| 3 `pipeline` | `one-session` | One Higgs Realtime session; talking points from short notes in its own words; TTS 3 backup | DES-1, DES-8 |
+| 2 `background` | `idea` | A facilitator that presents, answers from the documents, listens, speaks up only before a contradicting decision | DES-1, DES-7, DES-9 |
+| 3 `pipeline` | `one-session` | One Higgs Realtime session; talking points from short notes in its own words; TTS 3 backup | DES-1, DES-11 |
 | 3 `pipeline` | `interrupt-answer` | A question stops it mid-sentence; keep what was heard, look it up, answer with the source on screen, resume | DES-3, DES-4 |
-| 3 `pipeline` | `listen-check` | In the discussion it listens, checks each line against documents and clarifications, speaks only before a confirmation, saves the decision with its owner | DES-5, DES-6, DES-7 |
+| 3 `pipeline` | `listen-check` | In the discussion it listens, checks each line against documents and clarifications, speaks only before a confirmation, saves the decision with its owner | DES-5 … DES-10 |
 | 4 `results` | `live-numbers` | Stopped a fraction of a second into a question; answer ~1 s after it ended; clarification within 0.5 s of the confirmation. The slide alone carries "8/8 checks (first demo)" and "1,600 tests": the checks were measured on the rollout-review demo, and this package's own live check has not run yet | RES-1 … RES-3 (RES-4 on the slide) |
 | 4 `results` | `what-is-live` | Alice, Bob and Carol are prerecorded; slides and documents were prepared; lookups, checks, decisions and notes happen during the meeting | LIM-7 |
-| 5 `limits` | `limits-scope` | English only; answers only from the documents; alignment patterns written per meeting | LIM-1, LIM-5, LIM-6 |
+| 5 `limits` | `limits-scope` | English only; answers only from the documents; the alignment check is a model's reading of the discussion, with verified evidence but no guarantee | LIM-1, LIM-5, LIM-6, LIM-8 |
 | 5 `limits` | `limits-room` | Online meetings; a shared microphone would hear the facilitator, so hands-free in-person needs echo cancellation (future work). The slide adds one stream per participant and no speaker identification by voice | LIM-2, LIM-3 (LIM-4 on the slide) |
 
 ## The clips and their cues (`demo.yaml`)
@@ -122,9 +122,9 @@ of 24 October (0.44 s per note-word after the interruption, 23 s between Alice's
 | ~0:52 | presentation · `pipeline` | — | Resumes at `interrupt-answer`, bridged in a few words ("Back to the point: a question stops it mid-sentence…"), not at the start of the pipeline; the point now describes what just happened | The resumed point | Checkpoint `Slide 3 · interrupt-answer · resuming`. **Notes** tab: clarification CL-1 (online meetings only, citing the lookup's top results) |
 | 1:00 | presentation · `pipeline` → `results` → `limits` | — | `listen-check`, `live-numbers`, `what-is-live`, `limits-scope`, `limits-room` (≈ 65 s for 151 note-words) | — | Fragments, checkpoints. On `limits-room` it says aloud what it already told Alice |
 | ~2:00 | presentation → discussion | — | One hand-over sentence: the introduction is done; over to you on which limitations go in the write-up and who writes it; it will listen and only speak up if something doesn't match the documents | The hand-over | Slide `discussion`; agenda strip *Limitations for the write-up*; tile *Listening to the room* |
-| ~2:11 | discussion | 1.5 s of quiet, then **Bob's clip** (≈ 90 s after Alice's clip ended, right at the default timeout; his step waits up to 3 min) | **Silent**: nobody has confirmed anything yet | "I'll write that it works for in-person meetings too, as long as there's a microphone in the room." | **Transcript**: `Bob (recorded)` with one amber chip: Where it works *in person* ≠ online |
-| ~2:17 | discussion | 1 s later, **Carol's clip** | The gate opens. Its evidence goes on screen, and it speaks once, live: "Before we finalize: didn't we establish that it is built for online meetings only, with in-person as future work? Should the write-up say that?" | "Great, let's finalize that." / the facilitator's question | Tile *Speaking up*. **Evidence**: *Alignment check* → LIM-2, CL-1. Alignment card: Bob's sentence vs. LIM-2 and CL-1, status *asked*. Notes: no decision yet |
-| ~2:26 | discussion | 0.8 s after the question, **Carol's clip** | Calls `save_decision`, then confirms in one sentence: "Noted: online meetings only, and Bob owns the write-up." | "Yes, online meetings only. Bob owns the write-up." / the confirmation | Alignment card *resolved*. **Notes**: decision D1 (online meetings only: the model's wording, or the check's draft "Where it works: online" tagged `auto`), owner chip **Bob**, source LIM-2; action item A1 for Bob ("Bob owns the write-up.") |
+| ~2:11 | discussion | 1.5 s of quiet, then **Bob's clip** (≈ 90 s after Alice's clip ended, right at the default timeout; his step waits up to 3 min) | **Silent**: nobody has confirmed anything yet | "I'll write that it works for in-person meetings too, as long as there's a microphone in the room." | **Transcript**: `Bob (recorded)` with a claim chip (it works for in-person meetings too). The analysis of his line (a model round trip, a few seconds) may add a silent alignment card: an **evidence conflict**, Bob's proposal vs. LIM-2 and CL-1, nothing spoken because nobody has confirmed |
+| ~2:17 | discussion | 1 s later, **Carol's clip** | The analysis of Carol's line comes back a few seconds later (the latency is in `doc/gotchas.md`): the group is confirming, the evidence is verified, so it speaks once, live, with the evidence on screen: "Before we finalize: didn't we establish that it is built for online meetings only, with in-person as future work? Should the write-up say that?" (the model's own wording) | "Great, let's finalize that." / the facilitator's question | Tile *Speaking up*. **Evidence**: *Alignment check* → LIM-2, CL-1. Alignment card (evidence conflict): Bob's sentence vs. LIM-2 and CL-1, the question, status *asked*. Notes: no decision yet |
+| ~2:26 | discussion | 0.8 s after the question, **Carol's clip** | Calls `save_decision`, then confirms in one sentence: "Noted: online meetings only, and Bob owns the write-up." | "Yes, online meetings only. Bob owns the write-up." / the confirmation | Alignment card *resolved*. **Notes**: decision D1 (online meetings only: the model's wording, or the analysis's validated proposal tagged `analysis`), owner chip **Bob**, source LIM-2; action item A1 for Bob ("Bob owns the write-up.") |
 | ~2:43 | discussion → wrap-up | 2 s after the confirmation, step `wrap` presses **Wrap up**. The operator: "The script presses Wrap up, the same as the button." | Two or three sentences built from the notes: the decision with its owner, then open questions (none) | The live summary | Agenda strip *Decisions and next steps*, button *Done*; tile *Wrapping up*; Notes: *Meeting notes* header with the time |
 | 2:45–2:55 | wrap-up | (video) during the summary, show **Notes**, then the alignment card, with the caption: "The answer it gave Alice during the presentation, CL-1, is what it cited in the discussion." End within 5 s of the last word | — | The live summary | Decision, owner, source, action item, and the clarification that carried over |
 
@@ -153,11 +153,11 @@ longest points); every number is already on the slides, so no say line has to ca
 - **Hand-over**: one sentence, then it listens. Phase *Limitations for the write-up*.
 - **Discussion**: silent through Bob's line. Finishing a line is not enough to make it speak (patch §4 B.2). On
   Carol's confirmation, it intervenes once: a neutral question that cites the earlier clarification and the
-  documents. It is asked never to say anyone is wrong and to keep to thirty words at most (DES-6: an instruction,
+  documents. It is asked never to say anyone is wrong and to keep to thirty words at most (DES-8: an instruction,
   not a guarantee).
 - **Correction**: `save_decision` with owner Bob and source LIM-2, then one sentence of confirmation. If the model's
-  call is invalid or missing, the controller saves the alignment check's draft ("Where it works: online", follow-up
-  "Bob owns the write-up."), and the Notes tab tags that decision `auto`.
+  call is invalid or missing, the controller saves the decision the analysis extracted from Carol's words (owner,
+  agreeing utterances and sources verified), and the Notes tab tags that decision `analysis`.
 - **Wrap-up**: a summary built from the notes: the decision with its owner, then open questions.
 
 ## Fallbacks (disclose every manual step out loud: brief §9, patch §5)
@@ -175,22 +175,25 @@ longest points); every number is already on the slides, so no say line has to ca
 - **The answer has no lookup** (no card on the Evidence tab): let it go. The intervention still cites LIM-2, but not
   CL-1. The facilitator then won't say "didn't we establish", and the closing caption about CL-1 must change.
 - **The answer doesn't name online meetings** (it only describes the limitation: "The in-person case is a limitation
-  of this submission."): CL-1 is recorded but asserts nothing; the sources still establish online, so the intervention
-  cites LIM-2 only. Same caption change as above. The answer cannot establish the opposite: the check counts in-person
-  as a value only on a capability claim ("works in a meeting room", "in-person meetings too"), never on a mention.
+  of this submission."): CL-1 is recorded with exactly that answer; the analysis reads it in context, and the card may
+  cite LIM-2 only. Same caption change as above. The answer cannot establish the opposite: the documents say online,
+  and the analysis cites them, not the answer.
 - **It doesn't resume**: the *Resuming… 2, 1* countdown resumes it. **R** resumes at once.
 - **It doesn't hand over after `limits-room`**: click **Start discussion** in the agenda strip ("I'll move us to the
   discussion"). Bob's cue then fires after 1.5 s of quiet.
-- **A discussion line is missing or garbled in the Transcript** (no amber chip on Bob's line: the transcript changed
-  a key word such as "in-person" or "write"): click **Stop demo** (the Run demo button while the script runs) to stop
-  the script, pick the speaker chip, press
-  **T**, type the exact line and press Enter ("Higgs misheard Bob's line, I'm typing it"). A typed line is an
-  utterance like a streamed one, and the alignment check works on it without Realtime. A confirmation only counts
-  after the conflict, so then type Carol's lines too, in order: "Great, let's finalize that." and, once the
-  facilitator has asked its question, "Yes, online meetings only. Bob owns the write-up." The rest is by hand: click
-  **Wrap up** at the end.
-- **A chip, but no alignment card after Carol's line** (her transcript lost the key words): type "Let's finalize
-  that." as Carol (the check looks three utterances back). The script then carries on by itself.
+- **A discussion line is missing or garbled in the Transcript** (Bob's line is absent, or the words that carry the
+  claim changed: "in-person", "write"): click **Stop demo** (the Run demo button while the script runs) to stop the
+  script, pick the speaker chip, press **T**, type the exact line and press Enter ("Higgs misheard Bob's line, I'm
+  typing it"). A typed line is an utterance like a streamed one, and the analysis runs on it without Realtime. The
+  question comes only when the group confirms, so then type Carol's lines too, in order: "Great, let's finalize
+  that." and, once the facilitator has asked its question, "Yes, online meetings only. Bob owns the write-up." The
+  rest is by hand: click **Wrap up** at the end.
+- **No alignment card a few seconds after Carol's line** (the analysis is a model round trip; the topbar shows the
+  alignment status): wait for it. If it comes back silent, the model read Carol's line as less than a confirmation:
+  type "Agreed, the write-up says in-person works too, Bob writes it." as Carol. The script then carries on by itself.
+- **Alignment unavailable** in the topbar (no `ANTHROPIC_API_KEY`, or the Anthropic API is down): the meeting runs
+  without the check and nothing will be asked. Say so, read LIM-2 from the Documents list yourself after Carol's
+  confirmation, and let Carol's correction play; `save_decision` still records the decision.
 - **An alignment card (*asked*), but the facilitator stays silent**: read the card's question aloud and say that
   the facilitator didn't speak. Then click **Play next** for Carol's correction ("played by hand").
 - **The correction isn't picked up** (the card stays *asked*): type as Carol "Yes, it is online meetings only. Bob
@@ -218,7 +221,7 @@ longest points); every number is already on the slides, so no say line has to ca
 | Live answer grounded in a prepared document | ~0:42 | Evidence tab: the query, the LIM-2 card (Scope and limitations) and LIM-3, the excerpts, and the same lines under Documents. The callout over the slide |
 | The presentation resumes in context | ~0:52 | Checkpoint `Slide 3 · interrupt-answer · resuming`. The captions show it picking up the interruption point, with no replay of slide 2 |
 | It does not answer every statement | ~2:11 | Bob's line has an amber chip while the facilitator stays silent |
-| The contradiction is caught before confirmation | ~2:17 | The alignment card (heard vs. LIM-2 and CL-1) appears as soon as Carol's line is transcribed. The Notes tab has no decision until Carol corrects it |
+| The contradiction is caught before confirmation | ~2:17 | The alignment card (heard vs. LIM-2 and CL-1) appears a few seconds after Carol's line is transcribed, when the analysis returns. The Notes tab has no decision until Carol corrects it |
 | The decision record reflects the correction | ~2:26–2:55 | Notes: D1 (online meetings only), owner Bob, LIM-2; CL-1; A1. The card shows *resolved* |
 | Routing: participants reach judges and Higgs; AI output reaches judges only | any time | Meeting info: "Higgs input: participant clips only (facilitator audio is not sent)". No microphone indicator in Chrome's address bar |
 | The slides and documents describe the system truthfully | any time | The numbers on slide 4 are the ones in `doc/gotchas.md` (2026-10-24) and `doc/plan.md`; the limits on slide 5 match `doc/online_meeting_patch.md` §6 |
@@ -237,7 +240,8 @@ backup narration from the same talking points.
       `out/talks/submission-review/clips/`: `alice-question`, `bob-claim`, `carol-finalize`, `carol-correct`. Listen
       to each one on the laptop speakers:
   - The three voices are easy to tell apart, and none sounds like the facilitator.
-  - Every word is there. In Bob's clip, "in-person" and "I'll write" are clear (the alignment check keys on them).
+  - Every word is there. In Bob's clip, "in-person" and "I'll write" are clear (the analysis reads the transcript,
+    and a misheard claim word changes what it can cite).
   - No pause inside a clip is longer than about a second. A clip is one line however it pauses (the line ends
     where the clip ends), but a long silence sounds like a dropped call.
   - The clips are not much louder than the facilitator. `default` measured about 7 dB quieter than `chloe`.
@@ -270,20 +274,20 @@ backup narration from the same talking points.
   meeting, not an open conversation. Higgs receives one participant stream, and the cues never let two clips
   overlap. The speaker comes from clip metadata, not diarization. (A human-in-the-loop version, with a real person
   asking the question, is the next step after this one is reviewed.)
-- The alignment check matches patterns written for this meeting (`checks.yaml`), not open-ended understanding. Say
-  so if a judge asks: it is the brief's "structured claim extraction" MVP, and slide 5 says so too. The patterns
-  cover these exact lines and close speech-to-text variants (checked on Higgs-style transcripts: no punctuation,
-  curly apostrophes, "in person" without the hyphen, "finalise", "write up").
+- The alignment check is a language model's reading of the discussion (Claude through the Anthropic API,
+  `doc/design.md` §12), not patterns written for this meeting; slide 5 and LIM-5 say so. Say so if a judge asks: every
+  id and quote on the card is verified against the documents and the meeting's own records before the facilitator may
+  speak, and it stays silent when the model is unsure or nobody is confirming. It is not instant: the question comes a
+  few seconds after Carol's line (the measured latency per model is in `doc/gotchas.md`). `checks.yaml` stays in the
+  package for `--alignment legacy`, the old regex check (`tests/test_submission_review.py` still exercises it on these
+  exact lines), and is otherwise ignored.
 - The facilitator's wording, and so the exact length of each segment, changes from run to run. The cues follow the
   facilitator's actual playback, so the clips still land at the right moments.
-- CL-1 carries "online" only if the facilitator's answer asserts it. The checks read the likely answers
-  (`tests/test_submission_review.py`: the contract answer plus eight phrasings that name online meetings, including
-  "it doesn't work in a normal meeting room yet", and six that only describe the limitation, such as "the in-person
-  case is a limitation of this submission"). The first kind keeps CL-1 behind the established value; the second
-  records CL-1 but asserts nothing, so the alignment card then cites only LIM-2. No answer can establish in-person:
-  that value needs a capability claim ("works in a meeting room", "in-person meetings too"), which is also why the
-  true limitation sentences of the discussion ("I'll write that in-person meetings are a limitation.") stay silent
-  and a correction that ends "In-person is a limitation." still resolves the conflict.
+- CL-1 carries whatever the facilitator answered Alice, with the sources it looked up. The analysis reads it in context:
+  an answer that names online meetings is cited next to LIM-2; one that only describes the limitation leaves LIM-2 to
+  carry the conflict. No answer can establish in-person, because the documents say online. True limitation sentences
+  in the discussion ("I'll write that in-person meetings are a limitation.") agree with the documents and stay silent,
+  and a correction that ends "In-person is a limitation." resolves the conflict.
 - The results slide quotes measurements from the rollout-review live runs of 24 October (the same code and the same
   cue kinds). Re-time this package's own live run before the demo and update RES-1 … RES-4 if they differ; RES-4's
   counts are "at the time of writing".

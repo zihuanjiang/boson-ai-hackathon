@@ -1,0 +1,14 @@
+# The second corpus for model-based alignment (contract v5 §5, doc/alignment_replacement_prompt.md case 2 and 13): a
+# different topic, the same implementation and prompts, no checks.yaml, no demo.yaml. Participants are fictional; the
+# evaluation (scripts/alignment_eval.py) and the tests drive the discussion with typed lines.
+title: Q1 marketing budget review
+host: Dana
+participants:
+  - {name: Dana, role: Finance lead}
+  - {name: Eli, role: Marketing}
+  - {name: Fay, role: Engineering lead}
+phases:
+  - {id: presentation, title: Budget and campaign plan}
+  - {id: discussion, title: Campaign budget and owner, prompt: "How much does the spring campaign spend, and who runs it?"}
+  - {id: wrapup, title: Decisions and next steps}
+discussion_slide: discussion

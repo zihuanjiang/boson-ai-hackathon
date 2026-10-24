@@ -18,7 +18,7 @@
 
 **The idea** · a facilitator that presents, answers from the documents, listens, and speaks up only before a contradicting decision <!-- .element: class="fragment" -->
 
-<small>Design notes · DES-1 · DES-6 · DES-7</small>
+<small>Design notes · DES-1 · DES-7 · DES-9</small>
 
 ---
 
@@ -31,7 +31,7 @@
 
 **Listen** · transcribe → compare with sources → speak only before a confirmation → save <!-- .element: class="fragment" -->
 
-<small>Design notes · DES-1 … DES-7</small>
+<small>Design notes · DES-1 … DES-10</small>
 
 ---
 
@@ -49,11 +49,11 @@
 <!-- .slide: id="limits" -->
 ## Limitations
 
-**Scope** · English only · answers only from the documents · alignment patterns written per meeting <!-- .element: class="fragment" -->
+**Scope** · English only · answers only from the documents · a model's judgement, not a guarantee <!-- .element: class="fragment" -->
 
 **Room** · online meetings, one stream per participant · a shared mic needs echo cancellation, future work · no speaker identification by voice <!-- .element: class="fragment" -->
 
-<small>Scope and limitations · LIM-1 … LIM-6</small>
+<small>Scope and limitations · LIM-1 … LIM-8</small>
 
 ---
 

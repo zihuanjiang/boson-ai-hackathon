@@ -3,8 +3,10 @@
 A meeting package is a talk package plus:
 
     agenda.yaml     title, host, participants (2–6), phases (presentation → discussion → wrapup), discussion_slide
-    sources/*.md    "# <document title>", then statements "- [REQ-1] text": the evidence corpus with stable ids
-    checks.yaml     what the alignment check extracts: slots with value patterns, actions, confirmations, ownership
+    sources/*.md    "# <document title>", then statements "- [REQ-1] text": the evidence corpus with stable ids; a file
+                    without bracketed ids is a plain fact sheet: every line is a statement with an auto id (FACTS-1 …)
+    checks.yaml     optional, legacy: what the regex alignment check extracts (slots, actions, confirmations,
+                    ownership); model-based alignment (relay/semantic.py) needs none
     demo.yaml       optional (contract v3.1, the online meeting): the prerecorded participant clips and the cue each
                     one waits for; `relay.clips` generates their audio, the deck plays and streams them
 
@@ -85,6 +87,7 @@ class Statement:
     doc_id: str
     doc_title: str
     text: str
+    location: str = ""  # "sources/<file>.md:<line>": where the passage is, for inspection
 
 
 def value_label(value: str) -> str:
@@ -387,6 +390,9 @@ def _parse_sources(root: Path, issues: list[Issue]) -> tuple[Statement, ...]:
             doc_title = path.stem
         else:
             doc_title = " ".join(title.group(1).split())
+        if not any(_STATEMENT_LINE_RE.match(line) for line in lines):
+            statements.extend(_fact_sheet(path, rel, lines, first[0] if first else 0, doc_title, seen, issues))
+            continue
         count = 0
         for n, line in enumerate(lines, start=1):
             match = _STATEMENT_LINE_RE.match(line)
@@ -417,11 +423,52 @@ def _parse_sources(root: Path, issues: list[Issue]) -> tuple[Statement, ...]:
                 continue
             if _MARKDOWN_RE.search(text):
                 issues.append(Issue("warning", here, f"[{sid}]: write plain text (markdown is shown as typed)"))
-            statements.append(Statement(sid, path.stem, doc_title, text))
+            statements.append(Statement(sid, path.stem, doc_title, text, f"{rel}:{n}"))
             count += 1
         if count == 0:
             issues.append(Issue("warning", rel, "no statements (lines like `- [REQ-1] text`)"))
     return tuple(statements)
+
+
+_FACT_PREFIX_RE = re.compile(r"^\s*(?:[-*+]|\d{1,3}[.)])[ \t]+")
+_RULE_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+
+
+def fact_prefix(stem: str) -> str:
+    """The id prefix of a fact sheet's statements: the file stem's letters, upper-cased, at most five (`facts.md` →
+    FACTS); FACT when that leaves fewer than two letters or a reserved prefix."""
+    letters = "".join(ch for ch in stem.upper() if "A" <= ch <= "Z")[:5]
+    return letters if len(letters) >= 2 and letters not in RESERVED_PREFIXES else "FACT"
+
+
+def _fact_sheet(path: Path, rel: str, lines: list[str], title_line: int, doc_title: str, seen: dict[str, str],
+                issues: list[Issue]) -> list[Statement]:
+    """A plain-language fact sheet (no `- [ID]` lines): every non-empty line after the title that is not a heading or
+    a rule is a statement, kept verbatim (a leading bullet or number dropped), with a stable auto id in file order.
+    Model-based alignment cites these ids like authored ones; nobody has to write ids or extraction rules."""
+    prefix = fact_prefix(path.stem)
+    out: list[Statement] = []
+    for n, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if n <= title_line or not stripped or stripped.startswith("#") or _RULE_RE.match(stripped):
+            continue
+        text = " ".join(_FACT_PREFIX_RE.sub("", line, count=1).split())
+        if not text:
+            continue
+        sid = f"{prefix}-{len(out) + 1}"
+        here = f"{rel}: line {n}"
+        if sid in seen:
+            issues.append(Issue("error", here, f"auto id [{sid}] collides with an authored statement id (also "
+                                               f"{seen[sid]}): rename the fact sheet or the statement"))
+            continue
+        seen[sid] = here
+        if len(text) > MAX_STATEMENT_CHARS:
+            issues.append(Issue("warning", here, f"[{sid}] is {len(text)} characters (over {MAX_STATEMENT_CHARS}): a "
+                                                 "shorter line is easier to cite and to show"))
+        out.append(Statement(sid, path.stem, doc_title, text, f"{rel}:{n}"))
+    if not out:
+        issues.append(Issue("warning", rel, "no statements (lines like `- [REQ-1] text`, or plain fact lines)"))
+    return out
 
 
 def _patterns(raw, where: str, issues: list[Issue]) -> tuple[re.Pattern, ...]:
@@ -510,9 +557,7 @@ def _parse_slots(raw, issues: list[Issue]) -> tuple[Slot, ...]:
 def _parse_checks(root: Path, issues: list[Issue]) -> Checks | None:
     path = root / CHECKS_FILE
     if not path.is_file():
-        issues.append(Issue("warning", CHECKS_FILE, "missing: the alignment check is off (the facilitator never "
-                                                    "speaks up in the discussion)"))
-        return None
+        return None  # model-based alignment (the default) needs no checks.yaml; `--alignment legacy` does
     ok, data = _load_yaml(path, CHECKS_FILE, issues)
     if not ok:
         return None
@@ -800,6 +845,8 @@ class Clarification(_Record):
     source_ids: list[str]
     at_s: float
     by: str = "model"  # "model" | "auto"
+    confirmation_utterance_ids: list[str] = field(default_factory=list)  # participants who confirmed it, by line
+    status: str = "answered"  # answered | confirmed | unanswered
 
 
 @dataclass
@@ -810,8 +857,61 @@ class Decision(_Record):
     follow_up: str
     source_ids: list[str]
     at_s: float
-    by: str = "model"  # "model" | "auto"
+    by: str = "model"  # "model" (the facilitator's save_decision) | "auto" (the legacy draft) | "analysis" (a validated proposal)
     supersedes: str | None = None
+    status: str = "confirmed"
+    agreement_utterance_ids: list[str] = field(default_factory=list)
+    owner_utterance_ids: list[str] = field(default_factory=list)
+    plan_changed: bool = False
+    superseded_by: str | None = None
+
+
+ISSUE_STATUSES = ("pending", "suggested", "asked", "partially_resolved", "resolved", "withdrawn", "open")
+OPEN_ISSUE_STATUSES = ("pending", "suggested", "asked", "partially_resolved", "open")
+
+
+@dataclass
+class IssueRecord(_Record):
+    """An alignment issue the analysis found (relay/semantic.py): app-owned id and lifecycle, model-derived content."""
+
+    id: str  # "IS<n>"
+    issue_type: str  # evidence_conflict | hidden_disagreement | ambiguous_decision
+    topic: str
+    claim: str | None
+    claim_utterance_ids: list[str]
+    participant_views: list[dict]
+    missing_details: list[str]
+    evidence: list[dict]  # {kind, id, quote}: references the snapshot vouched for
+    material_consequence: str | None
+    commitment: str
+    confidence: str
+    recommendation: str
+    question: str | None
+    status: str
+    created_at_s: float
+    updated_at_s: float
+    revision: int  # transcript length when the issue was last seen by an analysis
+    commitment_utterance_ids: list[str] = field(default_factory=list)
+    intervene_event_id: str | None = None
+    conflict_event_id: str | None = None
+    resolution_utterance_ids: list[str] = field(default_factory=list)
+    settled_details: list[str] = field(default_factory=list)
+    note: str = ""
+    policy: str = "silent"  # the gate's last decision: silent | suggest | clarify
+    asked_at_revision: int | None = None
+
+    @property
+    def is_open(self) -> bool:
+        return self.status in OPEN_ISSUE_STATUSES
+
+    @property
+    def question_text(self) -> str:
+        """The open question this issue leaves for the notes."""
+        if self.question and self.question.strip():
+            return self.question.strip()
+        if self.claim:
+            return f"{self.topic}: {self.claim}?"
+        return f"{self.topic}?"
 
 
 @dataclass
@@ -868,7 +968,11 @@ class MeetingState:
         self.open_questions: list[OpenQuestion] = []
         self.transcript: list[Utterance] = []
         self.lookups: list[EvidenceLookup] = []
-        self.alerts: list[dict] = []  # alignment events (relay.alignment.Engine appends them)
+        self.alerts: list[dict] = []  # alignment events (the legacy Engine and the controller append them)
+        self.issues: list[IssueRecord] = []  # model-based alignment (relay/semantic.py)
+        self.assumptions: list[dict] = []  # {speaker, utterance_id, topic, interpretation}
+        self.candidate_decisions: list[dict] = []  # proposals not confirmed yet: {decision, status, owner, …}
+        self.alignment: dict = {}  # the controller's status of the alignment check (mode, model, available, …)
         self._counters: dict[str, int] = {}
 
     # --- helpers
@@ -902,20 +1006,60 @@ class MeetingState:
         self.transcript.append(utterance)
         return utterance
 
-    def add_clarification(self, question: str, answer: str, source_ids, by: str = "model") -> Clarification:
+    def add_clarification(self, question: str, answer: str, source_ids, by: str = "model",
+                          confirmation_utterance_ids=None, status: str = "answered") -> Clarification:
         clarification = Clarification(self._next("CL-"), " ".join(str(question or "").split()),
-                                      " ".join(str(answer or "").split()), _ids(source_ids), self._now(), by)
+                                      " ".join(str(answer or "").split()), _ids(source_ids), self._now(), by,
+                                      _ids(confirmation_utterance_ids), status)
         self.clarifications.append(clarification)
         return clarification
 
     def add_decision(self, decision: str, owner: str | None, follow_up: str | None, source_ids, by: str = "model",
-                     supersedes: str | None = None) -> Decision:
-        """Also adds an ActionItem (same owner) when there is a follow-up."""
+                     supersedes: str | None = None, agreement_utterance_ids=None, owner_utterance_ids=None,
+                     plan_changed: bool = False) -> Decision:
+        """Also adds an ActionItem (same owner) when there is a follow-up; a superseded decision is marked."""
         record = Decision(self._next("D"), " ".join(str(decision or "").split()), self._name(owner) or "",
-                          " ".join(str(follow_up or "").split()), _ids(source_ids), self._now(), by, supersedes)
+                          " ".join(str(follow_up or "").split()), _ids(source_ids), self._now(), by, supersedes,
+                          "confirmed", _ids(agreement_utterance_ids), _ids(owner_utterance_ids), bool(plan_changed))
         self.decisions.append(record)
         if record.follow_up:
             self.action_items.append(ActionItem(self._next("A"), record.owner, record.follow_up, record.id))
+        if supersedes:
+            for old in self.decisions:
+                if old.id == supersedes and old is not record:
+                    old.status = "superseded"
+                    old.superseded_by = record.id
+        return record
+
+    def add_issue(self, *, issue_type: str, topic: str, claim: str | None, claim_utterance_ids, participant_views,
+                  missing_details, evidence, material_consequence: str | None, commitment: str, confidence: str,
+                  recommendation: str, question: str | None, revision: int, commitment_utterance_ids=None,
+                  status: str = "pending", policy: str = "silent") -> IssueRecord:
+        now = self._now()
+        record = IssueRecord(self._next("IS"), issue_type, " ".join(str(topic or "").split()),
+                             " ".join(str(claim).split()) if claim else None, _ids(claim_utterance_ids),
+                             [dict(v) for v in participant_views or []],
+                             [" ".join(str(d).split()) for d in missing_details or [] if str(d).strip()],
+                             [dict(e) for e in evidence or []], material_consequence, commitment, confidence,
+                             recommendation, " ".join(str(question).split()) if question else None, status, now, now,
+                             int(revision), _ids(commitment_utterance_ids), policy=policy)
+        self.issues.append(record)
+        return record
+
+    def issue(self, issue_id: str) -> IssueRecord | None:
+        return next((issue for issue in self.issues if issue.id == issue_id), None)
+
+    def open_issues(self) -> list[IssueRecord]:
+        return [issue for issue in self.issues if issue.is_open]
+
+    def update_issue(self, issue_id: str, **fields) -> IssueRecord | None:
+        record = self.issue(issue_id)
+        if record is None:
+            return None
+        for key, value in fields.items():
+            if hasattr(record, key):
+                setattr(record, key, value)
+        record.updated_at_s = self._now()
         return record
 
     def add_open_question(self, text: str) -> OpenQuestion:
@@ -961,6 +1105,7 @@ class MeetingState:
             "clarifications": [clarification.to_json() for clarification in self.clarifications],
             "action_items": [item.to_json() for item in self.action_items],
             "open_questions": [question.to_json() for question in self.open_questions],
+            "issues": [issue.to_json() for issue in self.open_issues()],
             "generated_at_s": self._now(),
         }
 
@@ -1019,7 +1164,9 @@ class MeetingState:
             items.append((d.at_s, offset + n, f"Decided ({d.id}): {_clip(d.decision, 200)} (owner {owner}{follow}"
                                               f"{src})"))
         items.sort(key=lambda item: (item[0], item[1]))
-        return [line for _, _, line in items[-CONTEXT_LINES:]]
+        lines = [line for _, _, line in items[-CONTEXT_LINES:]]
+        lines.extend(f"Open ({issue.id}): {_clip(issue.question_text, 160)}" for issue in self.open_issues()[-2:])
+        return lines
 
     def to_json(self) -> dict:
         """The deck's `meeting` message body (contract §6)."""
@@ -1037,5 +1184,9 @@ class MeetingState:
             "decisions": [d.to_json() for d in self.decisions],
             "action_items": [a.to_json() for a in self.action_items],
             "open_questions": [q.to_json() for q in self.open_questions],
+            "issues": [issue.to_json() for issue in self.issues],
+            "assumptions": [dict(a) for a in self.assumptions],
+            "candidate_decisions": [dict(c) for c in self.candidate_decisions],
+            "alignment": dict(self.alignment),
             "notes": self.notes() if self.phase == "wrapup" else None,
         }

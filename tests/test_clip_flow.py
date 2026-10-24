@@ -1,6 +1,11 @@
 """The online meeting's participant clips in the controller (contract v3.1 §3), through tests/test_controller.py's
 recording ports and manual clock, on the small meeting package of tests/test_meeting_flow.py plus a demo.yaml.
 
+**Legacy alignment tests** (contract v5 §5): the discussion scenarios here (the intervention Carol's clip barges in
+on, the decision, the wrap-up's open questions) were written for the regex engine and pin `alignment="legacy"`; the
+clip mechanics themselves (barge-in, labels, the segmenter's ends) are the same in claude mode, covered by
+tests/test_semantic_flow.py.
+
 A clip frame is `{type: mic, source: clip, pcm, speaker, clip, reply, played_ms}`: the deck streams it while it plays a
 prerecorded participant, in every state. The participant segmenter's start decides: a barge-in on the facilitator
 (narration, an answer, an intervention), a question in a pause, or a line of the discussion. `--input mic` ignores
@@ -10,6 +15,7 @@ clip frames and keeps today's tap floor control.
 from __future__ import annotations
 
 import base64
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -42,8 +48,8 @@ def mk(demo_talk: Talk):
     made: list[Harness] = []
 
     def factory(*, settings: Settings | None = None, ready: bool = True) -> Harness:
-        harness = Harness(demo_talk, synthetic_chunks(demo_talk), settings or Settings(narration="live"),
-                          ready=ready)
+        chosen = dataclasses.replace(settings or Settings(narration="live"), alignment="legacy")
+        harness = Harness(demo_talk, synthetic_chunks(demo_talk), chosen, ready=ready)
         made.append(harness)
         return harness
 
@@ -499,7 +505,7 @@ async def test_a_plain_meeting_without_a_demo_is_mic(tmp_path: Path):
     from tests.test_meeting_flow import write_meeting
 
     talk = load_talk(write_meeting(tmp_path / "plain"))
-    h = Harness(talk, synthetic_chunks(talk), Settings(narration="live"))
+    h = Harness(talk, synthetic_chunks(talk), Settings(narration="live", alignment="legacy"))
     assert (h.c.input_mode, h.c.demo, h.c.demo_payload) == ("mic", None, None)
     await h.c.on_browser_connected()
     assert h.b("hello")[0]["demo"] is None and h.b("hello")[0]["input"] == "mic"

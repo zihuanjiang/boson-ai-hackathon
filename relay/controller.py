@@ -50,12 +50,13 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
 
-from . import alignment, evidence, prompts, tools
+from . import alignment, evidence, prompts, semantic, tools
 from .config import RATE, STT_MODEL, Settings, input_mode
 from .meeting import MeetingState, load_demo, load_meeting
 from .ports import AsyncioClock, BrowserPort, Clock, LogFn, RealtimePort, Timer, null_log
 from .prompts import TurnContext, build_instructions, narration_instructions
 from .segmenter import Segmenter
+from .semantic import AnalysisOutcome, AnalysisRunner, Analyzer, Snapshot, ValidIssue, ValidProposal, build_snapshot
 from .talk import Slide, Talk
 from .textutil import word_count
 from .timeline import CutPoint, RenderedChunk, Word, cut_point, render_version
@@ -97,6 +98,17 @@ POINT_CONTINUE_MIN_S = 3
 DUPLICATE_DECISION_S = 60.0  # the same decision saved again this soon: "already saved"
 AUTO_SOURCE_IDS = 2  # an automatic clarification cites the top results of the turn's lookups
 DEFAULT_WINDOW_UTTERANCES = 3
+# Model-based alignment (relay/semantic.py, contract v5 §3). The analysis runs outside the lock; its results are
+# applied under it. An intervention the analysis asked for waits while a newer analysis is in flight (a correction
+# may be on its way), at most ALIGNMENT_HOLD_S; an asked issue that gets no answer within ALIGNMENT_ANSWER_WINDOW
+# utterances stays open for the wrap-up; the wrap-up waits for an analysis in flight at most ALIGNMENT_WRAPUP_WAIT_S.
+ALIGNMENT_HOLD_S = 6.0
+ALIGNMENT_ANSWER_WINDOW = 4
+ALIGNMENT_WRAPUP_WAIT_S = 6.0
+ALIGNMENT_CLAUDE, ALIGNMENT_LEGACY, ALIGNMENT_OFF = "claude", "legacy", "off"  # Controller.alignment_mode
+ISSUE_QUEUED = ("pending", "suggested")  # an issue in these statuses may still be voiced
+DECISION_QUOTES = 3  # the lines quoted to the decision response
+PROPOSAL_MATCH = 0.6  # the model's save_decision must share this much of the validated proposal's content words
 APPEND_MAX_BYTES = 480_000  # one input_audio_buffer.append (Higgs: ≤ 1 MiB of base64)
 SEGMENTER_FRAME_MS = 10  # relay.segmenter analyses 10 ms frames (its end_frames of silence end an utterance)
 
@@ -254,6 +266,7 @@ class Turn:
     followup_answers: list[str] = field(default_factory=list)  # … of its earlier follow-ups (they saw tool results)
     events: list[dict] = field(default_factory=list)  # the alignment events an intervention answers
     draft: dict | None = None  # a decision turn: the alignment check's decision draft
+    proposal: dict | None = None  # a decision turn in claude mode: the validated proposal the model must match
     decision_saved: bool = False
     # an online meeting (contract v3.1): a turn a participant's prerecorded clip opened by speaking
     source: str = "mic"  # mic (Space, typed) · clip
@@ -396,6 +409,14 @@ def _pcm(data: str) -> bytes | None:
         return None
 
 
+def _legacy_event(event: dict) -> dict:
+    """A legacy engine event as the deck gets it: every alignment event names its issue type and topic (the regex
+    engine only ever finds evidence conflicts, about the slot it labels)."""
+    event.setdefault("issue_type", "evidence_conflict")
+    event.setdefault("topic", str(event.get("label") or event.get("slot") or ""))
+    return event
+
+
 def meeting_info(meeting: Any) -> dict | None:
     """The meeting as the deck shows it (`hello.meeting`, `/api/talk`'s `meeting`): title, host, participants, the
     agenda phases, the documents with every statement and its id, the discussion slide. None for a plain talk."""
@@ -409,7 +430,7 @@ _SELECTED = object()  # _room_commit(speaker=…): the speaker the deck's select
 class Controller:
     def __init__(self, talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], settings: Settings, *,
                  browser: BrowserPort, realtime: RealtimePort, clock: Clock | None = None,
-                 log: LogFn | None = None, meeting: Any = _LOAD) -> None:
+                 log: LogFn | None = None, meeting: Any = _LOAD, analyzer: Analyzer | None = None) -> None:
         self.talk = talk
         self.chunks = chunks
         self.settings = settings
@@ -423,10 +444,27 @@ class Controller:
         self.meeting = load_meeting(talk) if meeting is _LOAD else meeting
         self._t0 = self.clock.now()  # the meeting's clock starts here (and again at a reset)
         self.mstate: MeetingState | None = None
-        self.engine: alignment.Engine | None = None
+        self.engine: alignment.Engine | None = None  # `--alignment legacy`: the regex engine over checks.yaml
+        self.analyzer: Analyzer | None = analyzer  # claude mode: the analysis adapter (None: unavailable, no key)
+        self._analysis: AnalysisRunner | None = None
+        self.alignment_mode = ALIGNMENT_OFF
+        self._generation = 0  # the meeting generation: a reset bumps it, and a late analysis of the old one is dropped
+        self._analysed_revision = 0  # transcript length of the last snapshot whose result came back
+        self._inflight_revision: int | None = None  # … of the snapshot being analysed (new utterances count from it)
+        self._alignment_events = 0  # AL<n> ids of the alignment events the controller emits (claude mode)
+        self._claims_seen: set[tuple[str, str]] = set()  # (utterance id, text) of the claim chips shown
+        self._conflict_revisions: dict[str, int] = {}  # issue id → revision of its latest conflict card
+        self._holds: dict[str, float] = {}  # issue id → when its intervention started waiting for a newer analysis
+        self._last_policy: str | None = None
+        self._delivering = False  # on_analysis is applying a result (the runner starts the waiting one after it)
         if self.meeting is not None:
             self.mstate = MeetingState(self.meeting, self._meeting_time)
-            self.engine = alignment.Engine(self.meeting, self.mstate)
+            self.alignment_mode = self._choose_alignment(settings)
+            if self.alignment_mode == ALIGNMENT_LEGACY:
+                self.engine = alignment.Engine(self.meeting, self.mstate)
+            elif self.alignment_mode == ALIGNMENT_CLAUDE and analyzer is not None:
+                self._analysis = AnalysisRunner(analyzer, self.on_analysis, log=self._note)
+            self.mstate.alignment = self.alignment_status()
         self.speaker: str | None = None  # the participant the deck says is talking (None: the room)
         self._room_seg: Segmenter | None = None  # ROOM: ends each utterance
         self._room_quiet_until = 0.0  # half duplex: room frames before this are ignored
@@ -453,6 +491,7 @@ class Controller:
         self._clip_ignored = False  # a clip frame arrived in mic mode (logged once)
         self._flows: list[tuple[str, Any]] = []  # interventions and decisions waiting for the facilitator
         self._wrapup_pending = False  # the wrap-up waits for the transcript of the room's last line (WRAPUP_WAIT_S)
+        self._wrapup_extended = False  # … and once more for the analysis of that line (ALIGNMENT_WRAPUP_WAIT_S)
         self._last_point: tuple[str, int] | None = None  # the talking point presented last (slide, chunk)
         self._link_action: str | None = None  # "restart": a fresh Realtime session after this handler (reset)
 
@@ -549,6 +588,67 @@ class Controller:
         async with self._lock:
             await self._guard("realtime_status", self._realtime_status, status, detail)
 
+    async def on_analysis(self, snapshot: Snapshot, outcome: AnalysisOutcome) -> None:
+        """One analysis result (the AnalysisRunner's callback, outside any lock): applied under the lock."""
+        async with self._lock:
+            self._delivering = True
+            try:
+                await self._guard("analysis", self._apply_analysis, snapshot, outcome)
+            finally:
+                self._delivering = False
+
+    async def shutdown(self) -> None:
+        """The server stops: nothing waits for an analysis any more (one in flight finishes and is discarded)."""
+        if self._analysis is not None:
+            self._analysis.cancel()
+        self._generation += 1
+
+    # --- the alignment check's mode and status (contract v5 §0, §3) -------------------------------------------
+
+    def _choose_alignment(self, settings: Settings) -> str:
+        """claude (model-based; available only with an analyzer), legacy (the regex engine: explicit, and only with a
+        checks.yaml), else off. Legacy is never a fallback: claude mode without a key says `unavailable`."""
+        mode = settings.alignment
+        if mode == ALIGNMENT_LEGACY:
+            if self.meeting is not None and self.meeting.checks is not None:
+                return ALIGNMENT_LEGACY
+            self._note("alignment_unavailable", {"mode": mode, "reason": "legacy mode but the talk has no checks.yaml"})
+            return ALIGNMENT_OFF
+        if mode == ALIGNMENT_CLAUDE:
+            if self.analyzer is None:
+                self._note("alignment_unavailable", {"mode": mode, "reason": "no analyzer (ANTHROPIC_API_KEY missing)"})
+            return ALIGNMENT_CLAUDE
+        return ALIGNMENT_OFF
+
+    @property
+    def alignment_available(self) -> bool:
+        return self.alignment_mode == ALIGNMENT_LEGACY or (self.alignment_mode == ALIGNMENT_CLAUDE
+                                                           and self._analysis is not None)
+
+    def alignment_info(self) -> dict:
+        """`hello` / `/api/talk`: {mode, model, available}."""
+        model = None
+        if self.alignment_mode == ALIGNMENT_CLAUDE:
+            model = getattr(self.analyzer, "model", None) or self.settings.alignment_model
+        return {"mode": self.alignment_mode, "model": model, "available": self.alignment_available}
+
+    def alignment_status(self) -> dict:
+        """`state.alignment` / `meeting.alignment`: the info plus the runner's state and the last policy decision."""
+        status = {**self.alignment_info(), "in_flight": False, "waiting": False, "last_latency_ms": None,
+                  "last_error": None, "analyses": 0, "last_policy": self._last_policy}
+        runner = self._analysis
+        if runner is not None:
+            status.update(runner.status())
+            if self._delivering:  # the result being applied is done; the runner starts the waiting one right after
+                status["in_flight"], status["waiting"] = runner.waiting, False
+        if self.alignment_mode == ALIGNMENT_CLAUDE and self.analyzer is None:
+            status["last_error"] = "ANTHROPIC_API_KEY missing"
+        return status
+
+    def _refresh_alignment(self) -> None:
+        if self.mstate is not None:
+            self.mstate.alignment = self.alignment_status()
+
     def _load_demo(self, talk: Talk) -> Any:
         """The demo script (demo.yaml) of a meeting, None for a plain talk or without one. A broken one (the server
         refuses those at startup) leaves the participants silent rather than the controller unbuilt."""
@@ -621,7 +721,7 @@ class Controller:
             checkpoint = self.checkpoint()
             snap.update({"agenda_phase": self.mstate.phase, "status": checkpoint["status"],
                          "talking_point": checkpoint["talking_point_id"], "checkpoint": checkpoint,
-                         "speaker": self.speaker, "input": self.input_mode})
+                         "speaker": self.speaker, "input": self.input_mode, "alignment": self.alignment_status()})
         return snap
 
     # --- derived state ----------------------------------------------------------------------------------------
@@ -772,18 +872,20 @@ class Controller:
         if self.mstate is not None:
             checkpoint = self.checkpoint()
             msg.update({"agenda_phase": self.mstate.phase, "status": checkpoint["status"],
-                        "talking_point": checkpoint["talking_point_id"], "checkpoint": checkpoint})
+                        "talking_point": checkpoint["talking_point_id"], "checkpoint": checkpoint,
+                        "alignment": self.alignment_status()})
         return msg
 
     async def _send_meeting(self) -> None:
-        """The deck's `meeting` message: the whole meeting state (after every change), with the checkpoint, and the
-        notes once the meeting is wrapped up."""
+        """The deck's `meeting` message: the whole meeting state (after every change), with the checkpoint, the
+        alignment status, and the notes once the meeting is wrapped up."""
         if self.mstate is None:
             return
         await self._send(self._meeting_message())
 
     def _meeting_message(self) -> dict:
         self.mstate.checkpoint = self.checkpoint()
+        self._refresh_alignment()
         body = self.mstate.to_json()
         msg = {**(body if isinstance(body, dict) else {}), "type": "meeting", "checkpoint": self.checkpoint()}
         if self.mstate.phase == WRAPUP and "notes" not in msg:
@@ -925,6 +1027,7 @@ class Controller:
         hello = {"type": "hello", "talk": self.talk.id, "version": self._version(),
                  "mic_mode": self.settings.mic_mode, "narration_mode": self.settings.narration,
                  "meeting": meeting_info(self.meeting), "input": self.input_mode, "demo": self.demo_payload,
+                 "alignment": self.alignment_info() if self.meeting is not None else None,
                  "snapshot": self.snapshot()}
         bundle: list[dict] = [hello]
         if self.state != NARRATING:
@@ -1072,7 +1175,9 @@ class Controller:
                 if not unheard:
                     await self._barge_in(position, speaker, clip)
                 await self._halt(position, cut=True)
-                if unheard:  # not a word of the question was heard yet: it is asked after this line instead
+                if unheard and self.alignment_mode == ALIGNMENT_LEGACY:
+                    # not a word of the question was heard yet: it is asked after this line instead (claude mode:
+                    # the issue goes back to pending, and the analysis of this very line decides whether to ask)
                     self._flows.insert(0, (KIND_INTERVENTION, list(turn.events)))
                     self._note("intervention_deferred", {"speaker": speaker, "clip": clip, "reply": turn.reply})
                 await self._resume_room(run_flows=False)
@@ -1355,8 +1460,21 @@ class Controller:
         self._flows.clear()
         self._wrapup_pending = False
         self._cancel_timer("wrapup_wait")
+        self._cancel_timer("alignment_hold")
         self.mstate.reset()
-        self.engine.reset()
+        if self.engine is not None:
+            self.engine.reset()
+        self._generation += 1  # a late result of the old meeting is discarded (on_analysis checks the generation)
+        if self._analysis is not None:
+            self._analysis.cancel()
+        self._analysed_revision = 0
+        self._inflight_revision = None
+        self._alignment_events = 0
+        self._claims_seen.clear()
+        self._conflict_revisions.clear()
+        self._holds.clear()
+        self._last_policy = None
+        self._refresh_alignment()
         self._t0 = self.clock.now()
         self.cursor = None
         self.live = None
@@ -2450,35 +2568,60 @@ class Controller:
                     and self._meeting_time() - float(existing.at_s) <= DUPLICATE_DECISION_S):
                 turn.decision_saved = True
                 return True, tools.ok_output(note="already saved")
+        # claude mode: in a decision turn the model's decision must match the validated proposal (contract v5 §3:
+        # content-word overlap with the recent transcript is no proof of agreement); legacy mode keeps today's check
+        proposal = turn.proposal if self.alignment_mode == ALIGNMENT_CLAUDE else None
         check = tools.check_decision(args, participants=[person.name for person in self.meeting.participants],
-                                     draft=turn.draft, recent=self._recent_texts(turn), known_ids=known)
+                                     draft=turn.draft, recent=self._recent_texts(turn), known_ids=known,
+                                     proposal=proposal, match=PROPOSAL_MATCH)
         if not check.ok:
             self._note("decision_rejected", {"args": args, "why": check.error, "draft": turn.draft})
             return False, tools.error_output(check.error or "rejected")
         saved = check.args
+        provenance = {}
+        if proposal is not None:
+            provenance = {"agreement_utterance_ids": proposal.get("agreement_utterance_ids"),
+                          "owner_utterance_ids": proposal.get("owner_utterance_ids"),
+                          "supersedes": proposal.get("supersedes"), "plan_changed": bool(proposal.get("plan_changed"))}
         decision = self.mstate.add_decision(saved["decision"], saved["owner"], saved["follow_up"],
-                                            saved["source_ids"], by="model")
+                                            saved["source_ids"], by="model", **provenance)
         turn.decision_saved = True
+        self._forget_candidates(decision.decision)
         await self._send_meeting()
         extra = {"dropped_source_ids": list(check.dropped)} if check.dropped else {}
         return True, tools.json_output(ok=True, id=decision.id, **extra)
 
-    async def _save_draft(self, draft: dict) -> None:
-        """The alignment check's decision draft goes into the notes as it is (`by: auto`, a watchdog action)."""
+    async def _save_draft(self, draft: dict) -> Any:
+        """The alignment check's decision draft goes into the notes as it is: `by: auto` for the legacy engine's
+        draft (a watchdog action), `by: analysis` for a validated proposal of the model-based analysis (`by` in the
+        draft). Shown in the ticker as an automatic action either way. Returns the Decision, or None."""
         args = {"decision": str(draft.get("decision") or "").strip(), "owner": str(draft.get("owner") or ""),
                 "follow_up": str(draft.get("follow_up") or ""),
                 "source_ids": [sid for sid in draft.get("source_ids") or [] if isinstance(sid, str)]}
         if not args["decision"]:
-            return
+            return None
         if any(tools.same_decision(existing.decision, args["decision"]) for existing in self.mstate.decisions):
-            return
+            return None
+        by = "analysis" if draft.get("by") == "analysis" else "auto"
         decision = self.mstate.add_decision(args["decision"], args["owner"], args["follow_up"], args["source_ids"],
-                                            by="auto")
+                                            by=by, supersedes=draft.get("supersedes"),
+                                            agreement_utterance_ids=draft.get("agreement_utterance_ids"),
+                                            owner_utterance_ids=draft.get("owner_utterance_ids"),
+                                            plan_changed=bool(draft.get("plan_changed")))
+        self._forget_candidates(decision.decision)
         call_id = self._auto_id()
-        await self._tool_message(call_id, tools.SAVE_DECISION, args, "auto")
+        shown = {**args, "by": by} if by == "analysis" else args
+        await self._tool_message(call_id, tools.SAVE_DECISION, shown, "auto")
         self._note("tool", {"call_id": call_id, "name": tools.SAVE_DECISION, "args": args, "status": "auto",
-                            "id": decision.id})
+                            "by": by, "id": decision.id})
         await self._send_meeting()
+        return decision
+
+    def _forget_candidates(self, decision: str) -> None:
+        """A decision was saved: the candidate (proposed / nearing) with the same text is no longer one."""
+        if self.mstate is not None:
+            self.mstate.candidate_decisions[:] = [c for c in self.mstate.candidate_decisions
+                                                  if not tools.same_decision(str(c.get("decision") or ""), decision)]
 
     async def _send_followup(self, turn: Turn, kind: str) -> None:
         """The turn's next response after a tool round trip: per-response instructions say what to do with the
@@ -2522,12 +2665,20 @@ class Controller:
         await self._request_events(turn, [{"type": "response.create", "response": response}])
 
     async def _finish_meeting_turn(self, turn: Turn) -> None:
-        """A meeting turn is over (drained, cut or failed). A decision turn that saved nothing saves its draft; a
-        presentation question answered from a lookup leaves a clarification behind (by=auto) when the model did not
-        record one: the question, the facilitator's final words, the top sources (contract §5.3)."""
+        """A meeting turn is over (drained, cut or failed). A decision turn that saved nothing saves its draft; an
+        intervention that never made a sound leaves its issue pending (claude mode: `intervention_unheard`, and the
+        next analysis decides whether to ask); a presentation question answered from a lookup leaves a clarification
+        behind (by=auto) when the model did not record one: the question, the facilitator's final words, the top
+        sources (contract §5.3)."""
         if turn.kind == KIND_DECISION and turn.draft and not turn.decision_saved:
             turn.decision_saved = True
             await self._save_draft(turn.draft)
+        if turn.kind == KIND_INTERVENTION and self.alignment_mode == ALIGNMENT_CLAUDE and turn.first_audio_at is None:
+            for event in turn.events:
+                issue = self.mstate.issue(str(event.get("issue_id") or ""))
+                if issue is not None and issue.status in ISSUE_QUEUED:  # never asked: it stays pending, not re-queued
+                    self._note("intervention_unheard", {"issue_id": issue.id, "reply": turn.reply,
+                                                        "status": issue.status})
         if turn.kind != KIND_ANSWER or turn.phase != PRESENTATION or not turn.lookups or turn.clarified:
             return
         # the answer is what a follow-up said (it had the lookup's results), never "Let me check" before them
@@ -2659,17 +2810,23 @@ class Controller:
 
     async def _room_utterance(self, text: str, speaker: str | None, source: str) -> None:
         """One line of the discussion (a transcript, or a typed line): into the meeting state and the transcript on
-        screen, through the alignment check (its events to the deck), and on to what the check asks for."""
+        screen, then to the alignment check. Legacy mode: the regex engine's events go to the deck at once (each with
+        `issue_type` and `topic`, like the model-based ones) and on to what they ask for. Claude mode: the whole
+        meeting so far goes to the analysis, outside the lock; `on_analysis` applies what comes back."""
         utterance = self.mstate.add_utterance(text, speaker, source)
         await self._send({"type": "transcript", "utterance": _jsonable(utterance)})
-        try:
-            events = self.engine.observe(utterance) if self.engine is not None else []
-        except Exception as exc:  # noqa: BLE001 - a check that fails must not lose the line
-            self._note("controller_error", {"where": "alignment.observe", "error": repr(exc),
-                                            "traceback": traceback.format_exc(limit=6)})
-            events = []
-        for event in events:
-            await self._send({"type": "alignment", "event": event})
+        events: list[dict] = []
+        if self.engine is not None:
+            try:
+                events = self.engine.observe(utterance)
+            except Exception as exc:  # noqa: BLE001 - a check that fails must not lose the line
+                self._note("controller_error", {"where": "alignment.observe", "error": repr(exc),
+                                                "traceback": traceback.format_exc(limit=6)})
+                events = []
+            for event in events:
+                await self._send({"type": "alignment", "event": _legacy_event(event)})
+        elif self._analysis is not None:
+            self._request_analysis()
         self._note("utterance", {"id": utterance.id, "speaker": speaker, "source": source, "text": text,
                                  "events": [event.get("type") for event in events]})
         interventions = [event for event in events if event.get("type") == "intervene"]
@@ -2688,17 +2845,32 @@ class Controller:
         """A room line was committed (or waits to be) and its transcript hasn't come yet."""
         return bool(self._room_commits or self._room_items or self._room_commit_held is not None)
 
+    def _analysis_busy(self) -> bool:
+        """An analysis is in flight or waiting (the one being applied right now doesn't count)."""
+        runner = self._analysis
+        if runner is None:
+            return False
+        return runner.waiting if self._delivering else runner.busy
+
     async def _late_line(self) -> None:
         """A line transcribed after the discussion ended (it was still in flight at the wrap-up). Nobody speaks up
         any more, but what it settled goes into the notes (the check's draft, by=auto), and an open question it
-        answered is closed; the wrap-up then goes on if it was waiting for this line."""
+        answered is closed; the wrap-up then goes on if it was waiting for this line (and, in claude mode, for its
+        analysis: once more up to ALIGNMENT_WRAPUP_WAIT_S)."""
         flows, self._flows = self._flows, []
         for kind, payload in flows:
             if kind == KIND_DECISION:
                 await self._save_draft(payload["draft"])
         if self._wrapup_pending:
-            if not self._room_line_in_flight():
-                await self._finish_wrapup()
+            if self._room_line_in_flight():
+                return
+            if self._analysis_busy():
+                if not self._wrapup_extended:
+                    self._wrapup_extended = True
+                    self._start_timer("wrapup_wait", ALIGNMENT_WRAPUP_WAIT_S, self._finish_wrapup)
+                    self._note("wrapup_wait", {"analysis": True, "extended": True})
+                return
+            await self._finish_wrapup()
             return
         still_open = set(self._unresolved_questions())
         closed = [question for question in self.mstate.open_questions
@@ -2709,21 +2881,71 @@ class Controller:
             await self._send_meeting()
 
     def _pending_conflicts(self, events: list[dict]) -> list[dict]:
-        """The intervene events with a conflict that has not been resolved meanwhile (the facilitator was busy)."""
+        """Legacy: the intervene events with a conflict that has not been resolved meanwhile (the facilitator was
+        busy)."""
         resolved = {event.get("conflict_id") for event in self.mstate.alerts if event.get("type") == "resolved"}
         return [event for event in events
                 if set(event.get("conflict_ids") or [event.get("conflict_id")]) - resolved]
 
+    def _live_interventions(self, events: list[dict]) -> list[dict]:
+        """Claude mode: the intervene events whose issue may still be voiced (pending or suggested: not resolved,
+        withdrawn or asked meanwhile)."""
+        kept = []
+        for event in events:
+            issue = self.mstate.issue(str(event.get("issue_id") or ""))
+            if issue is not None and issue.status in ISSUE_QUEUED:
+                kept.append(event)
+            else:
+                self._note("intervention_skipped", {"issue_id": event.get("issue_id"),
+                                                    "status": issue.status if issue else None})
+        return kept
+
+    def _hold_intervention(self, events: list[dict]) -> bool:
+        """Whether the intervention must wait: an analysis of newer utterances is in flight or waiting (a correction
+        may be on its way), and it has waited less than ALIGNMENT_HOLD_S. The events go back to the front of the
+        queue and a timer runs the flows again when the hold runs out."""
+        runner = self._analysis
+        issue_id = str(events[0].get("issue_id") or "")
+        if runner is None or not self._analysis_busy():
+            self._holds.pop(issue_id, None)
+            return False
+        newer = runner.current_revision
+        revision = max(int(event.get("revision") or 0) for event in events)
+        if newer is None or newer <= revision:
+            self._holds.pop(issue_id, None)
+            return False
+        now = self.clock.now()
+        started = self._holds.setdefault(issue_id, now)
+        remaining = ALIGNMENT_HOLD_S - (now - started)
+        if remaining <= 0:
+            self._holds.pop(issue_id, None)
+            self._note("intervention_hold_expired", {"issue_id": issue_id, "revision": revision, "newer": newer})
+            return False
+        self._flows.insert(0, (KIND_INTERVENTION, events))
+        self._start_timer("alignment_hold", remaining, self._run_flows)
+        self._note("intervention_held", {"issue_id": issue_id, "revision": revision, "newer": newer,
+                                         "remaining_s": round(remaining, 2)})
+        return True
+
     async def _run_flows(self) -> None:
         """The next thing the alignment check asks the facilitator to say, once it is free (ROOM): an intervention or
-        a decision. Without the link a decision is saved silently and an intervention stays on screen only."""
+        a decision. Without the link a decision is saved silently and an intervention stays on screen only. Claude
+        mode: an intervention is spoken only while its issue is still pending (or suggested) and no analysis of newer
+        utterances is on its way (ALIGNMENT_HOLD_S at most)."""
         while (self._flows and self.state == ROOM and self.turn is None and self.agenda_phase == DISCUSSION
                and not self._clip_speaking()):  # never over a participant who is talking: after their line
             kind, payload = self._flows.pop(0)
             if kind == KIND_INTERVENTION:
-                payload = self._pending_conflicts(payload)
-                if not payload:
-                    continue
+                if self.alignment_mode == ALIGNMENT_CLAUDE:
+                    payload = self._live_interventions(payload)
+                    if not payload:
+                        continue
+                    if self._hold_intervention(payload):
+                        return
+                else:
+                    payload = self._pending_conflicts(payload)
+                    if not payload:
+                        continue
             if not self.realtime.ready:
                 if kind == KIND_DECISION:
                     await self._save_draft(payload["draft"])
@@ -2737,7 +2959,12 @@ class Controller:
 
     async def _intervene(self, events: list[dict]) -> None:
         """The alignment check's gate fired: look up the evidence for the conflict (shown on screen), then one
-        neutral question by per-response instructions, no tools (INTERVENING)."""
+        neutral question by per-response instructions, no tools (INTERVENING). Claude mode: one issue per
+        intervention; only an evidence conflict gets a lookup (its cited passages first), a hidden disagreement and an
+        unresolved detail show the participants' own words instead."""
+        if self.alignment_mode == ALIGNMENT_CLAUDE:
+            await self._intervene_issue(events[0])
+            return
         conflicts = [item for event in events for item in (event, *(event.get("related") or []))]
         query = " ".join(str(event.get("query") or "") for event in events).strip()
         if not query:  # the slot label and both values (contract §5.4)
@@ -2754,13 +2981,57 @@ class Controller:
                                                          clarifications=clarifications)
         await self._flow_request(turn, instructions, tool_choice="none", state=INTERVENING)
 
+    async def _intervene_issue(self, event: dict) -> None:
+        """Claude mode's intervention for one issue (its `intervene` event)."""
+        self._holds.pop(str(event.get("issue_id") or ""), None)
+        lookup = None
+        if event.get("issue_type") == "evidence_conflict":
+            query = " ".join(str(event.get("query") or event.get("topic") or "").split())
+            entries = evidence.entries(self.meeting, self.mstate)
+            results = evidence.search_for_question(query, event.get("claim"), entries)
+            results = self._cited_first(results, event, entries)
+            lookup = self.mstate.add_lookup(query, results, by="engine", purpose="intervention")
+            await self._send({"type": "evidence", "lookup": _jsonable(lookup)})
+        wanted = set(event.get("clarification_ids") or [])
+        clarifications = [item for item in self.mstate.clarifications if item.id in wanted]
+        turn = Turn(origin=ORIGIN_ROOM, kind=KIND_INTERVENTION, phase=DISCUSSION, events=[event])
+        instructions = prompts.intervention_instructions(event, lookup, meeting=self.meeting,
+                                                         clarifications=clarifications)
+        await self._flow_request(turn, instructions, tool_choice="none", state=INTERVENING)
+
+    @staticmethod
+    def _cited_first(results: list[dict], event: dict, entries: list[evidence.Entry]) -> list[dict]:
+        """The lookup's results with the issue's cited passages, clarifications and decisions first (added when the
+        search missed them), then the rest, at most the usual three (more if the issue cites more)."""
+        cited = [ref["id"] for ref in event.get("evidence") or []
+                 if isinstance(ref, dict) and ref.get("kind") in ("source", "clarification", "decision")]
+        cited = list(dict.fromkeys(cited))
+        by_id = {entry.id: entry for entry in entries}
+        found = {result["source_id"]: result for result in results}
+        ordered: list[dict] = []
+        for sid in cited:
+            if sid in found:
+                ordered.append(found[sid])
+            elif sid in by_id:
+                entry = by_id[sid]
+                ordered.append({"source_id": entry.id, "kind": entry.kind, "title": entry.title,
+                                "excerpt": evidence._excerpt(entry.text), "score": 1.0})
+        ordered.extend(result for result in results if result["source_id"] not in cited)
+        return ordered[:max(3, len(cited))]
+
     async def _decide(self, payload: dict) -> None:
         """The group resolved it: the facilitator saves the decision (its save_decision is validated against the
-        draft and what was said; without a valid one the draft is saved by=auto) and confirms it."""
+        draft and what was said; without a valid one the draft is saved by=auto, or by=analysis for a validated
+        proposal) and confirms it. The lines quoted to it: the proposal's utterances (claude mode), else the last
+        three."""
         draft = payload["draft"]
-        quotes = [(utterance.speaker, utterance.text) for utterance in self.mstate.transcript[-3:]]
+        quoted = self.mstate.transcript[-DECISION_QUOTES:]
+        ids = set(draft.get("utterance_ids") or [])
+        if self.alignment_mode == ALIGNMENT_CLAUDE and ids:
+            quoted = [u for u in self.mstate.transcript if u.id in ids][-DECISION_QUOTES:] or quoted
+        quotes = [(utterance.speaker, utterance.text) for utterance in quoted]
         turn = Turn(origin=ORIGIN_ROOM, kind=KIND_DECISION, phase=DISCUSSION, draft=dict(draft),
-                    events=list(payload.get("resolved") or []))
+                    events=list(payload.get("resolved") or []), proposal=payload.get("proposal"))
         instructions = prompts.decision_instructions(draft, quotes, meeting=self.meeting)
         await self._flow_request(turn, instructions, tool_choice=None, state=INTERVENING)
 
@@ -2797,32 +3068,43 @@ class Controller:
         await self._room_close(commit=True)
         self._room_seg = None
         await self._close_mic(clear=False)
+        self._cancel_timer("alignment_hold")
         flows, self._flows = self._flows, []
         for kind, payload in flows:
             if kind == KIND_DECISION:
                 await self._save_draft(payload["draft"])
         self.mstate.set_phase(WRAPUP)
-        if self._room_line_in_flight():
+        line, analysing = self._room_line_in_flight(), self._analysis_busy()
+        if line or analysing:
             self._wrapup_pending = True
+            self._wrapup_extended = analysing
             self._set_state(IDLE, BANNER_WRAPPING)
-            self._start_timer("wrapup_wait", WRAPUP_WAIT_S, self._finish_wrapup)
+            wait = max(WRAPUP_WAIT_S, ALIGNMENT_WRAPUP_WAIT_S) if analysing else WRAPUP_WAIT_S
+            self._start_timer("wrapup_wait", wait, self._finish_wrapup)
             self._note("wrapup_wait", {"commits": len(self._room_commits), "items": len(self._room_items),
-                                       "held": self._room_commit_held is not None})
+                                       "held": self._room_commit_held is not None, "analysis": analysing,
+                                       "wait_s": wait})
             return
         await self._finish_wrapup()
 
     async def _finish_wrapup(self) -> None:
-        """The rest of the wrap-up, once the room's last line is in (or WRAPUP_WAIT_S passed without it)."""
+        """The rest of the wrap-up, once the room's last line is in (or WRAPUP_WAIT_S passed without it) and its
+        analysis has come back (or ALIGNMENT_WRAPUP_WAIT_S passed): what is still unresolved stays open, nothing
+        unconfirmed is saved."""
         self._wrapup_pending = False
+        self._wrapup_extended = False
         self._cancel_timer("wrapup_wait")
         if self.engine is not None:
             for event in self.engine.flush():  # conflicts still pending: silent suggestions now
-                await self._send({"type": "alignment", "event": event})
+                await self._send({"type": "alignment", "event": _legacy_event(event)})
+        elif self.alignment_mode == ALIGNMENT_CLAUDE:
+            await self._flush_issues()
         for text in self._unresolved_questions():
             self.mstate.add_open_question(text)  # (the same text twice is kept once)
         await self._send_meeting()
         self._note("wrapup", {"decisions": len(self.mstate.decisions),
-                              "open_questions": len(self.mstate.open_questions)})
+                              "open_questions": len(self.mstate.open_questions),
+                              "open_issues": [issue.id for issue in self.mstate.open_issues()]})
         if not self.realtime.ready:
             self._set_state(IDLE, BANNER_WRAPPED)
             return
@@ -2832,11 +3114,371 @@ class Controller:
         await self._flow_request(turn, prompts.wrapup_instructions(self.mstate.notes_text(), meeting=self.meeting),
                                  tool_choice="none", state=REPLYING)
 
+    async def _flush_issues(self) -> None:
+        """Claude mode's wrap-up: issues never raised become silent suggestions (shown, not spoken); every open issue
+        stays open (an open question in the notes, see _unresolved_questions)."""
+        self._holds.clear()
+        for issue in self.mstate.open_issues():
+            if issue.status == "pending":
+                fields = self._issue_fields(issue, None, None)
+                await self._al_event("suggestion", **fields, conflict_id=issue.conflict_event_id, policy=issue.policy,
+                                     revision=issue.revision, at_wrapup=True)
+                self.mstate.update_issue(issue.id, status="suggested")
+                self._note("issue", {"id": issue.id, "status": "suggested", "why": "wrap-up"})
+
     def _unresolved_questions(self) -> list[str]:
-        """Conflicts nobody settled (pending, suggested, asked or unanswered), as open questions for the notes."""
-        if self.engine is None:
-            return []
-        return [str(item.get("text")) for item in self.engine.unresolved() if item.get("text")]
+        """What nobody settled, as open questions for the notes: legacy, the engine's unresolved conflicts; claude
+        mode, every open issue's question (pending, suggested, asked, partly settled or open)."""
+        if self.engine is not None:
+            return [str(item.get("text")) for item in self.engine.unresolved() if item.get("text")]
+        if self.alignment_mode == ALIGNMENT_CLAUDE and self.mstate is not None:
+            return [issue.question_text for issue in self.mstate.open_issues()]
+        return []
+
+    # --- model-based alignment (claude mode, contract v5 §3) ---------------------------------------------------
+
+    def _request_analysis(self) -> None:
+        """Ask for an analysis of the meeting as it is now (one in flight at a time; a request while busy replaces the
+        waiting one, and the newest snapshot holds every intervening utterance). The utterances since the snapshot
+        being analysed are the new ones (the model's focus)."""
+        runner = self._analysis
+        if runner is None or self.mstate is None:
+            return
+        base = self._inflight_revision if self._inflight_revision is not None else self._analysed_revision
+        new_ids = [utterance.id for utterance in self.mstate.transcript[max(0, base):]]
+        snapshot = build_snapshot(self.meeting, self.mstate, generation=self._generation, new_utterance_ids=new_ids)
+        starts_now = not runner.in_flight
+        runner.request(snapshot)
+        if starts_now:
+            self._inflight_revision = snapshot.revision
+        self._refresh_alignment()
+        self._note("analysis_request", {"revision": snapshot.revision, "new": new_ids, "generation": self._generation,
+                                        "queued": not starts_now, "utterances_dropped": snapshot.utterances_dropped,
+                                        "passages_truncated": snapshot.passages_truncated})
+
+    async def _al_event(self, kind: str, **fields: Any) -> dict:
+        """One alignment event of the controller's own (claude mode), numbered like the legacy engine's (AL<n>), kept in
+        state.alerts and sent to the deck."""
+        self._alignment_events += 1
+        event = {"id": f"AL{self._alignment_events}", "type": kind, "at_s": round(self._meeting_time(), 3), **fields}
+        self.mstate.alerts.append(event)
+        await self._send({"type": "alignment", "event": event})
+        return event
+
+    async def _apply_analysis(self, snapshot: Snapshot, outcome: AnalysisOutcome) -> None:
+        """One analysis result, under the lock: dropped when the meeting was reset meanwhile; an error only updates the
+        status; else the validated claims, assumptions, issues, updates and proposals are applied in that order, then
+        the flows run (an intervention, a decision) and the wrap-up goes on if it waited for this."""
+        runner = self._analysis
+        if snapshot.generation != self._generation:
+            self._note("analysis_discarded", {"generation": snapshot.generation, "current": self._generation,
+                                              "revision": snapshot.revision})
+            self._refresh_alignment()
+            return
+        self._analysed_revision = max(self._analysed_revision, snapshot.revision)
+        self._inflight_revision = runner.current_revision if runner is not None and runner.waiting else None
+        if outcome.error or outcome.result is None:
+            self._note("analysis_error", {"error": outcome.error, "latency_ms": outcome.latency_ms,
+                                          "revision": snapshot.revision, "model": outcome.model,
+                                          "truncated": outcome.truncated, "refused": outcome.refused,
+                                          "request_id": outcome.request_id})
+            self._refresh_alignment()
+            await self._send_meeting()
+            await self._after_analysis()
+            return
+        rec = semantic.reconcile(outcome.result, snapshot)
+        self._note("analysis_result", {"revision": snapshot.revision, "latency_ms": outcome.latency_ms,
+                                       "usage": outcome.usage, "model": outcome.model, "request_id": outcome.request_id,
+                                       "counts": {"claims": len(rec.claims), "assumptions": len(rec.assumptions),
+                                                  "issues": len(rec.issues), "updates": len(rec.updates),
+                                                  "proposals": len(rec.proposals)},
+                                       "dropped": rec.dropped})
+        await self._apply_claims(rec, snapshot)
+        await self._apply_issues(rec, snapshot)
+        await self._apply_updates(rec, snapshot)
+        await self._apply_proposals(rec, snapshot)
+        self._expire_asked(rec, snapshot)
+        self._refresh_alignment()
+        await self._send_meeting()
+        await self._after_analysis()
+
+    async def _after_analysis(self) -> None:
+        if self.agenda_phase == DISCUSSION:
+            await self._run_flows()
+        elif (self.agenda_phase == WRAPUP and self._wrapup_pending and not self._room_line_in_flight()
+              and not self._analysis_busy()):
+            await self._finish_wrapup()
+
+    async def _apply_claims(self, rec: semantic.Reconciled, snapshot: Snapshot) -> None:
+        """Claim chips (once per utterance and text) and participant assumptions (kept in the state, once)."""
+        for claim in rec.claims:
+            key = (claim.utterance_id, " ".join(claim.text.split()).casefold())
+            if key in self._claims_seen:
+                continue
+            self._claims_seen.add(key)
+            utterance = snapshot.utterance(claim.utterance_id) or {}
+            await self._al_event("claim", utterance_id=claim.utterance_id, text=claim.text, kind=claim.kind,
+                                 agrees=claim.agrees_with_sources, evidence_ids=list(claim.evidence_ids), label="",
+                                 slot="", value_label=claim.text, sentence=utterance.get("text", ""),
+                                 speaker=utterance.get("speaker"))
+        for assumption in rec.assumptions:
+            entry = {"speaker": assumption.speaker, "utterance_id": assumption.utterance_id,
+                     "topic": assumption.topic, "interpretation": assumption.interpretation}
+            if any((known.get("speaker"), known.get("topic"), known.get("interpretation"))
+                   == (entry["speaker"], entry["topic"], entry["interpretation"]) for known in self.mstate.assumptions):
+                continue
+            self.mstate.assumptions.append(entry)
+            await self._al_event("assumption", **entry, label=assumption.topic)
+
+    def _issue_fields(self, record: Any, valid: ValidIssue | None, snapshot: Snapshot | None) -> dict:
+        """The fields a conflict / intervene / suggestion event carries for an issue (the deck's card)."""
+        texts = {u.id: u for u in self.mstate.transcript}
+
+        def utterance(uid: str | None) -> Any:
+            return texts.get(uid) if uid else None
+
+        claim_ids, commit_ids = list(record.claim_utterance_ids), list(record.commitment_utterance_ids)
+        last_claim = utterance(claim_ids[-1] if claim_ids else None)
+        last_commit = utterance(commit_ids[-1] if commit_ids else None)
+        refs = [dict(ref) for ref in (valid.evidence if valid is not None else record.evidence)]
+        ids = {kind: [ref["id"] for ref in refs if ref.get("kind") == kind]
+               for kind in ("source", "clarification", "decision", "utterance")}
+        established = ""
+        if record.issue_type == "evidence_conflict":
+            established = next((str(ref.get("quote") or "") for ref in refs
+                                if ref.get("kind") in ("source", "clarification", "decision")), "")
+        return {
+            "issue_id": record.id, "issue_type": record.issue_type, "topic": record.topic, "label": record.topic,
+            "slot": record.id, "claim": record.claim, "claimed_label": record.claim or "",
+            "utterance_id": last_claim.id if last_claim else (last_commit.id if last_commit else None),
+            "quote": last_claim.text if last_claim else "", "quote_speaker": last_claim.speaker if last_claim else None,
+            "quote_utterance_id": last_claim.id if last_claim else None,
+            "confirm_quote": last_commit.text if last_commit and last_commit is not last_claim else "",
+            "commit_utterance_id": last_commit.id if last_commit else None,
+            "evidence": refs, "participant_views": [dict(view) for view in record.participant_views],
+            "missing_details": list(record.missing_details), "settled_details": list(record.settled_details),
+            "source_ids": ids["source"], "clarification_ids": ids["clarification"], "decision_ids": ids["decision"],
+            "established": established, "established_label": established,
+            "material_consequence": record.material_consequence, "commitment": record.commitment,
+            "confidence": record.confidence, "recommendation": record.recommendation, "question": record.question,
+            "query": " ".join(f"{record.topic} {record.claim or ''}".split()),
+            "has_action": record.commitment in ("nearing", "confirming", "committed"), "status": record.status,
+        }
+
+    async def _apply_issues(self, rec: semantic.Reconciled, snapshot: Snapshot) -> None:
+        """Issues: a known one is updated, a new one recorded (pending); its conflict card once per revision; then the
+        policy: clarify → an intervene event and the spoken flow queued; suggest → a silent suggestion card, once;
+        silent → nothing more."""
+        for valid in rec.issues:
+            model = valid.model
+            fields = dict(issue_type=model.issue_type, topic=model.topic, claim=model.claim,
+                          claim_utterance_ids=valid.claim_utterance_ids,
+                          commitment_utterance_ids=valid.commitment_utterance_ids,
+                          participant_views=valid.participant_views,
+                          missing_details=[d for d in model.missing_details if d.strip()],
+                          evidence=[{"kind": e["kind"], "id": e["id"], "quote": e["quote"]} for e in valid.evidence],
+                          material_consequence=model.material_consequence, commitment=model.commitment,
+                          confidence=model.confidence, recommendation=model.recommendation, question=model.question,
+                          revision=snapshot.revision)
+            record = self.mstate.issue(valid.existing_id) if valid.existing_id else None
+            new = record is None
+            if new:
+                record = self.mstate.add_issue(status="pending", **fields)
+            else:
+                self.mstate.update_issue(record.id, **fields)
+            policy, reason = semantic.decide_policy(valid, snapshot)
+            self.mstate.update_issue(record.id, policy=policy)
+            self._last_policy = f"{record.id} {policy}: {reason}"
+            self._note("issue", {"id": record.id, "status": record.status, "issue_type": record.issue_type,
+                                 "topic": record.topic, "new": new, "revision": snapshot.revision})
+            self._note("intervention_policy", {"issue_id": record.id, "decision": policy, "reason": reason,
+                                               "status": record.status, "dropped": valid.dropped})
+            common = self._issue_fields(record, valid, snapshot)
+            if self._conflict_revisions.get(record.id) != snapshot.revision:
+                self._conflict_revisions[record.id] = snapshot.revision
+                conflict = await self._al_event("conflict", **common, policy=policy, repeat=not new,
+                                                raised_id=record.intervene_event_id, revision=snapshot.revision)
+                self.mstate.update_issue(record.id, conflict_event_id=conflict["id"])
+            if policy == "clarify" and record.status in ISSUE_QUEUED and self.agenda_phase == DISCUSSION:
+                # (at the wrap-up nobody speaks up any more: the issue stays pending, an open question in the notes)
+                intervene = await self._al_event(
+                    "intervene", **{**common, "utterance_id": common["commit_utterance_id"] or common["utterance_id"]},
+                    conflict_id=record.conflict_event_id, conflict_ids=[record.conflict_event_id], related=[],
+                    policy=policy, revision=snapshot.revision)
+                self.mstate.update_issue(record.id, intervene_event_id=intervene["id"])
+                self._queue_intervention(intervene)
+            elif policy == "suggest" and record.status == "pending":
+                await self._al_event("suggestion", **common, conflict_id=record.conflict_event_id, policy=policy,
+                                     revision=snapshot.revision)
+                self.mstate.update_issue(record.id, status="suggested")
+
+    def _queue_intervention(self, event: dict) -> None:
+        """Queue the spoken flow for an issue (a newer event for the same issue replaces the queued one)."""
+        issue_id = event.get("issue_id")
+        self._flows = [(kind, payload) for kind, payload in self._flows
+                       if not (kind == KIND_INTERVENTION and any(e.get("issue_id") == issue_id for e in payload))]
+        self._flows.append((KIND_INTERVENTION, [event]))
+
+    def _unqueue_intervention(self, issue_id: str, reason: str) -> None:
+        before = len(self._flows)
+        self._flows = [(kind, payload) for kind, payload in self._flows
+                       if not (kind == KIND_INTERVENTION and any(e.get("issue_id") == issue_id for e in payload))]
+        self._holds.pop(issue_id, None)
+        if len(self._flows) != before:
+            self._note("intervention_withdrawn", {"issue_id": issue_id, "reason": reason})
+
+    async def _apply_updates(self, rec: semantic.Reconciled, snapshot: Snapshot) -> None:
+        """What the newest utterances did to known issues: resolved (whole or part), withdrawn, or still open."""
+        by_issue: dict[str, ValidProposal] = {}
+        for proposal in rec.proposals:
+            if proposal.model.status == "confirmed":
+                for issue_id in proposal.resolves_issue_ids:
+                    by_issue.setdefault(issue_id, proposal)
+        plan_changes = {claim.utterance_id for claim in rec.claims if claim.kind == "plan_change"}
+        for update in rec.updates:
+            record = self.mstate.issue(update.issue_id)
+            if record is None or not record.is_open:
+                continue
+            if update.status == "still_open":
+                self.mstate.update_issue(record.id, revision=snapshot.revision)
+                continue
+            resolution = list(dict.fromkeys([*record.resolution_utterance_ids, *update.utterance_ids]))
+            base = {"issue_id": record.id, "issue_type": record.issue_type, "topic": record.topic,
+                    "label": record.topic, "slot": record.id, "intervene_id": record.intervene_event_id,
+                    "conflict_id": record.conflict_event_id, "note": update.note, "utterance_ids": update.utterance_ids}
+            if update.status == "withdrawn":
+                self.mstate.update_issue(record.id, status="withdrawn", note=update.note,
+                                         resolution_utterance_ids=resolution, revision=snapshot.revision)
+                self._unqueue_intervention(record.id, "withdrawn")
+                await self._al_event("withdrawn", **base)
+                self._note("issue", {"id": record.id, "status": "withdrawn", "utterance_ids": update.utterance_ids})
+                continue
+            settled = list(dict.fromkeys([*record.settled_details, *[s for s in update.settled if s.strip()]]))
+            remaining = [detail for detail in record.missing_details if detail not in settled]
+            partial = update.status == "partially_resolved"
+            status = "partially_resolved" if partial else "resolved"
+            self.mstate.update_issue(record.id, status=status, settled_details=settled, note=update.note,
+                                     resolution_utterance_ids=resolution, revision=snapshot.revision)
+            self._unqueue_intervention(record.id, status)
+            proposal = by_issue.get(record.id)
+            plan_changed = bool(proposal is not None and proposal.supersedes) or any(
+                uid in plan_changes for uid in update.utterance_ids)
+            last = snapshot.utterance(update.utterance_ids[-1]) if update.utterance_ids else None
+            await self._al_event("resolved", **base, partial=partial, settled=settled, remaining=remaining,
+                                 value_label=update.note, owner=proposal.owner if proposal is not None else None,
+                                 plan_changed=plan_changed, follow_up_quote=last["text"] if last else "")
+            self._note("issue", {"id": record.id, "status": status, "settled": settled, "remaining": remaining,
+                                 "utterance_ids": update.utterance_ids})
+
+    async def _apply_proposals(self, rec: semantic.Reconciled, snapshot: Snapshot) -> None:
+        """Decision proposals: proposed / nearing are candidates (shown, not saved); rejected and superseded ones
+        leave the candidates; a confirmed one is saved, aloud after an intervention it answers, silently otherwise."""
+        for proposal in rec.proposals:
+            status = proposal.model.status
+            if status in ("proposed", "nearing"):
+                self._upsert_candidate(proposal, snapshot)
+            elif status in ("rejected", "superseded"):
+                self._forget_candidates(proposal.model.decision)
+                self._note("candidate_dropped", {"decision": proposal.model.decision, "status": status})
+            else:
+                await self._confirm_proposal(proposal, rec, snapshot)
+
+    def _upsert_candidate(self, proposal: ValidProposal, snapshot: Snapshot) -> None:
+        model = proposal.model
+        entry = {"decision": model.decision, "status": model.status, "owner": proposal.owner,
+                 "follow_up": model.follow_up, "source_ids": proposal.source_ids,
+                 "agreement_utterance_ids": proposal.agreement_utterance_ids,
+                 "owner_utterance_ids": proposal.owner_utterance_ids,
+                 "utterance_ids": list(dict.fromkeys([*proposal.agreement_utterance_ids,
+                                                      *proposal.owner_utterance_ids])),
+                 "resolves_issue_ids": proposal.resolves_issue_ids, "revision": snapshot.revision,
+                 "explanation": model.explanation}
+        candidates = self.mstate.candidate_decisions
+        for n, known in enumerate(candidates):
+            if tools.same_decision(str(known.get("decision") or ""), model.decision):
+                candidates[n] = entry
+                return
+        candidates.append(entry)
+
+    async def _confirm_proposal(self, proposal: ValidProposal, rec: semantic.Reconciled, snapshot: Snapshot) -> None:
+        model = proposal.model
+        if any(tools.same_decision(decision.decision, model.decision) for decision in self.mstate.decisions):
+            self._note("decision_duplicate", {"decision": model.decision})
+            return
+        touched = {update.issue_id for update in rec.updates}
+        resolved: list[Any] = []
+        for issue_id in proposal.resolves_issue_ids:
+            issue = self.mstate.issue(issue_id)
+            if issue is None:
+                continue
+            resolved.append(issue)
+            if issue.is_open and issue.id not in touched and issue.status != "partially_resolved":
+                # the model named the issue this decision settles without an update: it is settled all the same
+                self.mstate.update_issue(issue.id, status="resolved", resolution_utterance_ids=list(dict.fromkeys(
+                    [*issue.resolution_utterance_ids, *proposal.agreement_utterance_ids])), revision=snapshot.revision)
+                self._unqueue_intervention(issue.id, "resolved")
+                last = snapshot.utterance(proposal.agreement_utterance_ids[-1]) if proposal.agreement_utterance_ids \
+                    else None
+                await self._al_event("resolved", issue_id=issue.id, issue_type=issue.issue_type, topic=issue.topic,
+                                     label=issue.topic, slot=issue.id, intervene_id=issue.intervene_event_id,
+                                     conflict_id=issue.conflict_event_id, partial=False, settled=[], remaining=[],
+                                     note=model.explanation, value_label=model.decision,
+                                     utterance_ids=proposal.agreement_utterance_ids, owner=proposal.owner,
+                                     plan_changed=proposal.supersedes is not None,
+                                     follow_up_quote=last["text"] if last else "")
+        claim_ids = [uid for issue in resolved for uid in issue.claim_utterance_ids]
+        utterance_ids = list(dict.fromkeys([*claim_ids, *proposal.agreement_utterance_ids,
+                                            *proposal.owner_utterance_ids]))
+        plan_changes = {claim.utterance_id for claim in rec.claims if claim.kind == "plan_change"}
+        plan_changed = proposal.supersedes is not None or any(uid in plan_changes for uid in utterance_ids)
+        draft = {"issue_ids": [issue.id for issue in resolved], "decision": model.decision, "owner": proposal.owner,
+                 "owner_unsupported": proposal.owner_unsupported, "follow_up": model.follow_up or "",
+                 "source_ids": proposal.source_ids, "utterance_ids": utterance_ids,
+                 "agreement_utterance_ids": proposal.agreement_utterance_ids,
+                 "owner_utterance_ids": proposal.owner_utterance_ids, "plan_changed": plan_changed,
+                 "supersedes": proposal.supersedes, "by": "analysis", "explanation": model.explanation,
+                 "label": model.decision, "slot": resolved[0].id if resolved else "", "utterance_id":
+                     proposal.agreement_utterance_ids[-1] if proposal.agreement_utterance_ids else None}
+        asked = any(issue.asked_at_revision is not None for issue in resolved) or any(
+            issue.asked_at_revision is not None and snapshot.revision - issue.asked_at_revision <= ALIGNMENT_ANSWER_WINDOW
+            for issue in self.mstate.issues)
+        if asked and self.agenda_phase == DISCUSSION:
+            event = await self._al_event("decision_draft", **draft, silent=False)
+            resolved_events = [alert for alert in self.mstate.alerts if alert.get("type") == "resolved"
+                               and alert.get("issue_id") in draft["issue_ids"]]
+            self._flows.append((KIND_DECISION, {"draft": event, "resolved": resolved_events, "proposal": dict(draft)}))
+            self._note("decision_proposed", {"decision": model.decision, "owner": proposal.owner,
+                                             "issue_ids": draft["issue_ids"], "spoken": True})
+            return
+        decision = await self._save_draft(draft)
+        await self._al_event("decision_draft", **draft, silent=True,
+                             decision_id=decision.id if decision is not None else None)
+        self._note("decision_recorded_silently", {"decision": model.decision, "owner": proposal.owner,
+                                                  "id": decision.id if decision is not None else None,
+                                                  "issue_ids": draft["issue_ids"], "plan_changed": plan_changed})
+
+    def _expire_asked(self, rec: semantic.Reconciled, snapshot: Snapshot) -> None:
+        """An asked issue that got no update within ALIGNMENT_ANSWER_WINDOW utterances stays open (for the wrap-up)."""
+        touched = {update.issue_id for update in rec.updates} | {valid.existing_id for valid in rec.issues
+                                                                 if valid.existing_id}
+        for issue in self.mstate.open_issues():
+            if (issue.status == "asked" and issue.id not in touched and issue.asked_at_revision is not None
+                    and snapshot.revision - issue.asked_at_revision > ALIGNMENT_ANSWER_WINDOW):
+                self.mstate.update_issue(issue.id, status="open", revision=snapshot.revision)
+                self._note("issue", {"id": issue.id, "status": "open", "why": "no answer within the window"})
+
+    async def _intervention_heard(self, turn: Turn) -> None:
+        """The room hears the facilitator's question: its issue is asked (the answer window counts from here)."""
+        changed = False
+        for event in turn.events:
+            issue = self.mstate.issue(str(event.get("issue_id") or ""))
+            if issue is not None and issue.status in ISSUE_QUEUED:
+                revision = len(self.mstate.transcript)
+                self.mstate.update_issue(issue.id, status="asked", asked_at_revision=revision, revision=revision)
+                self._note("issue", {"id": issue.id, "status": "asked", "reply": turn.reply})
+                changed = True
+        if changed:
+            await self._send_meeting()
 
     # --- Realtime events --------------------------------------------------------------------------------------
 
@@ -3054,6 +3696,8 @@ class Controller:
             if not turn.latency_reported:  # once per turn: its first audio, whichever response brings it
                 turn.latency_reported = True
                 await self._report_latency(turn)
+            if turn.kind == KIND_INTERVENTION and self.alignment_mode == ALIGNMENT_CLAUDE:
+                await self._intervention_heard(turn)  # the room hears the question now: the issue is asked
         if turn.audio_item_id is None and isinstance(event.get("item_id"), str):
             turn.audio_item_id = event["item_id"]
         turn.audio_bytes += _b64_bytes(delta)

@@ -86,6 +86,68 @@ eq("an unlabelled utterance", F.normalizeUtterance({ id: "U4", text: "x", speake
 const ev = F.normalizeEvent({ type: "alignment", event: { id: "AL5", type: "intervene", slot: "friday_stage", label: "Friday's release stage", utterance_id: "U4", at_s: 99, conflict_id: "AL2", source_ids: ["REQ-2", 3], clarification_ids: ["CL-1"], related: [{ conflict_id: "AL3" }] } });
 eq("event: common fields, id lists cleaned, the rest kept", [ev.id, ev.type, ev.utterance_id, ev.source_ids, ev.clarification_ids, ev.conflict_id, ev.related.length], ["AL5", "intervene", "U4", ["REQ-2"], ["CL-1"], "AL2", 1]);
 eq("an event without a label: the slot", F.normalizeEvent({ type: "claim", slot: "friday_stage" }).label, "friday_stage");
+eq("a legacy event: slot and label as given, no issue, no records", [ev.issue_type, ev.issue_id, ev.topic, ev.evidence, ev.participant_views], ["", null, "", [], []]);
+// model-based alignment (contract v5 §4): an event names its issue; slot and label fall back to it
+const modelEv = F.normalizeEvent({
+  type: "alignment",
+  event: {
+    id: "AL9", type: "conflict", issue_id: "IS2", issue_type: "hidden_disagreement", topic: "Friday's release", claim: "Friday's release goes to everyone",
+    evidence: [{ kind: "utterance", id: "U5", quote: "the beta" }, { kind: "x" }, null, { kind: "source", quote: "no id" }],
+    participant_views: [{ speaker: "Alice", utterance_id: "U5", quote: "Friday's release is the beta", view: "beta release" }, { utterance_id: "U6" }],
+    missing_details: ["owner", "", 3], conflict_ids: ["AL2", 3],
+  },
+});
+eq("a model-derived event: slot = the issue id, label = the topic", [modelEv.slot, modelEv.label, modelEv.issue_id, modelEv.issue_type, modelEv.topic], ["IS2", "Friday's release", "IS2", "hidden_disagreement", "Friday's release"]);
+eq(
+  "…evidence and views as records (no id, empty: dropped), the string lists cleaned",
+  [modelEv.evidence.map((r) => [r.kind, r.id, r.quote, r.text, r.speaker]), modelEv.participant_views, modelEv.missing_details, modelEv.conflict_ids],
+  [[["utterance", "U5", "the beta", "", null]], [{ speaker: "Alice", utterance_id: "U5", quote: "Friday's release is the beta", view: "beta release" }], ["owner"], ["AL2"]],
+);
+eq("an event with neither slot nor issue id: its own id", [F.normalizeEvent({ type: "intervene", id: "AL3" }).slot, F.normalizeEvent({ type: "intervene", id: "AL3" }).label], ["AL3", "AL3"]);
+eq("a claim with none of them: empty (its chip is keyed by its text)", [F.normalizeEvent({ type: "claim", text: "x" }).slot, F.normalizeEvent({ type: "claim", text: "x" }).label], ["", ""]);
+eq("a label given wins over the topic", F.normalizeEvent({ type: "conflict", issue_id: "IS1", topic: "t", label: "L" }).label, "L");
+eq(
+  "issue kinds and card titles",
+  [F.cardTitle({ issue_type: "evidence_conflict" }), F.cardTitle({ issue_type: "hidden_disagreement" }), F.cardTitle({ issue_type: "ambiguous_decision" }), F.cardTitle({ issue_type: "" }), F.cardTitle({})],
+  ["Alignment check · evidence conflict", "Alignment check · hidden disagreement", "Alignment check · unresolved detail", "Alignment check", "Alignment check"],
+);
+eq("an event that doesn't say its kind is an evidence conflict", [F.issueTypeOf({}), F.issueTypeOf({ issue_type: "zzz" }), F.issueTypeOf({ issue_type: "ambiguous_decision" })], ["evidence_conflict", "evidence_conflict", "ambiguous_decision"]);
+eq("the suggestion title", F.SUGGESTION_TITLE, "Possible issue (not raised)");
+eq("card statuses from the backend's", ["pending", "suggested", "asked", "partially_resolved", "resolved", "withdrawn", "open", "zzz"].map(F.cardStatus), ["pending", "suggestion", "asked", "partial", "resolved", "withdrawn", "open", ""]);
+eq("status words", Object.values(F.CARD_STATUS_WORDS), ["Pending", "Asked", "Resolved", "Partly settled", "Withdrawn", "Open", "Silent"]);
+eq(
+  "a card moves forward only",
+  [F.cardMoves("asked", "open"), F.cardMoves("partial", "resolved"), F.cardMoves("resolved", "open"), F.cardMoves("pending", "suggestion"), F.cardMoves("pending", "withdrawn"), F.cardMoves("open", "pending"), F.cardMoves("asked", "zzz")],
+  [true, true, false, false, true, false, false],
+);
+// the alignment status (state.alignment, meeting.alignment; hello and /api/talk: mode, model, available only)
+const brief = F.normalizeAlignment({ mode: "claude", model: "claude-opus-5-5", available: true });
+eq("alignment status (hello, /api/talk): mode, model, available; not full", [brief.mode, brief.model, brief.available, brief.full, brief.last_latency_ms, brief.last_policy], ["claude", "claude-opus-5-5", true, false, null, ""]);
+const full = F.normalizeAlignment({ mode: "claude", model: "claude-opus-5-5", available: true, in_flight: false, waiting: false, last_latency_ms: 1840, last_error: null, analyses: 3, last_policy: { issue_id: "IS1", decision: "clarify", reason: "a cited passage; confirming; high confidence" } });
+eq("…the runner's record (state, meeting): full, the policy as words", [full.full, full.last_latency_ms, full.analyses, full.last_policy], [true, 1840, 3, "IS1: clarify (a cited passage; confirming; high confidence)"]);
+eq("…a policy as a string, missing, or without an issue", [F.normalizeAlignment({ mode: "claude", last_policy: "silent" }).last_policy, F.normalizeAlignment({ mode: "claude" }).last_policy, F.normalizeAlignment({ mode: "claude", last_policy: { policy: "suggest" } }).last_policy], ["silent", "", "suggest"]);
+eq("…none", [F.normalizeAlignment(null), F.normalizeAlignment("x"), F.normalizeAlignment([])], [null, null, null]);
+eq("the Meeting info line: ready, with the last analysis", F.alignmentWords(full), {
+  status: "ready",
+  text: "Claude (claude-opus-5-5) · ready",
+  detail: "1.84 s (3 so far) · policy: IS1: clarify (a cited passage; confirming; high confidence)",
+  title: "Alignment: the Claude API (claude-opus-5-5) reads the discussion; Higgs Realtime transcribes and speaks",
+});
+eq("…analysing (in flight or waiting)", [F.alignmentWords({ ...full, in_flight: true }).status, F.alignmentWords({ ...full, waiting: true }).text], ["analysing", "Claude (claude-opus-5-5) · analysing…"]);
+eq("…unavailable (no key)", [F.alignmentWords({ ...brief, available: false }).status, F.alignmentWords({ ...brief, available: false }).text, F.alignmentWords({ ...brief, available: false }).detail], ["unavailable", "Claude (claude-opus-5-5) · unavailable (no key)", ""]);
+eq("…an error, a sub-second latency", F.alignmentWords({ ...full, last_latency_ms: 640, analyses: null, last_policy: "", last_error: "HTTP 429" }).detail, "640 ms · error: HTTP 429");
+eq("…legacy patterns, off, none", [F.alignmentWords(F.normalizeAlignment({ mode: "legacy", available: true })), F.alignmentWords(F.normalizeAlignment({ mode: "off" })).text, F.alignmentWords(null).status], [
+  { status: "legacy", text: "legacy patterns", detail: "", title: "Alignment: the legacy pattern checks of checks.yaml, not the model" },
+  "off",
+  "off",
+]);
+const withIssues = F.normalizeMeetingState({ ...msg, issues: [{ id: "IS1", issue_type: "evidence_conflict", topic: "Friday's audience", status: "asked", claim: "all customers", question: "Beta users only?" }, { topic: "no id" }], alignment: { mode: "claude", model: "m", available: true, in_flight: true } }, info);
+eq("meeting state: the issues and the alignment status (none in a message without them)", [withIssues.issues, withIssues.alignment.in_flight, st.issues, st.alignment], [
+  [{ id: "IS1", issue_type: "evidence_conflict", topic: "Friday's audience", status: "asked", claim: "all customers", question: "Beta users only?" }],
+  true,
+  [],
+  null,
+]);
 
 // ---- words
 eq("phase button: presentation", F.phaseButton("presentation"), { label: "Start discussion", title: "End the presentation: the facilitator hands over and listens to the discussion", disabled: false });
@@ -104,6 +166,26 @@ eq("id kinds: known, else by shape", [F.idKind("REQ-2", index), F.idKind("CL-7")
 eq("claim chip: agrees", F.claimChip({ type: "claim", label: "Friday's release stage", value: "beta", value_label: "beta", agrees: true }), { text: "Friday's release stage: beta", tone: "agree", title: "Matches the sources" });
 eq("claim chip: nothing established", F.claimChip({ type: "claim", label: "L", value: "x_y", agrees: null }).tone, "open");
 eq("conflict chip", F.claimChip({ type: "conflict", label: "Friday's audience", claimed: "all_customers", established: "beta_users" }), { text: "Friday's audience: all customers", tone: "conflict", title: "Heard all customers; the sources say beta users" });
+// model-based alignment: a claim is its text; an assumption a grey "assumes: …"; a conflict names its topic and kind
+eq(
+  "claim chip: the model's text, by whether it agrees",
+  [F.claimChip({ type: "claim", label: "", text: "The announcement goes to all customers", kind: "proposal", agrees: false }), F.claimChip({ type: "claim", label: "", text: "Production is Wednesday", kind: "assertion", agrees: true }).tone, F.claimChip({ type: "claim", label: "", text: "We could ship Monday", kind: "proposal", agrees: null }).tone],
+  [{ text: "The announcement goes to all customers", tone: "conflict", title: "Differs from the sources (proposal)" }, "agree", "open"],
+);
+eq("assumption chip", F.claimChip({ type: "assumption", speaker: "Bob", topic: "Friday's release", interpretation: "Friday is the production release" }), {
+  text: "assumes: Friday is the production release",
+  tone: "open",
+  title: "Bob seems to assume this about Friday's release: an attributed reading, not an established fact",
+});
+eq(
+  "a model-derived conflict chip names the topic and the kind",
+  [
+    F.claimChip({ type: "conflict", issue_id: "IS1", issue_type: "evidence_conflict", label: "Friday's audience", claimed_label: "all customers", established_label: "the beta group only" }),
+    F.claimChip({ type: "conflict", issue_id: "IS2", issue_type: "hidden_disagreement", label: "Friday's release", claimed_label: "Friday's release goes to everyone", established_label: "" }).text,
+    F.claimChip({ type: "conflict", issue_id: "IS3", issue_type: "ambiguous_decision", label: "Rollback owner", claim: "Deploy Monday" }).title,
+  ],
+  [{ text: "Friday's audience · evidence conflict", tone: "conflict", title: "Heard all customers; the sources say the beta group only" }, "Friday's release · hidden disagreement", "Heard Deploy Monday; a material detail is unresolved"],
+);
 eq("speakers: participants, then the room", F.speakerChoices(info.participants).map((c) => [c.name, c.label]), [["Alice", "Alice"], ["Bob", "Bob"], [null, "Room"]]);
 eq("the facilitator's own reply kinds", ["intervention", "decision", "summary", "handover", "answer", "narration"].map((k) => F.FACILITATOR_KINDS.has(k)), [true, true, true, true, false, false]);
 

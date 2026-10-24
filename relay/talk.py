@@ -449,9 +449,10 @@ def main(argv: list[str] | None = None) -> int:
     meeting = load_meeting(talk)
     if meeting is not None:
         documents = len({statement.doc_id for statement in meeting.statements})
-        slots = len(meeting.checks.slots) if meeting.checks else 0
+        alignment = (f"checks.yaml: {len(meeting.checks.slots)} slot(s) (legacy patterns)" if meeting.checks
+                     else "alignment: model-based (no checks.yaml)")
         print(f"meeting: {meeting.title}: host {meeting.host}, {len(meeting.participants)} participants, "
-              f"{len(meeting.statements)} statements in {documents} document(s), {slots} alignment slot(s)")
+              f"{len(meeting.statements)} statements in {documents} document(s); {alignment}")
         demo = load_demo(talk, meeting)
         if demo is not None:
             speakers = ", ".join(dict.fromkeys(step.speaker or "" for step in demo.clips))

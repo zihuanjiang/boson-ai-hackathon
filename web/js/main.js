@@ -26,6 +26,7 @@ import { ClipPlayer, ClipStream, DemoController, MIC_OFF, PUMP_MS, clipLabel, cl
 import {
   FACILITATOR_KINDS,
   ROOM_STATES,
+  normalizeAlignment,
   normalizeCheckpoint,
   normalizeEvent,
   normalizeLookup,
@@ -220,6 +221,7 @@ function onTalk(talk) {
   status.fake(talk.fake_audio);
   meeting.talk(talk);
   if (talk.meeting) {
+    meeting.alignmentStatus(talk.alignment);
     checklist.heading(talkTitle(talk) || "On the Same Page", `The facilitator presents · ${talk.meeting.host || talk.presenter} hosts`);
     checklist.label("server", "Connected to the facilitator");
     captions.labels("Facilitator", "Room");
@@ -1317,6 +1319,7 @@ function onHello(m) {
   }
   if (typeof m.input === "string" && m.input) S.input = m.input; // clips | mic | voice (the Zoom bot's participants)
   syncInput();
+  meeting.alignmentStatus(normalizeAlignment(m.alignment)); // who checks the discussion (mode, model, available)
   // The demo script, if /api/talk didn't have it. Only before joining: a page that joined with the mic stays so.
   const demoInfo = normalizeDemo(m.demo);
   if (S.talk && !S.armed && !S.arming) {
@@ -1404,6 +1407,7 @@ function onState(m) {
   if (m.slide !== undefined && m.slide !== null) S.slideRef = m.slide;
   if (typeof m.agenda_phase === "string" && m.agenda_phase) setAgendaPhase(m.agenda_phase);
   if (typeof m.status === "string" && m.status) S.status = m.status;
+  if ("alignment" in m) meeting.alignmentStatus(normalizeAlignment(m.alignment)); // when it changed (and in the hello's snapshot)
   const cp = normalizeCheckpoint(m.checkpoint);
   if (cp) {
     S.status = cp.status;

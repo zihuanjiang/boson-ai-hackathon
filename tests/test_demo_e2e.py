@@ -6,6 +6,10 @@ real time, each one when its demo.yaml cue holds. The microphone is never used.
 The fake Realtime can't transcribe, so it "hears" the clips' lines in the order they are committed (FakeOptions
 transcripts). The clips are fake: short speech-like tone bursts generated through relay.clips (the gaps are shortened
 for the inline fixture; the rollout-review run keeps its own cues).
+
+**Legacy alignment** (contract v5 §5): the demo scripts' cues (`after_reply: intervention`, `decision`) were written
+for the regex engine over checks.yaml, so these runs go through tests/test_e2e.py's `running_app`, which pins
+`alignment="legacy"`; the model-based discussion is in tests/test_semantic_flow.py.
 """
 
 from __future__ import annotations

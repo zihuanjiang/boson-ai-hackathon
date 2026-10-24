@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Relay: a live voice co-presenter on Boson AI Higgs Realtime + Higgs TTS 3 (Higgs Audio Hackathon 2026)"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=2.3.0",
     "fastapi>=0.115",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",

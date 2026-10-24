@@ -804,7 +804,9 @@ async def dry_run(talk_dir: Path, *, out_root: Path, out_dir: Path, log: Callabl
     # the fake Realtime can't transcribe: it "hears" the demo's lines in the order the turns are committed; replies
     # arrive fast (speed 50×) and a narration lasts narration_s (the cues' heard_ms need real seconds of narration)
     connector = FakeConnector(think_s=0.1, speed=50.0, narration_s=narration_s, reply_s=1.0, transcripts=lines)
-    settings = Settings(fake_realtime=True, input="voice", narration="live", turn_detection=None)
+    # legacy alignment (checks.yaml): the fake Realtime can't run a Claude analysis, and the demo's cues were written
+    # for it (as tests/test_demo_e2e.py pins it); the model-based path has its own flow tests
+    settings = Settings(fake_realtime=True, input="voice", narration="live", turn_detection=None, alignment="legacy")
     app = create_app(talk_dir, settings, out_root=out_root, connect=connector)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="on"))
     serving = asyncio.create_task(server.serve())
@@ -977,7 +979,8 @@ def start_server(args: argparse.Namespace, out_dir: Path) -> tuple[subprocess.Po
     (this checkout's, else the main checkout's: a worktree has none) in its environment, never printed."""
     parts = urlsplit(args.server)
     command = [sys.executable, "-m", "relay", "serve", args.talk, "--input", "voice",
-               "--host", parts.hostname or "127.0.0.1", "--port", str(parts.port or 8000)]
+               "--host", parts.hostname or "127.0.0.1", "--port", str(parts.port or 8000),
+               "--alignment", args.alignment]
     if args.fake_realtime:
         command.append("--fake-realtime")
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
@@ -1197,6 +1200,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server", default="http://127.0.0.1:8000", help="the relay server (started unless --no-serve)")
     parser.add_argument("--no-serve", action="store_true", help="don't start relay serve: it is running already")
     parser.add_argument("--fake-realtime", action="store_true", help="start the server with the fake Realtime (rehearsal)")
+    # legacy until the model-based check is finished in the controller (merge 2026-10-24: the Zoom path keeps the
+    # verified checks.yaml check); claude needs ANTHROPIC_API_KEY
+    parser.add_argument("--alignment", choices=("legacy", "claude", "off"), default="legacy",
+                        help="who checks the discussion: legacy (checks.yaml, the verified default), claude, off")
     parser.add_argument("--name", default=BOT_NAME)
     parser.add_argument("--web-host", default="app.zoom.us", help="host of the Zoom web client")
     parser.add_argument("--join-wait", type=float, default=180, help="how long to wait for the join to finish (s)")

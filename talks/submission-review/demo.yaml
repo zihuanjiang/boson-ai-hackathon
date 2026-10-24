@@ -6,10 +6,11 @@
 #   clips:    uv run python -m relay.clips talks/submission-review   (TTS 3 with the voices below; a recording at
 #             talks/submission-review/clips/<step id>.wav, mono 16-bit 24 kHz, replaces a generated clip)
 #   validate: uv run python -m relay.talk talks/submission-review
-# The alignment check (checks.yaml) is tested on exactly these words (.scratch/same-page/intro/content/
-# run_intro_lines.py): Alice's line is a question (no conflict), Bob's line gives one conflict (in person vs the
-# documents' online) with an action and no intervention, Carol's "Great, let's finalize that." opens the gate, and her
-# correction resolves it with owner Bob. Change a `say` only together with that check.
+# The alignment analysis (relay/semantic.py, Claude) reads these lines in context: Alice's line is a question (no
+# issue), Bob's line conflicts with the documents' online-only scope but nobody has confirmed it (silent), Carol's
+# "Great, let's finalize that." is the confirmation that lets the facilitator ask, and her correction resolves it with
+# owner Bob. The legacy regex check (checks.yaml, `--alignment legacy`) is tested on exactly these words
+# (.scratch/same-page/intro/content/run_intro_lines.py); change a `say` only together with that check.
 # The cues are events, not a timeline; the gaps are the pauses of a real call. Each step waits for the previous one.
 # A participant's line ends where the clip ends (the page flags the silence it streams after each clip), so a pause
 # inside a recording never splits a line and two clips in a row never merge into one, whatever the gap.

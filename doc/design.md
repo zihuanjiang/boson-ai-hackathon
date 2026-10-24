@@ -599,6 +599,8 @@ uv run python scripts/live_check.py                             # live run witho
 uv run pytest                                                   # tests (incl. web checks + backend e2e)
 bash tests/web/run.sh                                           # web checks only (macOS jsc)
 uv run --with playwright python scripts/e2e_chrome.py [--headed]  # Chrome e2e, outside the sandbox
+uv run python -m relay serve talks/rollout-review --alignment legacy|off  # the regex check (needs checks.yaml) / none
+uv run python scripts/alignment_eval.py --models claude-opus-5-5,claude-sonnet-5-5,claude-haiku-5-5  # live eval (§12)
 ```
 
 Every live check but `tags` (TTS only) opens new Realtime sessions, and each new session validates its preset voice
@@ -612,3 +614,82 @@ pass. The `<|prosody:pause|>` gap is measured on the words the render keeps: PAS
 audio heard), connect → `session.created`, and reconnects (old socket closed → new `session.created`). End of speech
 → first reply audio heard is timed on a rehearsal recording (the speaker's last word → Relay's first word); tap →
 silence is the deck's estimate in the browser console ("space → silence ≈ N ms").
+
+## 12. Semantic alignment (relay/semantic.py; D76–D82)
+
+The discussion is checked by a model, not by patterns (`doc/alignment_replacement_prompt.md`). Higgs Realtime keeps
+transcribing and speaking; the **Claude API** (Anthropic Python SDK, async client, `ANTHROPIC_API_KEY`, separate
+billing from Boson) interprets. Modes (`RELAY_ALIGNMENT` / `--alignment`): `claude` (default), `legacy` (the regex
+engine over `checks.yaml`, explicit only, labelled "legacy patterns" everywhere), `off`. In `claude` mode without a
+key the status is `unavailable` and nothing else happens: no fallback to rules.
+
+**Pipeline, per discussion utterance.** The controller adds the line to `MeetingState`, sends the `transcript`
+message, then builds an immutable `Snapshot` (`semantic.build_snapshot`): every source passage with its stable id
+(`sources/*.md`; a file without `- [ID]` lines is a fact sheet whose lines get `FACTS-1 …`), the discussion so far,
+the clarifications (CL-n: the presentation's answers travel into the discussion this way), confirmed decisions,
+action items, open questions, the open `IssueRecord`s, assumptions, candidate decisions and the ids of the new
+utterances. The snapshot is bounded (`MAX_SNAPSHOT_CHARS`, 24 000): the oldest utterances nobody refers to go first,
+then the documents shrink to the passages BM25 ranks highest for the last six utterances (`passages_truncated`
+tells the model others exist). `AnalysisRunner` runs one request at a time **outside the controller lock**; a
+request while one is in flight replaces the waiting snapshot (the newest snapshot holds every intervening
+utterance). The request: `messages.create` with the guide's instruction and the documents as two system blocks (the
+documents block carries `cache_control`, so a meeting's repeated requests read it from the cache), the rest as the
+user message, `output_config.format` = the strict JSON schema of `AnalysisResult` (refs inlined, every object
+closed, every field required) and `output_config.effort` (`RELAY_ALIGNMENT_EFFORT`, default `low`), timeout
+`RELAY_ALIGNMENT_TIMEOUT_S` (20 s), one SDK retry, `RELAY_ALIGNMENT_MAX_TOKENS` (4000). Refusals, truncation
+(`max_tokens`), a missing text block, invalid JSON and schema violations come back as an `error` outcome; so do
+timeouts, 429s and connection errors. The result is delivered to `Controller.on_analysis`, which takes the lock and
+discards it when the meeting generation changed (reset).
+
+**The result** (`AnalysisResult`, `schema_version` 1): `candidate_claims` (utterance, text, kind, agrees with the
+sources?), `participant_assumptions` (attributed interpretations), `issues` (`issue_type` ∈ `evidence_conflict`,
+`hidden_disagreement`, `ambiguous_decision`; topic, claim, claim/commitment utterance ids, participant views,
+missing details, evidence refs of kinds source/clarification/decision/utterance with verbatim quotes, material
+consequence, `commitment` ∈ none/proposed/nearing/confirming/committed, `recommendation` ∈ silent/suggest/clarify,
+confidence, explanation, the question to ask, `existing_issue_id` for a known issue), `updates` (resolved,
+partially resolved, withdrawn, still open, with the settling utterances) and `decision_proposals` (proposed,
+nearing, confirmed, rejected, superseded; owner and the utterances that assign and agree; sources; the decision it
+supersedes; the issues it resolves).
+
+**Validation (`reconcile`).** Every id must exist in its namespace (passages, `U<n>`, `CL-<n>`, `D<n>`, `IS<n>`);
+every quote must be found in the cited text after normalisation (lower case, straight quotes, single spaces, edge
+punctuation stripped); a view's speaker is the utterance's; owners must be participants (else unknown); an issue
+without a valid claim or commitment utterance is dropped; a confirmed proposal without a valid agreement utterance is
+dropped. Each category's evidence requirement: an evidence conflict cites a passage, clarification or decision; a
+hidden disagreement cites two participants' own words; an ambiguous decision names a missing detail. Everything
+dropped is logged (`analysis_result.dropped`).
+
+**The gate (`decide_policy`).** `clarify` only when the model recommends it, confidence is not low, commitment is
+`confirming` or `committed`, the evidence requirement holds and there is a question; `suggest` when the model
+recommends a suggestion, or recommends `clarify` with one of those missing, or the commitment is `nearing`; `silent`
+otherwise, and always when the evidence requirement fails. The controller turns the outcome into the existing
+event flow: `claim`/`assumption` chips, a `conflict` event per issue (with `issue_type`, `topic`, the quotes, the
+evidence and the policy), an `intervene` event and the intervention flow for `clarify`, a `suggestion` card for
+`suggest`. Before the facilitator speaks it must still be the discussion, nobody may be talking, and no newer
+analysis may be in flight (a correction could be on its way; `ALIGNMENT_HOLD_S` bounds the wait). The issue becomes
+`asked` only when the question is heard; one cut before any audio goes back to pending. `updates` give `resolved` /
+`withdrawn` events (a withdrawn issue leaves the speech queue); a confirmed proposal that answers an intervention
+runs the spoken decision flow (the facilitator's own `save_decision` is accepted only when it matches the proposal,
+otherwise the proposal is saved `by="analysis"`); a confirmed proposal without an issue is saved silently into the
+notes. Issues asked and never answered within `ALIGNMENT_ANSWER_WINDOW` utterances become `open`; at wrap-up the
+controller waits for an analysis in flight (bounded), turns pending issues into silent suggestions and every open
+issue into an open question. `state.alignment` (mode, model, available, in flight, waiting, last latency, last
+error, analyses, last policy decision) travels in `state` and `meeting` messages; `hello` and `/api/talk` carry
+`alignment: {mode, model, available}`.
+
+**What the demo shows.** The Transcript tab's cards carry the issue kind: an evidence conflict shows the heard line
+against the cited passage; a hidden disagreement shows each participant's own words and view; an unresolved detail
+shows the proposal and what is missing — never a fabricated source. The model's question is shown; the card's status
+follows pending → asked → resolved / partly settled / withdrawn / open.
+
+**Evaluation.** `scripts/alignment_eval.py` (opt-in, needs the key) runs labelled scenarios
+(`scripts/alignment_scenarios/*.yaml`, two corpora: `talks/rollout-review` and `talks/budget-review`, the latter a
+fact sheet without ids and without `checks.yaml`) through the real analyzer and the same bookkeeping, and reports
+per category: missed interventions, unnecessary ones, attribution, evidence relevance, decision/owner capture,
+open-question retention, latency and usage per model. Offline tests use `FakeAnalyzer` scripts; they prove
+orchestration and validation, not semantic accuracy. Measured results and the model tradeoff: `doc/gotchas.md`.
+
+**Limits.** One analysis per utterance adds a model round trip before the facilitator can speak (the measured
+latency is in `doc/gotchas.md`); the snapshot is bounded, so very long discussions lose their oldest unreferenced
+lines; the model's judgement is not calibrated — the gate and the validation are the safety net, and silence is the
+default.

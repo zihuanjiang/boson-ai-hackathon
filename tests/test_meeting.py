@@ -19,7 +19,7 @@ import yaml
 
 from relay.config import ROOT
 from relay.meeting import (NOTES_MAX_CHARS, ActionItem, Checks, MeetingPackage, MeetingState, Participant, Phase,
-                           Slot, Statement, load_meeting, validate_meeting, value_label)
+                           Slot, Statement, fact_prefix, load_meeting, validate_meeting, value_label)
 from relay.talk import TalkError, check_talk, load_talk, main
 
 TEST_TALK = ROOT / "talks" / "test"
@@ -151,7 +151,7 @@ def test_package_model(tmp_path):
     assert [s.id for s in package.statements] == ["DEC-1", "DEC-2", "REQ-1", "REQ-2", "REQ-3"]
     assert package.statements[2] == Statement("REQ-1", "requirements", "Rollout plan v3",
                                               "On Friday 24 October the beta release goes to the beta group, about "
-                                              "forty customers.")
+                                              "forty customers.", "sources/requirements.md:7")
     assert {s.doc_title for s in package.statements} == {"Rollout plan v3", "Decisions log"}
     checks = package.checks
     assert isinstance(checks, Checks) and checks.window_utterances == 3
@@ -163,6 +163,28 @@ def test_package_model(tmp_path):
     assert checks.actions[0].pattern == r"\bi'll\b" and checks.actions[0].search("I'LL do it")
     assert len(checks.confirmations) == 5 and len(checks.ownership) == 4
     assert checks.slot("nope") is None
+
+
+def test_a_fact_sheet_without_ids_gets_stable_auto_ids(tmp_path):
+    """Contract v5 §2: a sources file with no `- [ID]` lines is a plain fact sheet; every line is a statement with an
+    auto id in file order, kept verbatim, located for inspection. Nobody writes ids or extraction rules."""
+    facts = ("# Q1 facts\n\nThe approved Q1 budget is $30,000.\n- The campaign starts on 1 March.\n"
+             "2. Eli can pause the campaign.\n\n## Retention\n---\n* Data is kept 90 days.\n")
+    package = meeting_package(tmp_path, sources={"facts.md": facts, "requirements.md": REQUIREMENTS}, checks=None)
+    sheet = [s for s in package.statements if s.doc_id == "facts"]
+    assert [s.id for s in sheet] == ["FACTS-1", "FACTS-2", "FACTS-3", "FACTS-4"]
+    assert [s.text for s in sheet] == ["The approved Q1 budget is $30,000.", "The campaign starts on 1 March.",
+                                       "Eli can pause the campaign.", "Data is kept 90 days."]
+    assert [s.location for s in sheet] == ["sources/facts.md:3", "sources/facts.md:4", "sources/facts.md:5",
+                                           "sources/facts.md:9"]
+    assert package.statement("facts-2").doc_title == "Q1 facts" and package.checks is None
+    assert [s.id for s in package.statements if s.doc_id == "requirements"] == ["REQ-1", "REQ-2", "REQ-3"]
+    assert issues_of(make_meeting(tmp_path, name="sheet-only", sources={"facts.md": facts}, checks=None)) == []
+    clash = issues_of(make_meeting(tmp_path, name="clash", checks=None,
+                                   sources={"requirements.md": REQUIREMENTS, "req.md": "# Req\n\nA fact.\n"}))
+    assert any(issue.startswith("error") and "REQ-1" in issue for issue in clash)
+    assert (fact_prefix("facts"), fact_prefix("q1-budget-notes"), fact_prefix("x"), fact_prefix("cl")) == (
+        "FACTS", "QBUDG", "FACT", "FACT")
 
 
 def test_package_lookups(tmp_path):
@@ -383,10 +405,11 @@ WARNINGS = [
     ("no sources", {"sources": {}}, ["warning: sources/: missing: lookup_evidence has no documents to search"]),
     ("sources without .md files", {"sources": {"notes.txt": "x"}},
      ["warning: sources/: no .md files: lookup_evidence has no documents to search"]),
-    ("a document without statements", {"sources": {"requirements.md": REQUIREMENTS, "empty.md": "# Empty\n\nProse.\n"}},
-     ["warning: sources/empty.md: no statements (lines like `- [REQ-1] text`)"]),
-    ("no checks", {"checks": None}, ["warning: checks.yaml: missing: the alignment check is off (the facilitator "
-                                     "never speaks up in the discussion)"]),
+    ("a document without statements", {"sources": {"requirements.md": REQUIREMENTS, "empty.md": "# Empty\n\n## Nothing\n"}},
+     ["warning: sources/empty.md: no statements (lines like `- [REQ-1] text`, or plain fact lines)"]),
+    ("a long fact-sheet line", {"sources": {"facts.md": "# Facts\n\n" + "word " * 70 + "\n"}},
+     ["warning: sources/facts.md: line 3: [FACTS-1] is 349 characters (over 300): a shorter line is easier to cite "
+      "and to show"]),
     ("no confirmations", checks_with("confirmations: [", "x_confirmations: ["),
      ["warning: checks.yaml: unknown keys ignored: x_confirmations",
       "warning: checks.yaml: confirmations: none: the facilitator never speaks up (only silent suggestions)"]),
@@ -514,7 +537,9 @@ def test_cli_prints_the_meeting_summary(tmp_path, capsys):
     out = capsys.readouterr().out.splitlines()
     assert out[0].startswith("ok: test: 3 slides (2 relay), 4 chunks")
     assert out[-1] == ("meeting: Release 4.3 rollout review: host Alice, 3 participants, 5 statements in 2 "
-                       "document(s), 2 alignment slot(s)")
+                       "document(s); checks.yaml: 2 slot(s) (legacy patterns)")
+    assert main([str(make_meeting(tmp_path, name="semantic", checks=None))]) == 0
+    assert capsys.readouterr().out.splitlines()[-1].endswith("document(s); alignment: model-based (no checks.yaml)")
 
 
 def test_cli_meeting_errors_exit_1(tmp_path, capsys):
@@ -590,7 +615,11 @@ def test_add_clarification(state):
     assert state.add_clarification("q", "a", "REQ-2").source_ids == ["REQ-2"]
     assert state.add_clarification("q", "a", None).id == "CL-3"
     assert c.to_json() == {"id": "CL-1", "question": "Is Friday beta?", "answer": "Beta on Friday.",
-                           "source_ids": ["REQ-1", "DEC-1"], "at_s": 10.0, "by": "auto"}
+                           "source_ids": ["REQ-1", "DEC-1"], "at_s": 10.0, "by": "auto",
+                           "confirmation_utterance_ids": [], "status": "answered"}
+    confirmed = state.add_clarification("q", "a", [], "model", confirmation_utterance_ids=["U2", " U2 ", ""],
+                                        status="confirmed")
+    assert (confirmed.confirmation_utterance_ids, confirmed.status) == (["U2"], "confirmed")
 
 
 def test_add_decision_with_and_without_follow_up(state):
@@ -656,7 +685,8 @@ def test_notes(state):
     state.add_open_question("Who briefs support?")
     notes = state.notes()
     assert set(notes) == {"title", "phase", "decisions", "clarifications", "action_items", "open_questions",
-                          "generated_at_s"}
+                          "issues", "generated_at_s"}
+    assert notes["issues"] == []
     assert notes["title"] == "Release 4.3 rollout review" and notes["generated_at_s"] == 13.0
     assert notes["decisions"][0]["owner"] == "Bob" and notes["action_items"][0]["text"] == "Notify beta users only."
     json.dumps(notes)
@@ -723,7 +753,9 @@ def test_to_json(state):
     state.checkpoint = {"slide_id": "how", "talking_point_id": "how-2", "status": "presenting"}
     body = state.to_json()
     assert set(body) == {"title", "host", "phase", "started", "agenda", "participants", "checkpoint",
-                         "clarifications", "decisions", "action_items", "open_questions", "notes"}
+                         "clarifications", "decisions", "action_items", "open_questions", "issues", "assumptions",
+                         "candidate_decisions", "alignment", "notes"}
+    assert (body["issues"], body["assumptions"], body["candidate_decisions"], body["alignment"]) == ([], [], [], {})
     assert body["agenda"] == [
         {"id": "presentation", "title": "Rollout plan", "prompt": "", "current": True},
         {"id": "discussion", "title": "Launch announcement", "prompt": "What goes out on Friday, and who sends it?",
@@ -736,6 +768,52 @@ def test_to_json(state):
     body = state.to_json()
     assert body["notes"]["phase"] == "wrapup" and [a["current"] for a in body["agenda"]] == [False, False, True]
     json.dumps(body)
+
+
+def test_issue_records_and_superseding_decisions(state):
+    """Contract v5 §2: IssueRecords (app-owned ids and lifecycle for the model-based alignment), the new decision
+    fields, and what the deck's `meeting` message carries."""
+    u = state.add_utterance("Friday is production.", "Bob", "clip")
+    issue = state.add_issue(issue_type="evidence_conflict", topic=" Friday's  stage ", claim=" production ",
+                            claim_utterance_ids=[u.id, u.id], participant_views=[{"speaker": "Bob", "utterance_id": u.id,
+                                                                                  "quote": "production", "view": "p"}],
+                            missing_details=["who", " ", "when"], evidence=[{"kind": "source", "id": "REQ-1",
+                                                                             "quote": "beta"}],
+                            material_consequence=None, commitment="confirming", confidence="high",
+                            recommendation="clarify", question=" Beta or production? ", revision=1)
+    assert issue.id == "IS1" and issue.topic == "Friday's stage" and issue.claim == "production"
+    assert issue.claim_utterance_ids == [u.id] and issue.missing_details == ["who", "when"]
+    assert issue.status == "pending" and issue.is_open and issue.policy == "silent" and issue.revision == 1
+    assert issue.question_text == "Beta or production?" and issue.created_at_s == issue.updated_at_s
+    assert state.open_issues() == [issue] and state.issue("IS1") is issue and state.issue("IS9") is None
+    updated = state.update_issue("IS1", status="resolved", note="settled", nonsense=1)
+    assert updated.status == "resolved" and updated.note == "settled" and not hasattr(updated, "nonsense")
+    assert updated.updated_at_s > updated.created_at_s and state.update_issue("IS9", note="x") is None
+    assert state.open_issues() == [] and state.notes()["issues"] == []
+    silent = state.add_issue(issue_type="ambiguous_decision", topic="Rollback", claim=None, claim_utterance_ids=[],
+                             participant_views=[], missing_details=["owner"], evidence=[], material_consequence=None,
+                             commitment="nearing", confidence="medium", recommendation="suggest", question=None,
+                             revision=2, status="suggested", policy="suggest")
+    assert silent.question_text == "Rollback?" and state.notes()["issues"][0]["id"] == "IS2"
+    assert state.context_lines()[-1] == "Open (IS2): Rollback?"
+    d1 = state.add_decision("Production on Wednesday", "Carol", "", ["REQ-2"], "analysis",
+                            agreement_utterance_ids=[u.id, "U9"], owner_utterance_ids=[u.id])
+    assert d1.status == "confirmed" and d1.agreement_utterance_ids == [u.id, "U9"]
+    assert d1.owner_utterance_ids == [u.id] and not d1.plan_changed and d1.superseded_by is None
+    d2 = state.add_decision("Production moved to Friday", "Carol", "", [], "analysis", supersedes="D1",
+                            plan_changed=True)
+    assert d2.plan_changed and d2.supersedes == "D1" and d1.status == "superseded" and d1.superseded_by == "D2"
+    body = state.to_json()
+    assert [i["id"] for i in body["issues"]] == ["IS1", "IS2"] and body["decisions"][0]["superseded_by"] == "D2"
+    state.alignment = {"mode": "claude", "available": True}
+    state.assumptions.append({"speaker": "Bob", "utterance_id": u.id, "topic": "t", "interpretation": "i"})
+    state.candidate_decisions.append({"decision": "maybe", "status": "proposed"})
+    body = state.to_json()
+    assert body["alignment"]["mode"] == "claude" and body["assumptions"][0]["speaker"] == "Bob"
+    assert body["candidate_decisions"] == [{"decision": "maybe", "status": "proposed"}]
+    json.dumps(body)
+    state.reset()
+    assert (state.issues, state.assumptions, state.candidate_decisions, state.alignment) == ([], [], [], {})
 
 
 def test_state_without_a_package():
