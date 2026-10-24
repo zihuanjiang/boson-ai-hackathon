@@ -140,6 +140,9 @@ CUT_CALL_OUTPUT = tools.error_output("not run: the reply was cut off")  # calls 
 NARRATION_CALL_OUTPUT = tools.error_output("not now: you are presenting; the deck moves on by itself")
 NOT_NOW_OUTPUT = tools.error_output("not now: just speak")  # a tool call in an intervention, hand-over or summary
 LIMIT_OUTPUT = tools.error_output("answer now with what you have")  # data calls after MAX_FOLLOWUPS follow-ups
+# claude mode, a save_decision outside the decision flow: nothing validated says the group agreed (contract v5 §3)
+NO_PROPOSAL_OUTPUT = ("not saved: decisions go into the notes when the group confirms them (the alignment check "
+                      "records a confirmed decision itself); say so if asked")
 NOTHING_TO_CANCEL = frozenset({"response_not_active", "response_cancel_not_active"})  # Higgs docs; OpenAI
 SEND_RACE_ERRORS = frozenset({"voice_output_task_ongoing", "input_audio_buffer_commit_empty"})
 
@@ -2557,18 +2560,24 @@ class Controller:
             extra = {"dropped_source_ids": dropped} if dropped else {}
             return True, tools.json_output(ok=True, id=clarification.id, **extra)
         args = dict(call.args)  # save_decision
+        # claude mode: in a decision turn the model's decision must match the validated proposal (contract v5 §3:
+        # content-word overlap with the recent transcript is no proof of agreement); legacy mode keeps today's check
+        proposal = turn.proposal if self.alignment_mode == ALIGNMENT_CLAUDE else None
+        if self.alignment_mode == ALIGNMENT_CLAUDE and self._analysis is not None and proposal is None:
+            # outside the decision flow there is no validated agreement: the analysis records what the group confirms
+            self._note("decision_rejected", {"args": args, "why": "no confirmed proposal"})
+            return False, tools.error_output(NO_PROPOSAL_OUTPUT)
+        if proposal is not None and turn.decision_saved:  # one decision per decision turn
+            return True, tools.ok_output(note="already saved")
         if turn.draft:  # what the model left out comes from the alignment check's draft (it never overrides)
             for key in ("owner", "follow_up", "source_ids"):
                 if not args.get(key) and turn.draft.get(key):
                     args[key] = list(turn.draft[key]) if key == "source_ids" else str(turn.draft[key])
-        for existing in self.mstate.decisions:
+        for existing in self._live_decisions():
             if (tools.same_decision(existing.decision, args["decision"])
                     and self._meeting_time() - float(existing.at_s) <= DUPLICATE_DECISION_S):
                 turn.decision_saved = True
                 return True, tools.ok_output(note="already saved")
-        # claude mode: in a decision turn the model's decision must match the validated proposal (contract v5 §3:
-        # content-word overlap with the recent transcript is no proof of agreement); legacy mode keeps today's check
-        proposal = turn.proposal if self.alignment_mode == ALIGNMENT_CLAUDE else None
         check = tools.check_decision(args, participants=[person.name for person in self.meeting.participants],
                                      draft=turn.draft, recent=self._recent_texts(turn), known_ids=known,
                                      proposal=proposal, match=PROPOSAL_MATCH)
@@ -2578,6 +2587,13 @@ class Controller:
         saved = check.args
         provenance = {}
         if proposal is not None:
+            # what is saved is the validated proposal (its wording, owner, follow-up and sources): the model's call
+            # only commits it, so a call that reads close but means otherwise, or names another owner, changes nothing
+            if saved["decision"] != proposal.get("decision") or saved["owner"] != (proposal.get("owner") or ""):
+                self._note("decision_as_proposed", {"args": args, "proposal": proposal.get("decision")})
+            saved = {"decision": str(proposal.get("decision") or saved["decision"]),
+                     "owner": str(proposal.get("owner") or ""), "follow_up": str(proposal.get("follow_up") or ""),
+                     "source_ids": [sid for sid in proposal.get("source_ids") or [] if sid in known]}
             provenance = {"agreement_utterance_ids": proposal.get("agreement_utterance_ids"),
                           "owner_utterance_ids": proposal.get("owner_utterance_ids"),
                           "supersedes": proposal.get("supersedes"), "plan_changed": bool(proposal.get("plan_changed"))}
@@ -2587,7 +2603,14 @@ class Controller:
         self._forget_candidates(decision.decision)
         await self._send_meeting()
         extra = {"dropped_source_ids": list(check.dropped)} if check.dropped else {}
+        if proposal is not None:  # (what was saved, in the group's confirmed wording: the confirmation says this)
+            extra.update(decision=decision.decision, owner=decision.owner or None)
         return True, tools.json_output(ok=True, id=decision.id, **extra)
+
+    def _live_decisions(self) -> list[Any]:
+        """The decisions that stand (not superseded): duplicates are checked against these only, so the group can go
+        back to an earlier decision it had replaced."""
+        return [d for d in self.mstate.decisions if getattr(d, "superseded_by", None) is None]
 
     async def _save_draft(self, draft: dict) -> Any:
         """The alignment check's decision draft goes into the notes as it is: `by: auto` for the legacy engine's
@@ -2598,7 +2621,7 @@ class Controller:
                 "source_ids": [sid for sid in draft.get("source_ids") or [] if isinstance(sid, str)]}
         if not args["decision"]:
             return None
-        if any(tools.same_decision(existing.decision, args["decision"]) for existing in self.mstate.decisions):
+        if any(tools.same_decision(existing.decision, args["decision"]) for existing in self._live_decisions()):
             return None
         by = "analysis" if draft.get("by") == "analysis" else "auto"
         decision = self.mstate.add_decision(args["decision"], args["owner"], args["follow_up"], args["source_ids"],
@@ -2870,13 +2893,7 @@ class Controller:
                 return
             await self._finish_wrapup()
             return
-        still_open = set(self._unresolved_questions())
-        closed = [question for question in self.mstate.open_questions
-                  if not question.resolved and question.text not in still_open]
-        for question in closed:
-            self.mstate.resolve_open_question(question.id)
-        if closed:
-            await self._send_meeting()
+        await self._close_settled_questions()
 
     def _pending_conflicts(self, events: list[dict]) -> list[dict]:
         """Legacy: the intervene events with a conflict that has not been resolved meanwhile (the facilitator was
@@ -2886,30 +2903,34 @@ class Controller:
                 if set(event.get("conflict_ids") or [event.get("conflict_id")]) - resolved]
 
     def _live_interventions(self, events: list[dict]) -> list[dict]:
-        """Claude mode: the intervene events whose issue may still be voiced (pending or suggested: not resolved,
-        withdrawn or asked meanwhile)."""
+        """Claude mode: the intervene events whose issue may still be voiced: pending or suggested (not resolved,
+        withdrawn or asked meanwhile) and still `clarify` at its latest analysis (a newer verdict of suggest or silent
+        retires the question)."""
         kept = []
         for event in events:
             issue = self.mstate.issue(str(event.get("issue_id") or ""))
-            if issue is not None and issue.status in ISSUE_QUEUED:
+            if issue is not None and issue.status in ISSUE_QUEUED and issue.policy == "clarify":
                 kept.append(event)
             else:
                 self._note("intervention_skipped", {"issue_id": event.get("issue_id"),
-                                                    "status": issue.status if issue else None})
+                                                    "status": issue.status if issue else None,
+                                                    "policy": issue.policy if issue else None})
         return kept
 
     def _hold_intervention(self, events: list[dict]) -> bool:
-        """Whether the intervention must wait: an analysis of newer utterances is in flight or waiting (a correction
-        may be on its way), and it has waited less than ALIGNMENT_HOLD_S. The events go back to the front of the
-        queue and a timer runs the flows again when the hold runs out."""
+        """Whether the intervention must wait: a line is still being transcribed, or an analysis of newer utterances
+        is in flight or waiting (a correction may be on its way), and it has waited less than ALIGNMENT_HOLD_S. The
+        events go back to the front of the queue and a timer runs the flows again when the hold runs out."""
         runner = self._analysis
         issue_id = str(events[0].get("issue_id") or "")
-        if runner is None or not self._analysis_busy():
+        line_pending = self._room_line_in_flight()
+        busy = self._analysis_busy()
+        if runner is None or not (busy or line_pending):
             self._holds.pop(issue_id, None)
             return False
-        newer = runner.current_revision
+        newer = runner.current_revision if busy else None
         revision = max(int(event.get("revision") or 0) for event in events)
-        if newer is None or newer <= revision:
+        if not line_pending and (newer is None or newer <= revision):
             self._holds.pop(issue_id, None)
             return False
         now = self.clock.now()
@@ -2922,7 +2943,7 @@ class Controller:
         self._flows.insert(0, (KIND_INTERVENTION, events))
         self._start_timer("alignment_hold", remaining, self._run_flows)
         self._note("intervention_held", {"issue_id": issue_id, "revision": revision, "newer": newer,
-                                         "remaining_s": round(remaining, 2)})
+                                         "line_pending": line_pending, "remaining_s": round(remaining, 2)})
         return True
 
     async def _run_flows(self) -> None:
@@ -3117,7 +3138,7 @@ class Controller:
         stays open (an open question in the notes, see _unresolved_questions)."""
         self._holds.clear()
         for issue in self.mstate.open_issues():
-            if issue.status == "pending":
+            if issue.status == "pending" and issue.evidence_ok:  # (an issue that failed validation is never raised)
                 fields = self._issue_fields(issue, None, None)
                 await self._al_event("suggestion", **fields, conflict_id=issue.conflict_event_id, policy=issue.policy,
                                      revision=issue.revision, at_wrapup=True)
@@ -3130,8 +3151,20 @@ class Controller:
         if self.engine is not None:
             return [str(item.get("text")) for item in self.engine.unresolved() if item.get("text")]
         if self.alignment_mode == ALIGNMENT_CLAUDE and self.mstate is not None:
-            return [issue.question_text for issue in self.mstate.open_issues()]
+            # only issues whose evidence held: one that failed validation never reaches the notes
+            return [issue.question_text for issue in self.mstate.open_issues() if issue.evidence_ok]
         return []
+
+    async def _close_settled_questions(self) -> None:
+        """After the wrap-up: the open questions nothing leaves unresolved any more (a late line or a late analysis
+        settled them) are closed, and the notes go to the deck again."""
+        still_open = set(self._unresolved_questions())
+        closed = [question for question in self.mstate.open_questions
+                  if not question.resolved and question.text not in still_open]
+        for question in closed:
+            self.mstate.resolve_open_question(question.id)
+        if closed:
+            await self._send_meeting()
 
     # --- model-based alignment (claude mode, contract v5 §3) ---------------------------------------------------
 
@@ -3217,9 +3250,11 @@ class Controller:
     async def _after_analysis(self) -> None:
         if self.agenda_phase == DISCUSSION:
             await self._run_flows()
-        elif (self.agenda_phase == WRAPUP and self._wrapup_pending and not self._room_line_in_flight()
-              and not self._analysis_busy()):
-            await self._finish_wrapup()
+        elif self.agenda_phase == WRAPUP and self._wrapup_pending:
+            if not self._room_line_in_flight() and not self._analysis_busy():
+                await self._finish_wrapup()
+        elif self.agenda_phase == WRAPUP:  # landed after the wrap-up: what it settled leaves the open questions
+            await self._close_settled_questions()
 
     async def _apply_claims(self, rec: semantic.Reconciled, snapshot: Snapshot) -> None:
         """Claim chips (once per utterance and text) and participant assumptions (kept in the state, once)."""
@@ -3291,7 +3326,7 @@ class Controller:
                           evidence=[{"kind": e["kind"], "id": e["id"], "quote": e["quote"]} for e in valid.evidence],
                           material_consequence=model.material_consequence, commitment=model.commitment,
                           confidence=model.confidence, recommendation=model.recommendation, question=model.question,
-                          revision=snapshot.revision)
+                          revision=snapshot.revision, evidence_ok=valid.evidence_ok)
             record = self.mstate.issue(valid.existing_id) if valid.existing_id else None
             new = record is None
             if new:
@@ -3300,6 +3335,8 @@ class Controller:
                 self.mstate.update_issue(record.id, **fields)
             policy, reason = semantic.decide_policy(valid, snapshot)
             self.mstate.update_issue(record.id, policy=policy)
+            if policy != "clarify":  # a newer verdict below clarify retires a question still waiting to be heard
+                await self._retire_intervention(record.id, f"policy {policy}")
             self._last_policy = f"{record.id} {policy}: {reason}"
             self._note("issue", {"id": record.id, "status": record.status, "issue_type": record.issue_type,
                                  "topic": record.topic, "new": new, "revision": snapshot.revision})
@@ -3339,6 +3376,23 @@ class Controller:
         if len(self._flows) != before:
             self._note("intervention_withdrawn", {"issue_id": issue_id, "reason": reason})
 
+    async def _retire_intervention(self, issue_id: str, reason: str) -> None:
+        """The issue changed (resolved, withdrawn, a newer verdict below clarify): its queued question is dropped, and
+        one the facilitator has started but nobody has heard yet is cut quietly (back to the room). A question already
+        audible plays out: the room answers it."""
+        self._unqueue_intervention(issue_id, reason)
+        turn = self.turn
+        if (turn is None or turn.kind != KIND_INTERVENTION or turn.first_audio_at is not None
+                or not any(str(event.get("issue_id") or "") == issue_id for event in turn.events)):
+            return
+        self._note("intervention_cancelled", {"issue_id": issue_id, "reason": reason, "reply": turn.reply})
+        await self._cut_reply(None)
+        await self._end_turn()
+        if self.agenda_phase == DISCUSSION:
+            await self._resume_room(run_flows=False)  # (the flows run once the whole result is applied)
+        else:
+            self._set_state(IDLE, self._phase_banner())
+
     async def _apply_updates(self, rec: semantic.Reconciled, snapshot: Snapshot) -> None:
         """What the newest utterances did to known issues: resolved (whole or part), withdrawn, or still open."""
         by_issue: dict[str, ValidProposal] = {}
@@ -3361,7 +3415,7 @@ class Controller:
             if update.status == "withdrawn":
                 self.mstate.update_issue(record.id, status="withdrawn", note=update.note,
                                          resolution_utterance_ids=resolution, revision=snapshot.revision)
-                self._unqueue_intervention(record.id, "withdrawn")
+                await self._retire_intervention(record.id, "withdrawn")
                 await self._al_event("withdrawn", **base)
                 self._note("issue", {"id": record.id, "status": "withdrawn", "utterance_ids": update.utterance_ids})
                 continue
@@ -3371,7 +3425,7 @@ class Controller:
             status = "partially_resolved" if partial else "resolved"
             self.mstate.update_issue(record.id, status=status, settled_details=settled, note=update.note,
                                      resolution_utterance_ids=resolution, revision=snapshot.revision)
-            self._unqueue_intervention(record.id, status)
+            await self._retire_intervention(record.id, status)
             proposal = by_issue.get(record.id)
             plan_changed = (semantic.plan_changed(proposal, rec.claims, update.utterance_ids) if proposal is not None
                             else any(uid in plan_changes for uid in update.utterance_ids))
@@ -3412,10 +3466,20 @@ class Controller:
                 return
         candidates.append(entry)
 
+    def _decision_pending(self, text: str) -> bool:
+        """A confirmed decision is already on its way to the notes: queued for the facilitator, or the decision turn
+        speaking now (same text, or a close paraphrase: most content words shared both ways)."""
+        drafts = [payload["draft"] for kind, payload in self._flows if kind == KIND_DECISION]
+        if self.turn is not None and self.turn.kind == KIND_DECISION and self.turn.draft:
+            drafts.append(self.turn.draft)
+        return any(semantic.close_decisions(str(draft.get("decision") or ""), text) for draft in drafts)
+
     async def _confirm_proposal(self, proposal: ValidProposal, rec: semantic.Reconciled, snapshot: Snapshot) -> None:
         model = proposal.model
-        if any(tools.same_decision(decision.decision, model.decision) for decision in self.mstate.decisions):
-            self._note("decision_duplicate", {"decision": model.decision})
+        repeated = semantic.duplicate_decision(model.decision, self.mstate.decisions, supersedes=proposal.supersedes)
+        if repeated is not None or self._decision_pending(model.decision):
+            self._note("decision_duplicate", {"decision": model.decision,
+                                              "of": repeated.id if repeated is not None else "pending"})
             return
         touched = {update.issue_id for update in rec.updates}
         resolved: list[Any] = []
@@ -3428,7 +3492,7 @@ class Controller:
                 # the model named the issue this decision settles without an update: it is settled all the same
                 self.mstate.update_issue(issue.id, status="resolved", resolution_utterance_ids=list(dict.fromkeys(
                     [*issue.resolution_utterance_ids, *proposal.agreement_utterance_ids])), revision=snapshot.revision)
-                self._unqueue_intervention(issue.id, "resolved")
+                await self._retire_intervention(issue.id, "resolved")
                 last = snapshot.utterance(proposal.agreement_utterance_ids[-1]) if proposal.agreement_utterance_ids \
                     else None
                 await self._al_event("resolved", issue_id=issue.id, issue_type=issue.issue_type, topic=issue.topic,
@@ -3458,6 +3522,7 @@ class Controller:
             resolved_events = [alert for alert in self.mstate.alerts if alert.get("type") == "resolved"
                                and alert.get("issue_id") in draft["issue_ids"]]
             self._flows.append((KIND_DECISION, {"draft": event, "resolved": resolved_events, "proposal": dict(draft)}))
+            self._upsert_candidate(proposal, snapshot)  # the next snapshot shows it confirmed and on its way
             self._note("decision_proposed", {"decision": model.decision, "owner": proposal.owner,
                                              "issue_ids": draft["issue_ids"], "spoken": True})
             return

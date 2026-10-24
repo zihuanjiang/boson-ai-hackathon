@@ -173,11 +173,12 @@ def test_reconcile_keeps_vouched_evidence_and_drops_the_rest(package, state):
     u1 = state.add_utterance(BOB, "Bob", "clip")
     s = snap(package, state, u1.id)
     req1 = package.statement("REQ-1").text
+    words = " ".join(req1.split()[:6])  # (whole words: a quote must match on word boundaries)
     rec = semantic.reconcile(result(issues=[issue(
         claim_utterance_ids=[u1.id, "U9"], commitment_utterance_ids=[u1.id],
-        evidence=[{"kind": "source", "id": "REQ-1", "quote": req1[:40]},
+        evidence=[{"kind": "source", "id": "REQ-1", "quote": words},
                   {"kind": "source", "id": "REQ-1", "quote": "something it never says"},
-                  {"kind": "source", "id": "REQ-77", "quote": req1[:40]},
+                  {"kind": "source", "id": "REQ-77", "quote": words},
                   {"kind": "clarification", "id": "CL-1", "quote": "the beta release"},
                   {"kind": "decision", "id": "D1", "quote": "x"},
                   {"kind": "utterance", "id": u1.id, "quote": "production launch"}])]), s)
@@ -328,7 +329,37 @@ def test_reconcile_proposals(package, state):
     assert second.owner is None and second.owner_unsupported and second.supersedes is None
     joined = " | ".join(rec.dropped)
     assert "confirmed without a valid agreement utterance" in joined and "empty decision" in joined
-    assert "unknown source NOPE-1" in joined and "owner 'Zed' is not a participant" in joined
+    assert "unknown source NOPE-1" in joined and "owner 'Zed' without an assigning utterance" in joined
+
+
+def test_a_superseded_decision_is_no_duplicate_and_paraphrases_are(package, state):
+    """Review 2026-10-24: going back to an earlier decision the group had replaced is a new decision; a paraphrase of
+    a standing one is the same decision."""
+    d1 = state.add_decision("Launch on Friday", "Bob", "", [])
+    d2 = state.add_decision("Launch on Monday", "Bob", "", [], supersedes=d1.id)
+    assert semantic.duplicate_decision("Launch on Friday", state.decisions) is None
+    assert semantic.duplicate_decision("launch on monday.", state.decisions) is d2
+    assert semantic.duplicate_decision("Launch on Monday", state.decisions, supersedes=d2.id) is None
+    assert semantic.close_decisions("Friday is the beta release, announced to beta users only",
+                                    "Friday is the beta, announced only to beta users")
+    assert not semantic.close_decisions("Friday is the beta release", "Wednesday is the production release")
+
+
+def test_an_owner_needs_an_assigning_utterance_and_quotes_need_whole_words(package, state):
+    """Review 2026-10-24: a participant named as owner with no utterance assigning it stays unknown (the guide: never
+    a guessed owner), and a quote vouches only on word boundaries with some substance ("eta", "the" don't)."""
+    u1 = state.add_utterance("Let's ship it on Friday.", "Carol", "clip")
+    s = snap(package, state, u1.id)
+    rec = semantic.reconcile(result(decision_proposals=[
+        proposal(agreement_utterance_ids=[u1.id], owner="Alice", owner_utterance_ids=[])]), s)
+    (only,) = rec.proposals
+    assert only.owner is None and only.owner_unsupported
+    assert any("without an assigning utterance" in d for d in rec.dropped)
+    assert not semantic.quote_matches("eta", "the beta release")
+    assert not semantic.quote_matches("the", "the beta release")
+    assert not semantic.quote_matches("beta rel", "the beta release")  # cut mid-word
+    assert semantic.quote_matches("beta release", "The Beta release.") and semantic.quote_matches("release", "release")
+    assert semantic.quote_matches("“the beta”", "it's the beta, not production")
 
 
 def test_reconcile_claims_and_assumptions(package, state):

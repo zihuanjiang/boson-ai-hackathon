@@ -84,7 +84,6 @@ LINE_KEYS = {"speaker", "text", "expect", "issue_types", "cited_lines", "cited_s
 DECISION_KEYS = {"contains", "owner", "plan_changed"}
 SCENARIO_KEYS = {"package", "title", "notes", "clarifications", "lines"}
 CLARIFICATION_KEYS = {"question", "answer", "source_ids"}
-MIN_DUPLICATE_OVERLAP = 0.6  # content-word overlap for "the same decision again" (contract §3.4: same_decision)
 
 # Anthropic API list prices in USD per million tokens, as of 2026-10-24 (first-party API; cache write = 1.25 × input
 # for the five-minute cache; cache read as listed for Opus 5.5 / Sonnet 5.5, 0.1 × input assumed for Haiku 5.5, whose
@@ -319,10 +318,6 @@ class LineResult:
     error: str | None = None
 
 
-def _content_words(text: str) -> set[str]:
-    return {w for w in (semantic.normalize_quote(text)).replace(",", " ").split() if len(w) >= 4}
-
-
 class Tracker:
     """The controller's `on_analysis` bookkeeping replicated as pure state changes (contract §3, items 1–5), so the
     evaluation needs no Realtime session: new issues are added `pending`; a `clarify` policy on a pending or
@@ -393,7 +388,7 @@ class Tracker:
         for prop in rec.proposals:
             m = prop.model
             if m.status == "confirmed":
-                duplicate = self._duplicate_of(m.decision)
+                duplicate = semantic.duplicate_decision(m.decision, state.decisions, supersedes=prop.supersedes)
                 if duplicate is not None:
                     result.duplicates.append(f"{duplicate.id}: {m.decision}")
                     continue
@@ -454,18 +449,6 @@ class Tracker:
                 "evidence_ids": valid.evidence_ids("source", "clarification", "decision"),
                 "evidence": [{"kind": e["kind"], "id": e["id"], "quote": e["quote"]} for e in valid.evidence],
                 "participant_views": list(valid.participant_views), "dropped": list(valid.dropped)}
-
-    def _duplicate_of(self, decision: str):
-        words = _content_words(decision)
-        for old in self.state.decisions:
-            if old.status != "confirmed":
-                continue
-            if semantic.normalize_quote(old.decision) == semantic.normalize_quote(decision):
-                return old
-            theirs = _content_words(f"{old.decision} {old.follow_up}")
-            if words and len(words & theirs) / len(words) >= MIN_DUPLICATE_OVERLAP:
-                return old
-        return None
 
     def _age(self, snapshot: semantic.Snapshot) -> list[str]:
         aged = []

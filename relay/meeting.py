@@ -899,6 +899,7 @@ class IssueRecord(_Record):
     note: str = ""
     policy: str = "silent"  # the gate's last decision: silent | suggest | clarify
     asked_at_revision: int | None = None
+    evidence_ok: bool = True  # the category's evidence requirement held at the last analysis (else never raised)
 
     @property
     def is_open(self) -> bool:
@@ -1034,7 +1035,7 @@ class MeetingState:
     def add_issue(self, *, issue_type: str, topic: str, claim: str | None, claim_utterance_ids, participant_views,
                   missing_details, evidence, material_consequence: str | None, commitment: str, confidence: str,
                   recommendation: str, question: str | None, revision: int, commitment_utterance_ids=None,
-                  status: str = "pending", policy: str = "silent") -> IssueRecord:
+                  status: str = "pending", policy: str = "silent", evidence_ok: bool = True) -> IssueRecord:
         now = self._now()
         record = IssueRecord(self._next("IS"), issue_type, " ".join(str(topic or "").split()),
                              " ".join(str(claim).split()) if claim else None, _ids(claim_utterance_ids),
@@ -1042,7 +1043,7 @@ class MeetingState:
                              [" ".join(str(d).split()) for d in missing_details or [] if str(d).strip()],
                              [dict(e) for e in evidence or []], material_consequence, commitment, confidence,
                              recommendation, " ".join(str(question).split()) if question else None, status, now, now,
-                             int(revision), _ids(commitment_utterance_ids), policy=policy)
+                             int(revision), _ids(commitment_utterance_ids), policy=policy, evidence_ok=evidence_ok)
         self.issues.append(record)
         return record
 

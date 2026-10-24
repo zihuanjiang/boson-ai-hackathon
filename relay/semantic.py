@@ -38,7 +38,7 @@ SPOKEN_COMMITMENTS = ("confirming", "committed")  # the group is about to commit
 MAX_SNAPSHOT_CHARS = 24_000  # instruction excluded: documents block + snapshot JSON
 RECENT_FOR_RETRIEVAL = 6  # utterances whose words pick the passages when the documents must be cut down
 MIN_PASSAGES_KEPT = 3
-MIN_QUOTE_CHARS = 3
+MIN_QUOTE_CHARS = 5  # a one-word quote must be at least this long; two words or more always qualify
 
 ISSUE_TYPE_LABELS = {"evidence_conflict": "evidence conflict", "hidden_disagreement": "hidden disagreement",
                      "ambiguous_decision": "unresolved detail"}
@@ -81,6 +81,20 @@ their interpretation as the text. In an issue's evidence, an utterance cited for
 reading as its view (for a hidden disagreement, one per participant); every other reference has an empty view. Who said
 an utterance is the snapshot's speaker field: a null speaker was not labelled, may be any participant, and is never
 attributed to a name; two unlabelled lines are neither the same person nor different people unless their words say so.
+Commitment describes the group, not one speaker: "none" (discussion, questions, ideas), "proposed" (someone puts an
+action or plan forward, including their own "I'll …"), "nearing" (others are warming to it, or views are still being
+collected), "confirming" (a participant other than the proposer explicitly accepts it or asks to finalize it: "sounds
+good, go with that", "I'm for it, let's do it", "let's lock it in", "agreed"), "committed" (stated as decided). A
+decision proposal is confirmed when a participant other than its proposer explicitly agrees, when the group says it is
+decided, or when an answer settles an asked issue unopposed; otherwise it is proposed or nearing. Committing to a plan
+that contradicts a source does not resolve the conflict: only an explicit statement that the plan or the source is
+being changed does ("we know the plan said beta first; we're changing it", "the budget is revised to fifty
+thousand"); agreeing to the conflicting proposal neither resolves nor partly resolves the issue and does not confirm
+that decision: report the issue at the commitment it has reached (confirming, when someone accepts it) and the
+decision as nearing. Material responsibilities count: when the group commits to a change to a live system, a release,
+money or customers and nobody is established as its owner, or as the one who undoes it if it fails, that is an
+ambiguous decision. When a later utterance adds an owner or a detail to a confirmed decision, propose the completed
+decision as confirmed with supersedes_decision_id set to the earlier one.
 An open issue's status says what the room has seen: "asked" means the facilitator asked its question aloud just before
 the utterances that follow it, "suggested" was shown on screen only, "pending" was not raised. A participant's answer
 that settles an asked issue, with nobody objecting, is the group's resolution: report the update, and the decision it
@@ -608,9 +622,14 @@ def normalize_quote(text: Any) -> str:
 
 
 def quote_matches(quote: Any, text: Any) -> bool:
-    """A model quote counts when its normalised form is inside the cited text's (and is not trivially short)."""
+    """A model quote counts when its normalised form is inside the cited text's on word boundaries and is not
+    trivially short: two words or more, or one word of at least MIN_QUOTE_CHARS characters ("eta" or "the" vouch
+    for nothing)."""
     needle = normalize_quote(quote)
-    return len(needle) >= MIN_QUOTE_CHARS and needle in normalize_quote(text)
+    if len(needle.split()) < 2 and len(needle) < MIN_QUOTE_CHARS:
+        return False
+    hay = normalize_quote(text)
+    return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", hay) is not None
 
 
 @dataclass
@@ -758,9 +777,12 @@ def reconcile(result: AnalysisResult, snapshot: Snapshot) -> Reconciled:
         if not prop.decision.strip():
             dropped.append(f"{here}: empty decision: dropped")
             continue
-        owner = _participant_name(snapshot, prop.owner)
+        # an owner needs an explicit assignment the transcript holds (the guide: never a guessed owner)
+        owner = _participant_name(snapshot, prop.owner) if owner_ids else None
         unsupported = bool(prop.owner) and owner is None
-        if unsupported:
+        if unsupported and not owner_ids:
+            mine.append(f"{here}: owner {prop.owner!r} without an assigning utterance: owner unknown")
+        elif unsupported:
             mine.append(f"{here}: owner {prop.owner!r} is not a participant: owner unknown")
         sources = [sid for sid in dict.fromkeys(prop.source_ids) if sid in known_sources]
         for sid in prop.source_ids:
@@ -787,6 +809,30 @@ def reconcile(result: AnalysisResult, snapshot: Snapshot) -> Reconciled:
             continue
         assumptions.append(assumption.model_copy(update={"speaker": u.get("speaker")}))
     return Reconciled(issues, updates, proposals, claims, assumptions, dropped)
+
+
+PARAPHRASE_MATCH = 0.6  # two decisions are the same when this much of each one's content words is in the other
+
+
+def close_decisions(a: str, b: str) -> bool:
+    """The same decision: equal text, or a close paraphrase both ways (a re-report in other words)."""
+    from . import tools  # (tools has no dependency on this module)
+
+    return tools.same_decision(a, b) or (tools.proposal_match(a, {"decision": b}) >= PARAPHRASE_MATCH
+                                         and tools.proposal_match(b, {"decision": a}) >= PARAPHRASE_MATCH)
+
+
+def duplicate_decision(text: str, decisions: Iterable[Any], *, supersedes: str | None = None) -> Any:
+    """The standing decision `text` repeats, or None: superseded decisions and the one this proposal supersedes don't
+    count (the group may go back to an earlier decision, or complete one with an owner)."""
+    for decision in decisions:
+        if getattr(decision, "superseded_by", None) is not None or decision.id == supersedes:
+            continue
+        if getattr(decision, "status", "confirmed") != "confirmed":
+            continue
+        if close_decisions(decision.decision, text):
+            return decision
+    return None
 
 
 def plan_changed(proposal: ValidProposal, claims: Iterable[Claim], utterance_ids: Iterable[str] = ()) -> bool:

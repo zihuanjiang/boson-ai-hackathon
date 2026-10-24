@@ -20,15 +20,15 @@ from relay import semantic
 from relay.config import Settings
 from relay.controller import (
     ALIGNMENT_ANSWER_WINDOW, ALIGNMENT_HOLD_S, ALIGNMENT_WRAPUP_WAIT_S, BANNER_WRAPPING, INTERVENING, REPLY_WAIT_S,
-    ROOM,
+    ROOM, ROOM_ECHO_S,
 )
 from relay.talk import Talk, load_talk
 from tests.conftest import synthetic_chunks
 from tests.test_clip_flow import SILENCE, voice
 from tests.test_controller import Harness, call
 from tests.test_meeting_flow import (
-    ALICE_QUESTION, ANSWER, BOB_LINE, CAROL_CONFIRM, CAROL_FIX, creates, present_first_point, respond, room_line,
-    to_discussion, write_meeting,
+    ALICE_QUESTION, ANSWER, BOB_LINE, CAROL_CONFIRM, CAROL_FIX, TONE, creates, outputs, present_first_point, respond,
+    room_line, to_discussion, write_meeting,
 )
 
 REQ2_QUOTE = "the beta release goes to the beta group only"
@@ -506,6 +506,9 @@ async def test_invented_citations_and_unsupported_issues_never_reach_speech(mk):
                    "confirmed without a valid agreement utterance"):
         assert reason in dropped, reason
     assert "cites no passage" in logged(h, "intervention_policy")[-1]["reason"]
+    assert h.c.mstate.issue("IS1").evidence_ok is False
+    await h.key("phase")  # review 2026-10-24: nor does it reach the notes at the wrap-up
+    assert h.last("meeting")["notes"]["open_questions"] == [] and kinds(h) == ["conflict"]
 
 
 async def test_a_plain_agreed_decision_is_recorded_silently_and_a_tentative_one_is_only_a_candidate(mk):
@@ -773,3 +776,125 @@ async def test_zoom_voice_lines_without_a_speaker_are_analysed_and_can_be_a_hidd
     assert [v["speaker"] for v in intervene["participant_views"]] == ["Alice", None]  # never the model's "Bob"
     instructions = creates(h)[-1]["instructions"]
     assert 'someone said "is production"' in instructions and "Bob" not in instructions.split("They seem")[1]
+
+
+# --- review 2026-10-24: regressions ---------------------------------------------------------------------------------
+
+async def test_a_newer_verdict_below_clarify_retires_the_queued_question(mk):
+    """A held question whose issue the newer analysis downgrades (suggest) is never spoken."""
+    rules = correction_rules()
+    downgrade = script({"Hold on": lambda s: {"issues": [issue(existing_issue_id=open_issue(s),
+                                                               claim_utterance_ids=[uid(s, "production launch")],
+                                                               evidence=[ev("source", "REQ-2", REQ2_QUOTE)],
+                                                               commitment="proposed", recommendation="suggest")]}})
+    analyzer = Gated(lambda s: downgrade(s) or rules(s))
+    h = mk(analyzer=analyzer)
+    await to_discussion(h)
+    await room_line(h, "Bob", BOB_LINE)
+    await analyzer.release(0)
+    await room_line(h, "Carol", CAROL_CONFIRM)
+    await room_line(h, "Alice", "Hold on, let's not lock that in yet.")
+    await analyzer.release(1)
+    assert logged(h, "intervention_held")
+    await analyzer.release(2)
+    assert logged(h, "intervention_withdrawn")[-1]["reason"] == "policy suggest"
+    requests = len(creates(h))
+    await h.clock.advance(ALIGNMENT_HOLD_S + 1)
+    assert len(creates(h)) == requests and h.c.state == ROOM
+    assert h.c.mstate.issue("IS1").status == "suggested"
+
+
+async def test_a_line_still_being_transcribed_holds_the_question_and_a_withdrawal_cuts_it_unheard(mk):
+    analyzer = Gated(correction_rules())
+    h = mk(analyzer=analyzer)
+    await to_discussion(h)
+    await room_line(h, "Bob", BOB_LINE)
+    await analyzer.release(0)
+    await room_line(h, "Carol", CAROL_CONFIRM)  # analysis 1 in flight
+    await h.send({"type": "speaker", "name": "Bob"})
+    await h.clock.advance(ROOM_ECHO_S + 0.01)
+    for _ in range(3):
+        await h.send({"type": "mic", "pcm": TONE})
+    for _ in range(8):
+        await h.mic()  # Bob's correction ends: committed, its transcript still on the way
+    assert h.c._room_line_in_flight()
+    await analyzer.release(1)
+    assert h.c.state == ROOM and logged(h, "intervention_held")[-1]["line_pending"] is True
+    await h.clock.advance(ALIGNMENT_HOLD_S + 0.1)  # the transcript is late: the hold runs out, the question starts
+    assert h.c.state == INTERVENING
+    await h.ev("input_audio_buffer.committed", item_id="item_fix")
+    await h.ev("conversation.item.input_audio_transcription.completed", item_id="item_fix", transcript=BOB_FIX)
+    await analyzer.release(2)
+    assert h.c.mstate.issue("IS1").status == "withdrawn"
+    assert logged(h, "intervention_cancelled")[-1]["issue_id"] == "IS1" and h.c.state == ROOM
+
+
+async def test_outside_the_decision_flow_save_decision_needs_a_confirmed_proposal(mk):
+    h = mk()
+    await to_discussion(h)
+    await h.clock.advance(ROOM_ECHO_S + 0.01)
+    for _ in range(3):
+        await h.send({"type": "mic", "pcm": TONE})
+    await h.key("space")  # someone asks the facilitator directly
+    for _ in range(8):
+        await h.mic()
+    await respond(h, call("save_decision", {"decision": "Launch Friday for all customers", "owner": "Bob"}),
+                  transcript="", audio_ms=0)
+    assert outputs(h)[-1][1]["error"].startswith("not saved: decisions go into the notes")
+    assert h.c.mstate.decisions == []
+
+
+async def test_the_decision_turn_saves_the_proposal_once_whatever_the_call_says(mk):
+    h = mk(rollout_rules())
+    await to_discussion(h)
+    await room_line(h, "Bob", BOB_LINE)
+    await room_line(h, "Carol", CAROL_CONFIRM)
+    await settle(h)
+    await respond(h, transcript=QUESTION, audio_ms=800)
+    await h.drained()
+    await room_line(h, "Carol", CAROL_FIX)
+    await settle(h)
+    await respond(h, call("save_decision", {"decision": "Friday production release announced to all users",
+                                            "owner": "Alice", "follow_up": "Alice emails every customer"}),
+                  call("save_decision", {"decision": DECISION, "owner": "Bob"}), transcript="Saved.", audio_ms=300)
+    assert [(d.decision, d.owner, d.follow_up) for d in h.c.mstate.decisions] == [(DECISION, "Bob", FOLLOW_UP)]
+    assert [(a.owner, a.text) for a in h.c.mstate.action_items] == [("Bob", FOLLOW_UP)]
+    assert logged(h, "decision_as_proposed") and outputs(h)[-1][1]["note"] == "already saved"
+
+
+async def test_a_decision_on_its_way_is_not_confirmed_twice(mk):
+    rules = rollout_rules()
+    again = script({"thanks": lambda s: {"decision_proposals": [proposal(
+        decision="Friday is the beta, announced only to beta users", owner="Bob",
+        owner_utterance_ids=[uid(s, "thanks")], agreement_utterance_ids=[uid(s, "thanks")])]}})
+    analyzer = Gated(lambda s: again(s) or rules(s))
+    h = mk(analyzer=analyzer)
+    await to_discussion(h)
+    await room_line(h, "Bob", BOB_LINE)
+    await analyzer.release(0)
+    await room_line(h, "Carol", CAROL_CONFIRM)
+    await analyzer.release(1)
+    await respond(h, transcript=QUESTION, audio_ms=800)
+    await h.drained()
+    await room_line(h, "Carol", CAROL_FIX)
+    await room_line(h, "Bob", "Great, thanks.")
+    await analyzer.release(2)  # the fix: the decision turn starts
+    assert creates(h)[-1]["metadata"]["relay"] == "decision"
+    await analyzer.release(3)  # Bob's line re-reports it, paraphrased
+    assert logged(h, "decision_duplicate")[-1]["of"] == "pending"
+    assert kinds(h).count("decision_draft") == 1
+
+
+async def test_a_late_analysis_after_the_wrap_up_closes_what_it_settled(mk):
+    analyzer = Gated(rollout_rules())
+    h = mk(analyzer=analyzer)
+    await to_discussion(h)
+    await room_line(h, "Bob", BOB_LINE)
+    await analyzer.release(0)
+    await room_line(h, "Carol", CAROL_FIX)  # analysis 1 in flight
+    await h.key("phase")
+    await h.clock.advance(ALIGNMENT_WRAPUP_WAIT_S + 0.1)
+    assert [q.text for q in h.c.mstate.open_questions if not q.resolved] == [QUESTION]
+    await analyzer.release(1)  # resolves IS1 after the wrap-up
+    assert h.c.mstate.issue("IS1").status == "resolved"
+    assert [q.text for q in h.c.mstate.open_questions if not q.resolved] == []
