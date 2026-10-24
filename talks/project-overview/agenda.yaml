@@ -1,4 +1,4 @@
-# The facilitator presents On the Same Page, then the team plans how the judges put their questions in the Zoom demo.
+# The facilitator presents On the Same Page, then the team discusses the next live demo and who sets it up.
 # Alice, Bob and Carol are the unattended demo's prerecorded participants (demo.yaml). Real people in Zoom need no
 # entry here: a name Zoom shows joins the roster when its first line is heard (D89; run_of_show_people.md).
 title: "On the Same Page: project overview"
@@ -9,6 +9,6 @@ participants:
   - {name: Carol, role: Engineer}
 phases:
   - {id: presentation, title: The project}
-  - {id: discussion, title: The judges' demo, prompt: "How do the judges ask their questions in Zoom, and who briefs them?"}
+  - {id: discussion, title: The next live demo, prompt: "How do we run the demo with real people, and who sets it up?"}
   - {id: wrapup, title: Decisions and next steps}
 discussion_slide: discussion

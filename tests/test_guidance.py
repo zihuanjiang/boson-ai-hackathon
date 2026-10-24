@@ -250,7 +250,7 @@ def test_a_guided_first_point_is_its_beats_with_no_greeting(guided):
     plan = talk.slide("plan")
     text = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[0], seconds=25, first=True)
     lines = text.splitlines()
-    assert lines[0] == ('You are Chloe, the facilitator of the meeting "Release 4.3 rollout review", presenting "Rollout '
+    assert lines[0] == ('You are Alice, the facilitator of the meeting "Release 4.3 rollout review", presenting "Rollout '
                         'plan" live to Alice, Bob and Carol.')
     # the slide's text is labelled as what the room reads, so a sentence-shaped line isn't taken for one more to say
     assert lines[1] == ('Now: slide 1 of 2, "The plan". On screen (the room reads it; don\'t say it): The plan / '

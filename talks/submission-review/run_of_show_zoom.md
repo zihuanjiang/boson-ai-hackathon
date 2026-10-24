@@ -1,13 +1,13 @@
 # Run of show: On the Same Page in a Zoom meeting (the submission-review demo, real participants)
 
 The app doesn't read this file. It is the script for the live demo in **Zoom** (contract v5, branch
-`claude/zoom-facilitator`): the facilitator joins the meeting as its own participant, **Chloe (AI host)**, from the
+`claude/zoom-facilitator`): the facilitator joins the meeting as its own participant, **Alice (AI host)**, from the
 operator's laptop, and Alice, Bob and Carol are **real people** in the same Zoom call who speak their lines live.
 Nothing is prerecorded. The slides, evidence and notes reach the meeting through the bot's **screen share** (a
 browser tab showing the meeting page in observer mode).
 
 How it works, in one paragraph: `scripts/zoom_bot.py` opens a separate Chrome window (its own browser profile, sound
-muted, Chrome's fake devices) that joins the Zoom web client as *Chloe (AI host)*. Inside that window, the bot's
+muted, Chrome's fake devices) that joins the Zoom web client as *Alice (AI host)*. Inside that window, the bot's
 "microphone" is a stream the bot feeds with the facilitator's Higgs Realtime audio, and its "ears" tap what the Zoom
 page plays (the other participants' voices). The bot streams what it hears to the backend as participant audio and
 plays the facilitator's replies into the meeting. The physical microphone and speakers of the laptop are never used
@@ -43,7 +43,7 @@ The explanation for the judges, said by the operator before the bot joins:
 - **Alice** (project lead, host; can be the operator): asks the interruption question.
 - **Bob** (writes the submission): makes the wrong claim in the discussion.
 - **Carol** (engineering lead): confirms Bob, then corrects after the facilitator's question.
-- **Chloe (AI host)**: the bot. A browser participant with the camera canvas *Chloe (AI host) · On the Same Page ·
+- **Alice (AI host)**: the bot. A browser participant with the camera canvas *Alice (AI host) · On the Same Page ·
   live*, sharing the page.
 
 Two or three real people are enough: one person may speak several roles if the lines are kept to the script. For this
@@ -75,7 +75,7 @@ tell afterwards how it went.
 
 | ~Time | What happens | The facilitator should (live) | Judges see on the shared screen |
 | --- | --- | --- | --- |
-| before | Ken is in Zoom with his real mic. The operator starts the bot (below); *Chloe (AI host)* joins, turns its camera on, shares its screen (the page). The operator gives the explanation above | silent | The agenda slide; tiles Alice / Bob / Carol *in Zoom*; the topbar badge **Live in Zoom · participants are real people** |
+| before | Ken is in Zoom with his real mic. The operator starts the bot (below); *Alice (AI host)* joins, turns its camera on, shares its screen (the page). The operator gives the explanation above | silent | The agenda slide; tiles Alice / Bob / Carol *in Zoom*; the topbar badge **Live in Zoom · participants are real people** |
 | 0:00 | The operator presses **R** in the bot's terminal (or `--auto-start`) | a one-line welcome, then the background points, fragments revealing one by one | Checkpoint `Slide 2 · problem · presenting` |
 | ~0:35 | Alice speaks her question as the "interruptions" point begins | stops mid-sentence within a fraction of a second; *Interrupted by Alice* (or *Interrupted*) on the tile; looks it up; answers from LIM-2 / LIM-3 (online meetings; a shared mic needs echo cancellation first); "I'll get back to the slide" | Evidence callout with LIM-2 and LIM-3; the Evidence tab card; then checkpoint `interrupt-answer · resuming` |
 | ~0:55 | — | "As I was saying…": finishes the pipeline, then results, then limits | Slides 3–5 |
@@ -101,9 +101,9 @@ prints a warning and the shared page says *Alignment unavailable*: the meeting r
 `--alignment legacy` runs the old checks.yaml patterns instead (exact key words, no key needed); `--alignment off`
 runs without a check. The bot starts `relay serve talks/submission-review --input voice --alignment …` itself, opens
 its Chrome window, joins as
-*Chloe (AI host)*, opens the observer page in a second tab and shares it. It prints every step it waits for. If a
+*Alice (AI host)*, opens the observer page in a second tab and shares it. It prints every step it waits for. If a
 step can't be automated (a consent dialog, the waiting room, the share picker), do it in the bot's window, or admit
-*Chloe (AI host)* from your own Zoom. `--no-serve` uses a server you started yourself; `--name` renames the bot;
+*Alice (AI host)* from your own Zoom. `--no-serve` uses a server you started yourself; `--name` renames the bot;
 `--auto-start` presses R for you three seconds after the share begins.
 
 Keys in the bot's terminal: **R** start / resume · **Space** send now (a question that turn detection didn't end) ·
@@ -115,7 +115,7 @@ Keys in the bot's terminal: **R** start / resume · **Space** send now (a questi
 - **The bot doesn't get into the meeting**: look at its window. Guest join needs a meeting that allows guests; a
   meeting that requires sign-in needs the bot's own Zoom account (`--login` once, never Ken's account). Admit it from
   the waiting room if asked.
-- **The share didn't start** (no screen share from *Chloe (AI host)* in Zoom): in the bot's window, click Share
+- **The share didn't start** (no screen share from *Alice (AI host)* in Zoom): in the bot's window, click Share
   Screen → Chrome Tab → "On the Same Page". Or share that tab from your own Zoom after opening
   `http://localhost:8000/?view=observer` yourself.
 - **The facilitator doesn't hear anyone** (no transcript lines, no interruption): check Zoom's audio for the bot's
@@ -185,7 +185,7 @@ same talking points.
       seconds after Carol's confirmation, the decision lands in Notes. Listen for: the facilitator's volume in Zoom relative to the
       people (adjust the laptop's output? no — the bot's audio goes straight into Zoom; use Zoom's per-participant
       volume if needed), and whether Zoom's noise suppression clips quiet speakers.
-- [ ] Zoom meeting settings: guests allowed, waiting room off (or someone ready to admit *Chloe (AI host)*),
+- [ ] Zoom meeting settings: guests allowed, waiting room off (or someone ready to admit *Alice (AI host)*),
       "Allow participants to share screen" on.
 - [ ] The laptop: Do Not Disturb on; the bot's Chrome window visible on the operator's screen (it is a separate
       window; don't close it), the terminal next to it.

@@ -4,7 +4,7 @@
 //   · its microphone (the MOUTH) is a stream the bot feeds: window.__bot.push(b64, key) queues PCM16 24 kHz chunks
 //     back to back on a 48 kHz AudioContext whose MediaStreamDestination Zoom gets from getUserMedia;
 //     flush(key) drops what is queued; position() says what has been heard (the context clock, exact);
-//   · its camera is a canvas: "Chloe (AI host) · On the Same Page · live";
+//   · its camera is a canvas: "Alice (AI host) · On the Same Page · live";
 //   · its EARS: everything a page AudioContext connects to its destination (the spike proved Zoom's web client plays
 //     the other participants through Web Audio, 48 kHz) is mixed into one tap per context; drain() returns the primary
 //     (48 kHz) context's float32 audio since the last drain. WebRTC tracks and media elements are tapped too, levels
@@ -12,7 +12,7 @@
 (() => {
   if (window.__bot) return;
   const t0 = performance.now();
-  const BOT_NAME = "Chloe (AI host)";
+  const BOT_NAME = "Alice (AI host)";
   const B = {
     events: [], // log lines not yet drained
     counts: { gum: 0, pcs: 0, rtcTracks: 0, elements: 0, contexts: 0 },

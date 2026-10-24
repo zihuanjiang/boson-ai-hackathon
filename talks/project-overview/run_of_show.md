@@ -1,6 +1,6 @@
 # Final demo: On the Same Page in Zoom
 
-Ken and a teammate speak live in a real Zoom call. Chloe (AI host) joins as a third participant, shares the
+Ken and a teammate speak live in a real Zoom call. Alice (AI host) joins as a third participant, shares the
 presentation, takes a voice interruption, answers from the documents, resumes, and listens to the discussion. The
 team proposes a plan that conflicts with the earlier answer, confirms it, answers the facilitator's clarification,
 and checks the corrected decision and owner in the notes. Allow about three minutes; time the human rehearsal.
@@ -27,7 +27,7 @@ uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --talk t
 ```
 
 Add `--passcode <passcode>` if needed. The bot starts the local server with `--input voice --alignment claude`,
-joins as **Chloe (AI host)** and shares the designed deck. Admit it if needed. Wait for the "Imagine…" slide, say
+joins as **Alice (AI host)** and shares the designed deck. Admit it if needed. Wait for the "Imagine…" slide, say
 the disclosure below, then press **R** in the bot terminal. Leave `--auto-start` off to allow time for the disclosure.
 The Higgs TTS 3 narration is a connection-loss backup; human speech comes from the Zoom call.
 
@@ -47,7 +47,7 @@ The designed deck (`deck/project/`) and `slides.md` have the same slide order an
 | Start | Ken presses **R** | The hook is the first thing spoken, then the introduction and pipeline |
 | Voice interruption | Ken speaks over "Interrupt me": "Sorry, quick question: in Zoom, can people raise a hand to interrupt you?" | Stops, calls `lookup_evidence`, shows ZOOM-3 / ZOOM-2, answers that people should speak up, records CL-1 |
 | Resume | Both listen | Picks up the interrupted point with the prepared resume line |
-| Discussion | Wait for "How do the judges ask their questions in Zoom, and who briefs them?" | Opens the floor and listens |
+| Discussion | Wait for "How do we run the demo with real people, and who sets it up?" | Opens the floor and listens |
 | Conflicting plan | Partner: "Let's keep it simple: the judges type their questions in the Zoom chat, and the facilitator answers them." | Transcribes; may show a silent suggestion |
 | Confirmation | Ken: "Sounds good. Let's go with that." Then both stay quiet | Checks the confirming line and asks one neutral question citing the source or earlier clarification |
 | Correction | Partner: "Right, no chat then. The judges just speak up, and Ken owns the briefing." | Records the corrected decision and Ken as owner |
@@ -80,7 +80,7 @@ If it misses its moment, use the recovery lines in `run_of_show_people.md` and d
 | Talking point | Sources |
 | --- | --- |
 | hook | WHAT-3 (two days, the hackathon) |
-| name | WHAT-1, WHAT-2, WHAT-4, ZOOM-1 (its own participant in Zoom) |
+| name | WHAT-1, WHAT-2 (checking shared understanding), WHAT-4, WHAT-5 (three kinds of issue), WHAT-9 (clarification before agreement), ZOOM-1 (its own participant in Zoom) |
 | one-session | HOW-1, HOW-2 (the guidance Claude wrote in advance) |
 | interrupt and resume | HOW-4, HOW-5, HOW-6 |
 | listen | HOW-7, HOW-8, HOW-9, WHAT-4 |

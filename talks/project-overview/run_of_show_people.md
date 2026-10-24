@@ -17,7 +17,7 @@ the Partner). This is the final demo: both people speak live in Zoom. Setup and 
 | --- | --- |
 | **Ken** (host) | hosts the Zoom meeting, starts the bot, says the disclosure, presses R, asks the interruption question, confirms the plan (the mistake), presses N for the wrap-up |
 | **Partner** | proposes the plan that contradicts the documents, then corrects it and names Ken as the owner |
-| **Chloe (AI host)** | the bot: its own Zoom participant, its own voice, its own screen share |
+| **Alice (AI host)** | the bot: its own Zoom participant, its own voice, its own screen share |
 
 ## Before the meeting (Ken, 5 minutes ahead)
 
@@ -31,7 +31,7 @@ the Partner). This is the final demo: both people speak live in Zoom. Setup and 
    (`BOSON_API_KEY` and `ANTHROPIC_API_KEY` in `.env`):
    `uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --talk talks/project-overview`.
    Add `--passcode <passcode>` if the join link does not contain it.
-   Admit "Chloe (AI host)" from the waiting room if Zoom asks. Wait until its screen share shows "Imagine…".
+   Admit "Alice (AI host)" from the waiting room if Zoom asks. Wait until its screen share shows "Imagine…".
    What to do when it can't join or share: `talks/submission-review/run_of_show_zoom.md` ("Starting the bot",
    "Fallbacks"; the same bot).
 4. Keep the bot's terminal one click away: R, N and `t <text>` are typed there. (`--auto-start` presses R three
@@ -62,15 +62,15 @@ Times are a plan (the guides' lengths plus the measured waits); `RELAY_PACE` 1.1
 | ~Time | On screen | Facilitator | Ken | Partner |
 | --- | --- | --- | --- | --- |
 | 0:00 | Imagine… | the hook: "Imagine you're an engineer, up since yesterday morning…" (the first words: no greeting) | presses **R** in the bot terminal, then mutes | muted |
-| 0:25 | On the Same Page | "I'm Chloe, an On the Same Page facilitator built on Higgs Audio. I join your Zoom call, I present, I answer, and then I listen. Because too many meetings end in an agreement nobody checked against the documents." | unmutes during this slide | |
+| 0:25 | On the Same Page | "I'm Alice, an On the Same Page facilitator built on Higgs Audio. I present and answer questions in Zoom, then check for misunderstandings as you discuss. Conflicting facts, different meanings, missing details. I ask before you agree." | unmutes during this slide | |
 | 0:40 | How it presents | "Here's how. One Higgs Realtime session runs the whole meeting, one talking point at a time, from a script Claude wrote beforehand." | ready | |
 | 0:50 | How it presents | **"Interrupt me, and I stop mid-sentence."** | **The moment you hear "Interrupt me", start talking**: "Sorry, quick question: in Zoom, can people raise a hand to interrupt you?" | |
 | 0:56 | the evidence callout | stops within about a second, may say a short "Let me check…", looks it up (ZOOM-3, ZOOM-2 on screen), answers in a sentence or two: in Zoom it hears voices only, not raised hands or the chat; people just speak up. The answer is recorded as the meeting's first clarification | listen, then mute | |
 | 1:10 | How it presents | picks the point up with its prepared line: "As I was saying, I stop, look it up, show you the source, and pick up right where I left off. Just like that." | | |
 | 1:20 | How it listens | "When the slides end, I listen. Higgs transcribes every line, and Claude checks each one…" | | |
-| 1:37 | Achievements and limits | "Here's what works so far…", then "Now, my limits…" (the table builds column by column) | | unmutes near the end |
-| 2:10 | Your turn | the hand-over: "That's the project. Now it's your turn. How do the judges ask their questions in Zoom, and who briefs them?" | | wait until it has finished |
-| 2:20 | Your turn | silent (a card may show the conflict silently: nobody has confirmed yet) | | **the plan, about a second after the question**: "Let's keep it simple: the judges type their questions in the Zoom chat, and the facilitator answers them." |
+| 1:37 | Achievements and limits | "Here's the Zoom workflow.", then "Now, my limits." (the table builds column by column) | | unmutes near the end |
+| 2:10 | Live discussion demo | the hand-over: "That's the project. Now it's your turn. How do we run the demo with real people, and who sets it up?" | | wait until it has finished |
+| 2:20 | Live discussion demo | silent (a card may show the conflict silently: nobody has confirmed yet) | | **the plan, about a second after the question**: "Let's keep it simple: the judges type their questions in the Zoom chat, and the facilitator answers them." |
 | 2:27 | | silent | **the confirmation, right after**: "Sounds good. Let's go with that." | |
 | 2:35 | the issue card (ZOOM-3, the clarification) | after a few seconds, one neutral question, roughly: "Before we confirm: didn't we establish that in Zoom I hear voices only, not the chat? Should the judges just speak up instead?" | wait for it, silent | wait for it, silent |
 | 2:45 | | | | **the correction and the owner**: "Right, no chat then. The judges just speak up, and Ken owns the briefing." |

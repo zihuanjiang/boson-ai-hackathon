@@ -8,7 +8,11 @@ Two days. One demo. A very tired room.
 <!-- .slide: id="name" -->
 # On the Same Page
 
-AI meeting facilitator in your Zoom call, built on Higgs Audio
+Higgs Audio facilitator
+
+Presents, answers, checks understanding.
+
+Clarify before you agree.
 
 ---
 
@@ -40,8 +44,8 @@ Limits: overlapping voices, delay, wrong speaker labels <!-- .element: class="fr
 ---
 
 <!-- .slide: id="discussion" -->
-## Your turn
+## Live discussion demo
 
-How do the judges ask their questions in Zoom, and who briefs them?
+How do we run the demo with real people, and who sets it up?
 
-The facilitator is listening
+Discuss the plan. Confirm decisions and owners.

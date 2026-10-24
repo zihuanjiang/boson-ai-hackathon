@@ -3,7 +3,7 @@
 How the facilitator takes part in an online meeting (doc/plan.md D65, D76, D77, D89; doc/zoom_bot_spike.md; README
 "Known limitations").
 
-- [ZOOM-1] The facilitator joins a Zoom meeting as its own participant, Chloe (AI host), and shares the meeting page as its screen.
+- [ZOOM-1] The facilitator joins a Zoom meeting as its own participant, Alice (AI host), and shares the meeting page as its screen.
 - [ZOOM-2] To interrupt the facilitator or get its attention in Zoom, people just speak up: anyone who talks while it speaks cuts it off by voice.
 - [ZOOM-3] In Zoom the facilitator hears the meeting's voices only; it never sees raised hands or the chat.
 - [ZOOM-4] Speaker attribution can be wrong or missing. Names come from Zoom's active-speaker display, not voice recognition. A line can carry the wrong participant's name or none, especially with quick speaker changes or overlap, affecting who is shown as having said or agreed to something.

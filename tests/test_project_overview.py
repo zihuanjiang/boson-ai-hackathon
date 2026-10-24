@@ -30,9 +30,9 @@ TALK = ROOT / "talks" / "project-overview"
 DECK = TALK / "deck" / "project" / "slides"
 PEOPLE_MD = TALK / "run_of_show_people.md"
 SLIDES = ["hook", "name", "present", "listen", "achieved", "discussion"]
-TITLES = ["Imagine…", "On the Same Page", "How it presents", "How it listens", "Achievements and limits", "Your turn"]
+TITLES = ["Imagine…", "On the Same Page", "How it presents", "How it listens", "Achievements and limits", "Live discussion demo"]
 POINTS = ["hook", "name", "one-session", "interrupt", "listen", "achieved", "limits"]
-QUESTION = "How do the judges ask their questions in Zoom, and who briefs them?"
+QUESTION = "How do we run the demo with real people, and who sets it up?"
 WORDS_PER_SECOND = 2.5  # ~150 words a minute (talks/submission-review's live runs)
 GAP_S = 0.7  # between talking points: each is its own response.create (first audio ~0.3–0.7 s, doc/gotchas.md)
 CUT_S = 1.7  # Alice's clip cuts the interrupt point 1.70–1.72 s in (MEAS-3)
@@ -40,7 +40,8 @@ CUT_S = 1.7  # Alice's clip cuts the interrupt point 1.70–1.72 s in (MEAS-3)
 # must state.
 BACKING = {
     "hook": {"WHAT-3": "two days"},
-    "name": {"WHAT-1": "facilitator", "WHAT-2": "apparent agreement", "WHAT-4": "Higgs Audio is central",
+    "name": {"WHAT-1": "facilitator", "WHAT-2": "shared understanding", "WHAT-4": "Higgs Audio is central",
+             "WHAT-5": "three issues", "WHAT-9": "one neutral question",
              "ZOOM-1": "its own participant"},
     "one-session": {"HOW-1": "One Higgs Realtime session runs the whole meeting",
                     "HOW-2": "guidance Claude wrote for it in advance, before the meeting"},
@@ -155,6 +156,15 @@ def test_the_designed_deck_is_one_visual_language(talk):
         html = (DECK / f"{slide}.html").read_text(encoding="utf-8")
         assert html.startswith(f'<section id="{slide}"') and "background:#0F1217" in html.split(">", 1)[0], slide
         assert "#F3EFE7" not in html and "background:#F2C94C; color:#15181E; font-family" not in html, slide
+        # Authored speaker notes and the performed script must agree on every spoken line.
+        notes = " ".join(html.split("<aside>", 1)[1].split("</aside>", 1)[0].replace("’", "'").split())
+        guides = [chunk.guide for chunk in talk.slide(slide).chunks]
+        if slide == "discussion":
+            guides.append(talk.handover)
+        for guide in guides:
+            beats = [*guide.beats, *([guide.resume] if guide.resume else [])]
+            for beat in beats:
+                assert " ".join(beat.verbatim.replace("’", "'").split()) in notes, (slide, beat.verbatim)
     for slide in ("present", "listen", "achieved", "discussion"):
         html = (DECK / f"{slide}.html").read_text(encoding="utf-8")
         heading = re.search(r"<h2 style=\"([^\"]*)\">([^<]*)</h2>", html)
@@ -165,9 +175,11 @@ def test_the_designed_deck_is_one_visual_language(talk):
     for slide in ("hook", "name"):
         html = (DECK / f"{slide}.html").read_text(encoding="utf-8")
         assert '<h1 style="font-size:160px; font-weight:700; line-height:1.05; letter-spacing:-4px' in html, slide
-    # the problem slide's one idea lives on in the name slide, on screen and aloud
-    assert "an agreement nobody checked against the documents" in (DECK / "name.html").read_text(encoding="utf-8")
-    assert any("an agreement nobody checked against the documents" in line for line in verbatims(talk, "name"))
+    # The introduction explains what checking understanding means, on screen and aloud.
+    name_html = (DECK / "name.html").read_text(encoding="utf-8").split("<aside>")[0]
+    assert "checks understanding" in name_html and "Clarify before you agree." in name_html
+    for idea in ("Conflicting facts", "different meanings", "missing details"):
+        assert idea in name_html and any(idea in line for line in verbatims(talk, "name"))
     # the table: the achievements build first, the limits second (the two talking points)
     table = (DECK / "achieved.html").read_text(encoding="utf-8")
     assert table.count('data-build-in="fade 1"') == 5 and table.count('data-build-in="fade 2"') == 5
@@ -312,7 +324,7 @@ def test_every_relay_slides_screen_text_fits_the_prompt_unclipped(talk):
 
 def test_every_cited_source_id_exists_and_backs_its_claim(talk, pkg):
     known = {statement.id for statement in pkg.statements}
-    assert len(known) == 37
+    assert len(known) == 42
     cited: set[str] = set()
     for name in ("script.yaml", "demo.yaml", "checks.yaml", "run_of_show.md", "run_of_show_people.md", "slides.md"):
         cited |= set(ID_RE.findall((TALK / name).read_text(encoding="utf-8")))

@@ -67,7 +67,7 @@ uv run python -m relay.render talks/project-overview    # backup narration (TTS 
 uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --talk talks/project-overview
 ```
 
-Join the Zoom meeting first with your teammate, admit **Chloe (AI host)**, and wait for the screen share. Say the
+Join the Zoom meeting first with your teammate, admit **Alice (AI host)**, and wait for the screen share. Say the
 short disclosure, then press **R** in the bot terminal to start; **N** advances to wrap-up and **q** leaves. The bot
 starts the server with `--input voice --alignment claude`; both API keys belong in `.env`. Render again after script
 changes. The prepared narration is a connection-loss backup; participants speak live throughout the final demo.

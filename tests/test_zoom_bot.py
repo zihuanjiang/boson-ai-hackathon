@@ -88,9 +88,9 @@ def test_the_join_link_gives_the_meeting_id_and_the_encoded_passcode():
 def test_the_speaker_name_is_tidied_and_never_the_bot():
     assert bot.clean_speaker("  Ken   Jiang (Host)\n") == "Ken Jiang"
     assert bot.clean_speaker("Alice (Me)") == "Alice" and bot.clean_speaker("Bob (Guest)") == "Bob"
-    assert bot.clean_speaker("Chloe (AI host)") is None
-    assert bot.clean_speaker("Chloe (AI host) (Host)") is None
-    assert bot.clean_speaker("chloe (ai host)") is None
+    assert bot.clean_speaker("Alice (AI host)") is None
+    assert bot.clean_speaker("Alice (AI host) (Host)") is None
+    assert bot.clean_speaker("alice (ai host)") is None
     assert bot.clean_speaker("Unmute") is None and bot.clean_speaker("") is None and bot.clean_speaker(None) is None
     assert bot.clean_speaker("x" * 61) is None and bot.clean_speaker("x" * 60) == "x" * 60
     assert bot.clean_speaker("Carol", bot_name="Carol") is None
@@ -156,7 +156,7 @@ async def test_speech_without_a_speaker_saves_a_rate_limited_dom_probe_and_the_s
     ws, page = FakeWS(), ProbePage()
     probe_dir = tmp_path / "speaker-probe"
     deck = bot.ZoomDeck(ws, page, server="http://127.0.0.1:1", probe_dir=probe_dir)
-    loud = {"rate": 48000, "pcm": "", "peak_db": -20, "roster": ["Ken Jiang (Host)", "Dana Lee", "Chloe (AI host)"]}
+    loud = {"rate": 48000, "pcm": "", "peak_db": -20, "roster": ["Ken Jiang (Host)", "Dana Lee", "Alice (AI host)"]}
     try:
         await deck.hear({**loud, "speaker": None})
         await deck.settle_probes()
@@ -436,7 +436,7 @@ async def test_the_ears_resample_the_tap_into_voice_frames_with_the_speaker_and_
         assert frames[0]["reply"] == 7 and 50 <= frames[0]["played_ms"] <= 300 and frames[0]["at"] is None
         assert len(deck.heard) == 12_000  # 250 ms at 24 kHz = 6000 samples of PCM16
         assert deck.page_events == ["1.0s tap webaudio-1: context at 48000 Hz"] and deck.speakers_seen == {"Ken Jiang": 1}
-        await deck.hear({"rate": 48000, "pcm": "", "position": await page.position(), "speaker": "Chloe (AI host)"})
+        await deck.hear({"rate": 48000, "pcm": "", "position": await page.position(), "speaker": "Alice (AI host)"})
         assert deck.speaker is None
         # the ears loop itself, on the fake page: silence streams as frames in real time
         page.speak("x", "Bob", tone_pcm24(120))

@@ -42,19 +42,19 @@ slides:
 
   - id: name
     speaker: relay
-    plain: "Like a good chair for a meeting: it runs the agenda, answers what it can, and notices when people talk past each other."
+    plain: "Like a good meeting chair: it presents, answers questions, and checks facts, meanings and missing details before people agree."
     chunks:
       - id: name
         guide:
-          intent: name the product as the answer to the hook, say what it does in a Zoom call, and the problem it is for
+          intent: name the product as the answer to the hook and explain how it checks understanding before agreement
           seconds: 14
           beats:
-            - verbatim: "I'm Chloe, an On the Same Page facilitator built on Higgs Audio."
+            - verbatim: "I'm Alice, an On the Same Page facilitator built on Higgs Audio."
               delivery: bright, a small lift on the name
-            - verbatim: "I join your Zoom call, I present, I answer, and then I listen."
-              delivery: four quick steps, a light stress on the last one
-            - verbatim: "Because too many meetings end in an agreement nobody checked against the documents."
-              delivery: steady, a little dry, weight on nobody checked
+            - verbatim: "I present and answer questions in Zoom, then check for misunderstandings as you discuss."
+              delivery: clear and conversational, light stress on misunderstandings
+            - verbatim: "Conflicting facts, different meanings, missing details. I ask before you agree."
+              delivery: three clear items, then a brief pause; weight on before you agree
           avoid: naming any real team or meeting
 
   - id: present
@@ -138,10 +138,10 @@ slides:
 
 # The hand-over to the discussion (its own response after the last talking point).
 handover:
-  intent: give the floor to the call with the question on the screen
+  intent: open the live discussion with the question on screen, leaving the plan and owners to the participants
   seconds: 8
   beats:
     - verbatim: "That's the project. Now it's your turn."
       delivery: warm, a brief pause after it
-    - verbatim: "How do the judges ask their questions in Zoom, and who briefs them?"
+    - verbatim: "How do we run the demo with real people, and who sets it up?"
       delivery: an open, inviting question
