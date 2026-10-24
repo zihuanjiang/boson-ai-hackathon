@@ -95,6 +95,10 @@ WRAPUP_WAIT_S = 2.0  # the wrap-up waits this long at most for the transcript of
 POINT_MIN_S = 3  # the length a live talking point is asked for: its backup length, within these bounds
 POINT_MAX_S = 30
 POINT_CONTINUE_MIN_S = 3
+# A guided point (D88) is asked for its guide's own length, up to this (talk.GUIDE_MAX_S): a 25-second hook is asked
+# for 25 seconds, whatever its shorter TTS 3 backup line lasts. No narration timer depends on the length: first audio
+# within NARRATION_WAIT_S, an event at least every REPLY_STALL_S while it streams, then the drain (its audio + 2 s).
+GUIDED_POINT_MAX_S = 45
 DUPLICATE_DECISION_S = 60.0  # the same decision saved again this soon: "already saved"
 AUTO_SOURCE_IDS = 2  # an automatic clarification cites the top results of the turn's lookups
 DEFAULT_WINDOW_UTTERANCES = 3
@@ -192,6 +196,7 @@ class Cursor:
     live: bool = False
     heard: str = ""
     heard_ms: int = 0
+    beat: int = 0  # a guided point cut live (D88): the beat the room was in, where it picks up (0 otherwise)
 
     @property
     def slide_start(self) -> bool:
@@ -223,6 +228,8 @@ class LiveNarration:
     pending: list[dict] = field(default_factory=list)  # its response.create, held while another response is active
     calls: dict[str, tuple[Any, Any]] = field(default_factory=dict)  # call_id → (name, arguments): never run
     text: str = ""  # transcript so far
+    from_beat: int = 0  # a guided point (D88): the first beat this request presents
+    expected_ms: int = 0  # the length it was asked for (a cut before its response.done measures against it)
 
 
 @dataclass
@@ -1877,7 +1884,8 @@ class Controller:
             self.slide_index = slide.index
             await self._send({"type": "slide", "slide": slide.id, "fragment": fragment})
         self.fragment = fragment
-        self.cursor = Cursor(slide.id, chunk, live=cursor.live, heard=cursor.heard, heard_ms=cursor.heard_ms)
+        self.cursor = Cursor(slide.id, chunk, live=cursor.live, heard=cursor.heard, heard_ms=cursor.heard_ms,
+                             beat=cursor.beat)
         self._last_point = (slide.id, chunk)
         self.started = True
         self.floor_human = False
@@ -2081,7 +2089,10 @@ class Controller:
 
     def _point_seconds(self, slide: Slide, chunk: int) -> int:
         """How long a live talking point should take: as long as its backup chunk, else its note at a speaking pace;
-        within POINT_MIN_S…POINT_MAX_S."""
+        within POINT_MIN_S…POINT_MAX_S. A guided point (D88): its guide's length, up to GUIDED_POINT_MAX_S."""
+        guide = slide.chunks[chunk].guide
+        if guide is not None:
+            return round(min(GUIDED_POINT_MAX_S, max(POINT_MIN_S, guide.seconds_from(0))))
         rendered = self.chunks.get((slide.id, chunk))
         seconds = (rendered.duration_ms / 1000 if rendered is not None and rendered.duration_ms
                    else word_count(slide.chunks[chunk].text) / WORDS_PER_SECOND)
@@ -2099,12 +2110,19 @@ class Controller:
         if self.meeting is not None:  # one talking point
             chunk = slide.chunks[live.chunk]
             seconds = self._point_seconds(slide, live.chunk)
+            beat = 0
             if live.continuing and cursor is not None and cursor.live:
-                seconds = max(POINT_CONTINUE_MIN_S, round(seconds - cursor.heard_ms / 1000))
+                if chunk.guide is not None:  # the beats left from the one the room was in (D88)
+                    beat = min(max(cursor.beat, 0), len(chunk.guide.beats) - 1)
+                    left = min(chunk.guide.seconds_from(beat), seconds - cursor.heard_ms / 1000)
+                    seconds = max(POINT_CONTINUE_MIN_S, round(min(GUIDED_POINT_MAX_S, left)))
+                else:
+                    seconds = max(POINT_CONTINUE_MIN_S, round(seconds - cursor.heard_ms / 1000))
                 heard = cursor.heard
+            live.from_beat, live.expected_ms = beat, seconds * 1000
             instructions = prompts.talking_point_instructions(
                 self.talk, self.meeting, slide, chunk, seconds=seconds, continuing=live.continuing, heard=heard,
-                first=not self._presented)
+                first=not self._presented, beat=beat)
             metadata = {"relay": "narration", "reply": str(live.reply), "slide": slide.id, "talking_point": chunk.id}
         else:
             seconds = self._narration_seconds(slide)
@@ -2117,10 +2135,11 @@ class Controller:
         event = {"type": "response.create", "response": {
             "instructions": instructions, "metadata": metadata, "tool_choice": "none"}}
         self._start_timer("narration_wait", NARRATION_WAIT_S, self._on_narration_wait)
-        self._note("narration_request", {"slide": slide.id, "reply": live.reply, "attempt": live.attempt,
-                                         "continuing": live.continuing, "seconds": seconds,
-                                         "talking_point": metadata.get("talking_point"),
-                                         "held": bool(self._active)})
+        note = {"slide": slide.id, "reply": live.reply, "attempt": live.attempt, "continuing": live.continuing,
+                "seconds": seconds, "talking_point": metadata.get("talking_point"), "held": bool(self._active)}
+        if self.meeting is not None and slide.chunks[live.chunk].guide is not None:
+            note.update(guided=True, from_beat=live.from_beat)
+        self._note("narration_request", note)
         if self._active:
             live.pending = [event]
             if self._active - self._ignored:
@@ -2243,14 +2262,30 @@ class Controller:
         heard = heard_text(live.text, played, live.audio_bytes // BYTES_PER_MS)
         same = self.cursor is not None and (self.cursor.slide, self.cursor.chunk) == (live.slide, live.chunk)
         cursor = self.cursor if same else Cursor(live.slide, live.chunk)
+        beat = None
         if played > 0:  # what the room heard of this slide so far: earlier parts too, when this one continued it
             so_far = " ".join(part for part in (cursor.heard, heard) if part)
+            guide = self._guide(live.slide, live.chunk) if self.meeting is not None else None
+            if guide is not None:  # a guided point continues from the beat the room was in (D88), never the top
+                audio_ms = live.audio_bytes // BYTES_PER_MS
+                total = audio_ms if live.response_done else max(audio_ms, live.expected_ms)
+                beat = prompts.beat_reached(guide, live.from_beat, heard, played / total if total else 0.0)
             cursor = Cursor(live.slide, live.chunk, live=True, heard=_tail(so_far, HEARD_MAX_CHARS),
-                            heard_ms=cursor.heard_ms + played)
+                            heard_ms=cursor.heard_ms + played, beat=beat if beat is not None else cursor.beat)
         self.cursor = cursor
         self._cut_info = (cursor.heard.split()[-1], cursor.heard) if cursor.heard else None
-        self._note("narration_cut", {"slide": live.slide, "reply": live.reply, "played_ms": played, "heard": heard})
+        note = {"slide": live.slide, "reply": live.reply, "played_ms": played, "heard": heard}
+        if beat is not None:
+            note["beat"] = beat
+        self._note("narration_cut", note)
         return live.slide, heard, played
+
+    def _guide(self, slide_id: str, chunk: int) -> Any:
+        """The guide of a talking point (D88), or None."""
+        try:
+            return self.talk.slide(slide_id).chunks[chunk].guide
+        except (KeyError, IndexError):
+            return None
 
     # --- tools ------------------------------------------------------------------------------------------------
 
@@ -2734,7 +2769,8 @@ class Controller:
             await self._enter_discussion()
             return
         turn = Turn(origin=ORIGIN_HANDOVER, kind=KIND_HANDOVER, phase=PRESENTATION)
-        await self._flow_request(turn, prompts.handover_instructions(self.meeting), tool_choice="none",
+        guide = getattr(self.talk, "handover", None)  # the script's hand-over guidance (D88), if any
+        await self._flow_request(turn, prompts.handover_instructions(self.meeting, guide), tool_choice="none",
                                  state=REPLYING)
 
     async def _enter_discussion(self) -> None:

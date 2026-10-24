@@ -3,6 +3,13 @@
 A meeting package adds `agenda.yaml`, `sources/*.md` and `checks.yaml` (relay/meeting.py); their issues are part of
 `check_talk` / `load_talk` too, so a broken meeting blocks rendering and serving like a broken script.
 
+Script guidance (design §2, D88): a talking point may carry a `guide:` — what the point must do for the listener
+(`intent`), the `bridge` from the point before, its `beats` (each one `verbatim` words that must land exactly, or a
+`gist` to say in the model's own words with key `phrases`, plus `delivery`), the point's length (`seconds`) and what
+to `avoid`. Claude writes it; Higgs Realtime performs it (relay/prompts.py). `say` stays the TTS 3 backup line, and may
+be left out when every beat is verbatim (it is then the beats joined). A top-level `handover:` guides the meeting's
+hand-over to the discussion the same way.
+
     uv run python -m relay.talk talks/test        # print issues and a summary; exit 1 on errors
 """
 
@@ -37,6 +44,83 @@ CHUNK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")  # talking point ids (scr
 
 Level = Literal["error", "warning"]
 
+# Script guidance (D88). The bounds keep each per-response instruction compact (doc/gotchas.md: long prompts hurt).
+GUIDE_KEYS = frozenset({"intent", "bridge", "delivery", "avoid", "seconds", "beats", "verbatim", "gist", "phrases"})
+BEAT_KEYS = frozenset({"verbatim", "gist", "phrases", "delivery", "seconds"})
+MAX_BEATS = 6
+MAX_PHRASES = 5
+MAX_VERBATIM_CHARS = 300  # also a TTS 3 chunk when the backup line is derived from the beats
+MAX_GIST_CHARS = 240
+MAX_PHRASE_CHARS = 60
+MAX_DIRECTION_CHARS = {"intent": 160, "bridge": 160, "avoid": 160, "delivery": 100}
+GUIDE_MIN_S, GUIDE_MAX_S = 3, 45  # a guided point's length (a hook runs ~25 s; controller.GUIDED_POINT_MAX_S)
+BEAT_MAX_S = 30
+GUIDE_WORDS_PER_SECOND = 2.6  # the length of a beat without `seconds`: its words at a speaking pace
+_URL_RE = re.compile(r"https?://|www\.|\b[\w-]+\.(?:com|org|net|io|ai|dev)\b", re.I)
+_STAGE_RE = re.compile(r"[()\[\]{}*_#<>]")  # brackets, markdown, tags: read aloud or broken by the live model
+# A line that is only true while Higgs Realtime speaks it: the TTS 3 backup would make it false (design §2).
+LIVE_CLAIM_RE = re.compile(r"\b(?:what you(?:'re| are)? hear(?:ing)? is live|live right now|everything I say|"
+                           r"I(?:'m| am) (?:speaking|talking) live|this voice is live)\b", re.I)
+
+
+@dataclass(frozen=True)
+class Beat:
+    """One beat of a guided talking point: `verbatim` words that must land exactly, or a `gist` the model says in its
+    own words while hitting the key `phrases`; `delivery` = pace, energy, pauses, emphasis (plain words: there is no
+    SSML); `seconds` = its length, if it matters."""
+
+    verbatim: str | None = None
+    gist: str | None = None
+    phrases: tuple[str, ...] = ()
+    delivery: str | None = None
+    seconds: int | None = None
+
+    @property
+    def words(self) -> int:
+        return word_count(self.verbatim or self.gist or "")
+
+    @property
+    def estimate_s(self) -> float:
+        """Its length: `seconds`, else its words at a speaking pace (a gist is about as long as its note)."""
+        return float(self.seconds) if self.seconds else max(1.0, self.words / GUIDE_WORDS_PER_SECOND)
+
+
+@dataclass(frozen=True)
+class Guide:
+    """The guidance of one talking point (or of the hand-over): what it must do for the listener, how it connects
+    to what came before, its beats in order, its length and what to avoid (D88)."""
+
+    intent: str
+    beats: tuple[Beat, ...]
+    bridge: str | None = None
+    delivery: str | None = None  # for the whole point (a beat's own delivery adds to it)
+    avoid: str | None = None
+    seconds: int | None = None
+
+    @property
+    def verbatim(self) -> bool:
+        """Every beat is verbatim: the backup line can be the beats themselves."""
+        return bool(self.beats) and all(beat.verbatim for beat in self.beats)
+
+    def derived_say(self) -> str:
+        """The beats' verbatim lines joined (the backup line when `say` is left out); "" unless every beat is
+        verbatim."""
+        return " ".join(beat.verbatim for beat in self.beats) if self.verbatim else ""
+
+    def weights(self) -> list[float]:
+        return [beat.estimate_s for beat in self.beats]
+
+    def seconds_from(self, beat: int = 0) -> float:
+        """How long the point takes from beat `beat` on: `seconds` (shared by the beats in proportion to their
+        lengths), else the beats' own lengths."""
+        weights = self.weights()
+        if not weights:
+            return float(self.seconds or 0)
+        rest = sum(weights[max(0, beat):])
+        if self.seconds:
+            return self.seconds * rest / (sum(weights) or 1.0)
+        return rest
+
 
 @dataclass(frozen=True)
 class Issue:
@@ -62,6 +146,7 @@ class Chunk:
     fragment: int | None = None  # fragments visible once this chunk starts (count); None = unchanged
     point_id: str | None = None  # script.yaml `id:` (the talking point id); None = the default below
     slide: str = ""  # id of the slide it belongs to (the loader sets it)
+    guide: Guide | None = None  # script guidance (D88): how the live model performs this point; None = as before
 
     @property
     def id(self) -> str:
@@ -118,6 +203,7 @@ class Talk:
     slides_md: str
     kb: str = ""
     warnings: list[Issue] = field(default_factory=list)
+    handover: Guide | None = None  # script.yaml `handover:` (a meeting's hand-over to the discussion, D88)
 
     def slide(self, slide_id: str) -> Slide:
         for slide in self.slides:
@@ -223,6 +309,171 @@ def _check_say(say: str, where: str, issues: list[Issue]) -> None:
                                               "a comma or a dash there, or spell out the abbreviation)"))
 
 
+def _spoken(text, where: str, field_name: str, issues: list[Issue], *, limit: int,
+            sentence: bool = False) -> str | None:
+    """A guide field the facilitator says aloud (a verbatim line, a gist, a key phrase), checked against the spoken
+    rules (design §2): numbers as words, no TTS tags (Higgs Realtime would read them), no URLs, brackets, markdown or
+    double quotes (the prompt quotes the line); acronyms and abbreviations are warnings. None when unusable."""
+    here = f"{where}.{field_name}"
+    if not isinstance(text, str) or not text.strip():
+        issues.append(Issue("error", here, "must be non-empty text"))
+        return None
+    text = " ".join(text.split())
+    errors = len(issues)
+    if len(text) > limit:
+        issues.append(Issue("error", here, f"{len(text)} characters (max {limit}): split it"))
+    if find_tags(text) or "<|" in text or "|>" in text:
+        issues.append(Issue("error", here, "no TTS tags in a live line (Higgs Realtime would read them aloud): put "
+                                           "the delivery in `delivery`"))
+    elif _STAGE_RE.search(text):
+        issues.append(Issue("error", here, "no brackets, markdown or stage directions in a spoken line (they would "
+                                           "be read aloud): put them in `delivery`"))
+    if has_digits(text):
+        issues.append(Issue("error", here, "spell numbers as words (and never a source id: it would be read aloud)"))
+    if _URL_RE.search(text):
+        issues.append(Issue("error", here, "no URLs in a spoken line"))
+    if '"' in text or "“" in text or "”" in text:
+        issues.append(Issue("error", here, "no double quotes: the prompt quotes the line (use none, or ’)"))
+    if sentence and not ends_sentence(text):
+        issues.append(Issue("error", here, "must end a sentence (. ! ? or …)"))
+    found = acronyms(text)
+    if found:
+        issues.append(Issue("warning", here, f"acronyms {', '.join(found)}: check by ear (say \"text to speech\", "
+                                             "not TTS)"))
+    found = abbreviations(text)
+    if found:
+        issues.append(Issue("warning", here, f"abbreviations with periods ({', '.join(map(repr, found))}): spell "
+                                             "them out"))
+    if LIVE_CLAIM_RE.search(text):
+        issues.append(Issue("warning", here, "only true while Higgs Realtime speaks: the TTS 3 backup would make it "
+                                             "false (the lookups, checks and notes are live either way)"))
+    return text if not any(issue.level == "error" for issue in issues[errors:]) else None
+
+
+def _direction(raw, where: str, field_name: str, issues: list[Issue]) -> str | None:
+    """A direction to the live model (intent, bridge, delivery, avoid): plain words, never spoken; `avoid` may be
+    a list. Short, and no TTS tags."""
+    here = f"{where}.{field_name}"
+    if raw is None:
+        return None
+    if field_name == "avoid" and isinstance(raw, list) and raw and all(isinstance(item, str) for item in raw):
+        raw = "; ".join(" ".join(item.split()).rstrip(".;") for item in raw if item.strip())
+    if not isinstance(raw, str) or not raw.strip():
+        issues.append(Issue("error", here, "must be non-empty text"))
+        return None
+    text = " ".join(raw.split())
+    limit = MAX_DIRECTION_CHARS[field_name]
+    if len(text) > limit:
+        issues.append(Issue("error", here, f"{len(text)} characters (max {limit}): keep the instructions compact"))
+        return None
+    if find_tags(text) or "<|" in text or "|>" in text:
+        issues.append(Issue("error", here, "no TTS tags: write the direction in plain words"))
+        return None
+    return text
+
+
+def _seconds(raw, where: str, low: int, high: int, issues: list[Issue]) -> int | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, int) or isinstance(raw, bool) or not low <= raw <= high:
+        issues.append(Issue("error", where, f"must be a whole number of seconds, {low}–{high}"))
+        return None
+    return raw
+
+
+def _parse_beat(raw, where: str, issues: list[Issue]) -> Beat | None:
+    if not isinstance(raw, dict):
+        issues.append(Issue("error", where, "each beat is a mapping: {verbatim: …} or {gist: …, phrases: […]}"))
+        return None
+    unknown = set(map(str, raw)) - BEAT_KEYS
+    if unknown:
+        issues.append(Issue("warning", where, f"unknown keys ignored: {', '.join(sorted(unknown))}"))
+    has_verbatim, has_gist = raw.get("verbatim") is not None, raw.get("gist") is not None
+    if has_verbatim == has_gist:
+        issues.append(Issue("error", where, "a beat has exactly one of `verbatim` (words that must land exactly) or "
+                                            "`gist` (what to say in the model's own words)"))
+        return None
+    errors = len([issue for issue in issues if issue.level == "error"])
+    verbatim = gist = None
+    phrases: list[str] = []
+    if has_verbatim:
+        verbatim = _spoken(raw["verbatim"], where, "verbatim", issues, limit=MAX_VERBATIM_CHARS, sentence=True)
+        if raw.get("phrases") is not None:
+            issues.append(Issue("warning", f"{where}.phrases", "ignored: a verbatim beat says its words exactly"))
+    else:
+        gist = _spoken(raw["gist"], where, "gist", issues, limit=MAX_GIST_CHARS)
+        raw_phrases = raw.get("phrases")
+        if isinstance(raw_phrases, str):
+            raw_phrases = [raw_phrases]
+        if raw_phrases is not None:
+            if not isinstance(raw_phrases, list) or not raw_phrases or len(raw_phrases) > MAX_PHRASES:
+                issues.append(Issue("error", f"{where}.phrases", f"must be a list of 1–{MAX_PHRASES} key phrases"))
+            else:
+                for n, phrase in enumerate(raw_phrases):
+                    checked = _spoken(phrase, where, f"phrases[{n}]", issues, limit=MAX_PHRASE_CHARS)
+                    if checked:
+                        phrases.append(checked.rstrip(".,;:"))
+    delivery = _direction(raw.get("delivery"), where, "delivery", issues)
+    seconds = _seconds(raw.get("seconds"), f"{where}.seconds", 1, BEAT_MAX_S, issues)
+    if len([issue for issue in issues if issue.level == "error"]) > errors:
+        return None
+    return Beat(verbatim=verbatim, gist=gist, phrases=tuple(phrases), delivery=delivery, seconds=seconds)
+
+
+def parse_guide(raw, where: str, issues: list[Issue]) -> Guide | None:
+    """A `guide:` (a talking point's, or the top-level `handover:`), checked (D88). None when it has an error
+    (reported)."""
+    if not isinstance(raw, dict):
+        issues.append(Issue("error", where, "must be a mapping (intent, bridge, beats, delivery, seconds, avoid)"))
+        return None
+    unknown = set(map(str, raw)) - GUIDE_KEYS
+    if unknown:
+        issues.append(Issue("warning", where, f"unknown keys ignored: {', '.join(sorted(unknown))}"))
+    errors = len([issue for issue in issues if issue.level == "error"])
+    intent = raw.get("intent")
+    if intent is None:
+        issues.append(Issue("error", f"{where}.intent", "required: what this point must do for the listener"))
+    else:
+        intent = _direction(intent, where, "intent", issues)
+    single = {key: raw[key] for key in ("verbatim", "gist", "phrases") if key in raw}
+    raw_beats = raw.get("beats")
+    beats: list[Beat] = []
+    if raw_beats is not None and single:
+        issues.append(Issue("error", where, f"has both `beats` and {', '.join(f'`{k}`' for k in single)}: put the "
+                                            "words in the beats"))
+    elif raw_beats is None and not single:
+        issues.append(Issue("error", where, "needs `beats` (or a single beat's `verbatim` / `gist` right here)"))
+    elif raw_beats is None:
+        beat = _parse_beat(single, where, issues)
+        if beat is not None:
+            beats.append(beat)
+    elif not isinstance(raw_beats, list) or not 1 <= len(raw_beats) <= MAX_BEATS:
+        issues.append(Issue("error", f"{where}.beats", f"must be a list of 1–{MAX_BEATS} beats"))
+    else:
+        for n, item in enumerate(raw_beats):
+            beat = _parse_beat(item, f"{where}.beats[{n}]", issues)
+            if beat is not None:
+                beats.append(beat)
+    bridge = _direction(raw.get("bridge"), where, "bridge", issues)
+    delivery = _direction(raw.get("delivery"), where, "delivery", issues)
+    avoid = _direction(raw.get("avoid"), where, "avoid", issues)
+    seconds = _seconds(raw.get("seconds"), f"{where}.seconds", GUIDE_MIN_S, GUIDE_MAX_S, issues)
+    if len([issue for issue in issues if issue.level == "error"]) > errors:
+        return None
+    guide = Guide(intent=intent, beats=tuple(beats), bridge=bridge, delivery=delivery, avoid=avoid, seconds=seconds)
+    total = sum(guide.weights())
+    if seconds is not None and all(beat.seconds for beat in beats) and abs(total - seconds) > 0.25 * seconds:
+        issues.append(Issue("warning", f"{where}.seconds", f"{seconds} s, but its beats add up to {total:.0f} s"))
+    spoken = sum(word_count(beat.verbatim) for beat in beats if beat.verbatim) / GUIDE_WORDS_PER_SECOND
+    if seconds is not None and spoken > 1.3 * seconds:
+        issues.append(Issue("warning", f"{where}.seconds", f"{seconds} s, but its verbatim lines alone take about "
+                                                           f"{spoken:.0f} s at a speaking pace"))
+    if seconds is None and total > GUIDE_MAX_S:
+        issues.append(Issue("warning", where, f"about {total:.0f} s at a speaking pace (asked for at most "
+                                              f"{GUIDE_MAX_S} s): split the point"))
+    return guide
+
+
 def _parse_chunks(slide_id: str, raw_chunks, fragments: int, issues: list[Issue]) -> list[Chunk]:
     chunks: list[Chunk] = []
     if not isinstance(raw_chunks, list):
@@ -231,10 +482,15 @@ def _parse_chunks(slide_id: str, raw_chunks, fragments: int, issues: list[Issue]
     last_fragment = 0
     for k, raw in enumerate(raw_chunks):
         where = f"script.yaml: {slide_id}.chunks[{k}]"
-        if not isinstance(raw, dict) or not isinstance(raw.get("say"), str):
-            issues.append(Issue("error", where, "each chunk needs a `say:` string"))
+        guide = None
+        if isinstance(raw, dict) and raw.get("guide") is not None:
+            guide = parse_guide(raw["guide"], f"{where}.guide", issues)
+        derived = isinstance(raw, dict) and raw.get("say") is None and guide is not None and guide.verbatim
+        if not derived and (not isinstance(raw, dict) or not isinstance(raw.get("say"), str)):
+            issues.append(Issue("error", where, "each chunk needs a `say:` string (the TTS 3 backup line; it may be "
+                                                "left out when a guide's beats are all verbatim)"))
             continue
-        unknown = set(raw) - {"say", "fragment", "id"}
+        unknown = set(raw) - {"say", "fragment", "id", "guide"}
         if unknown:
             issues.append(Issue("warning", where, f"unknown keys ignored: {', '.join(sorted(unknown))}"))
         point_id = raw.get("id")
@@ -242,8 +498,16 @@ def _parse_chunks(slide_id: str, raw_chunks, fragments: int, issues: list[Issue]
             issues.append(Issue("error", where, f"`id: {point_id!r}`: a talking point id is 1–40 lowercase letters, "
                                                 "digits and -, starting with a letter or digit (e.g. friday-beta)"))
             point_id = None
-        say = raw["say"].strip()
-        _check_say(say, where, issues)
+        say = guide.derived_say() if derived else raw["say"].strip()
+        if derived:  # the beats were checked as spoken lines already: only what breaks the backup chunk counts
+            found: list[Issue] = []
+            _check_say(say, f"{where} (say: the guide's verbatim beats)", found)
+            issues.extend(issue for issue in found if issue.level == "error" or "the next word" in issue.message)
+        else:
+            _check_say(say, where, issues)
+        if guide is not None and not derived and LIVE_CLAIM_RE.search(strip_tags(say)):
+            issues.append(Issue("warning", where, "the backup line says it is live: TTS 3 plays it when the link is "
+                                                  "down"))
         fragment = raw.get("fragment")
         if fragment is not None:
             if not isinstance(fragment, int) or isinstance(fragment, bool) or fragment < 0:
@@ -256,7 +520,8 @@ def _parse_chunks(slide_id: str, raw_chunks, fragments: int, issues: list[Issue]
                                                       "fragments never hide again"))
             if isinstance(fragment, int):
                 last_fragment = max(last_fragment, fragment)
-        chunks.append(Chunk(index=len(chunks), say=say, fragment=fragment, point_id=point_id, slide=slide_id))
+        chunks.append(Chunk(index=len(chunks), say=say, fragment=fragment, point_id=point_id, slide=slide_id,
+                            guide=guide))
     return chunks
 
 
@@ -406,9 +671,21 @@ def _parse_talk(root: Path) -> tuple[Talk | None, list[Issue]]:
     _check_point_ids(slides, issues)
     if slides and not any(slide.is_relay for slide in slides):
         issues.append(Issue("error", "script.yaml", "no relay slides: Relay has nothing to present"))
+    handover = None
+    if script.get("handover") is not None:
+        handover = parse_guide(script["handover"], "script.yaml: handover", issues)
+    if not (root / "agenda.yaml").is_file():  # guidance shapes the facilitator's per-point responses (meetings)
+        if script.get("handover") is not None:
+            issues.append(Issue("warning", "script.yaml: handover", "ignored: only a meeting (agenda.yaml) hands "
+                                                                   "over to a discussion"))
+        guided = [chunk.id for slide in slides for chunk in slide.chunks if chunk.guide is not None]
+        if guided:
+            issues.append(Issue("warning", "script.yaml", f"the guides of {', '.join(guided)} are used by meetings "
+                                                          "only (agenda.yaml): a plain talk presents each slide from "
+                                                          "its say lines"))
     talk = Talk(id=talk_id, root=root, voice=voice if isinstance(voice, str) else "default",
                 presenter=presenter.strip(), slides=slides, slides_md=slides_md, kb=kb.strip(),
-                warnings=[issue for issue in issues if issue.level == "warning"])
+                warnings=[issue for issue in issues if issue.level == "warning"], handover=handover)
     return talk, issues
 
 
@@ -445,6 +722,11 @@ def main(argv: list[str] | None = None) -> int:
     for slide in talk.relay_slides:
         print(f"  {slide.id:<12} {len(slide.chunks)} chunk(s) {word_count(slide.narration):>4} words"
               f"{'  [qa]' if slide.is_qa else ''}")
+    guided = [chunk for slide in talk.relay_slides for chunk in slide.chunks if chunk.guide is not None]
+    if guided or talk.handover is not None:
+        live_s = sum(chunk.guide.seconds_from(0) for chunk in guided)
+        print(f"guidance: {len(guided)} of {chunks} talking points guided, ~{live_s:.0f} s live by their guides"
+              + (f"; the hand-over guided (~{talk.handover.seconds_from(0):.0f} s)" if talk.handover else ""))
     from .meeting import load_demo, load_meeting  # see _parse
     meeting = load_meeting(talk)
     if meeting is not None:

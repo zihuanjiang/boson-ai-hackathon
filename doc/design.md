@@ -38,6 +38,7 @@ playback positions. The browser never decides what plays next.
 | `web/` | deck client: plain ES modules + JSDoc, **no build step**, reveal.js vendored in `web/vendor/reveal/` |
 | `talks/test/` | 3-slide test talk (milestone 1 + test fixture) |
 | `talks/relay-intro/` | the self-intro talk (Claude drafts, Ken owns every spoken line) |
+| `talks/project-overview/` | the demo deck (D88): On the Same Page presents itself, every talking point guided |
 
 Units everywhere: audio is PCM16 mono **24 kHz**; times inside a chunk are **integer milliseconds**; chunk indices
 are **0-based**; `fragment` is a **count** of visible fragments.
@@ -65,6 +66,36 @@ Input contract is brief Appendix B. Parser/validator rules beyond it:
   sentence for cut/resume, and text normalisation is off with timestamps), a sentence break in `say` followed by a
   lowercase word (`so clear… then`: a cut after it would resume mid-sentence), `fragment` decreasing, an id not
   starting with a letter, a tag not spelled exactly `<|kind:value|>`, a `Note:` line.
+
+**Script guidance (D88).** In a meeting, a talking point (script chunk) may carry a `guide:`: Claude writes the
+script, Higgs Realtime performs it, one talking point per response. Without one, everything below is as before.
+
+```yaml
+- id: hook
+  say: "<the TTS 3 backup line, ≤ 300 chars; may be left out when every beat is verbatim: then the beats joined>"
+  guide:
+    intent: what the point must do for the listener          # required, ≤ 160 chars
+    bridge: how it connects to the point before              # optional, ≤ 160 (dropped when resuming after a cut)
+    seconds: 25                                              # optional, 3–45: the point's live length
+    delivery: for the whole point                            # optional, ≤ 100
+    avoid: a greeting before the first line                  # optional, ≤ 160 (or a list)
+    beats:                                                   # 1–6, in order; or one beat's keys right in the guide
+      - verbatim: "Words that must land exactly."             # …or
+      - gist: what to say in its own words, as a note        # ≤ 240, with
+        phrases: [key phrase, another]                       # 1–5 key phrases to work in (≤ 60 each)
+        delivery: pace, energy, pauses, emphasis             # ≤ 100; per beat, adds to the point's
+        seconds: 6                                           # optional, 1–30
+```
+
+A top-level `handover:` (same shape) guides the hand-over to the discussion. Validation: errors for a missing
+`intent`, a beat with both or neither of `verbatim`/`gist`, too many beats or phrases, a field over its length, a
+`seconds` out of range, and, in every spoken field (verbatim, gist, phrases), digits (numbers as words; source ids),
+TTS tags (Higgs Realtime would read them), brackets / markdown / stage directions, URLs and double quotes (the prompt
+quotes the line); a verbatim line must end a sentence and be ≤ 300 chars; a `say` left out must be derivable (every
+beat verbatim) and the beats joined must pass the `say` rules. Warnings: unknown keys, acronyms and abbreviations in a
+spoken field, a line that is only true live ("live right now", "what you hear is live": the backup would make it
+false), a `seconds` that the beats' own `seconds` or its verbatim words (2.6 words/s) contradict, guides or `handover`
+in a plain talk (no agenda.yaml: unused). The CLI prints how many points are guided and their live length.
 
 Render (`uv run python -m relay.render talks/<id> [--fake] [--force] [--only SLIDE] [--jobs 4] [--check]
 [--out DIR]`; `--out` replaces the `out/` root): TTS 3 with `{"model": "higgs-tts-3", "input": say, "voice": voice, "response_format": "wav", "timestamps": true}`.
@@ -485,6 +516,32 @@ comes after `handoff_to_human` (phase `human`), on the qa slide.
 Phase lines appended: opening → `{presenter} is about to hand you the stage: greet the room in one line, then call
 start_presentation.`; qa → `This is Q&A: answer in up to four sentences using the facts, then call
 handoff_to_human.`; human → `{presenter} has the floor: answer briefly.` `Slides:` lists relay slides only.
+
+**Guided talking points (D88).** `prompts.talking_point_instructions` hands a point with a `guide` to
+`guided_point_instructions` (the unguided text is unchanged): the header (meeting, slide, on screen), `Its job:
+<intent>`, how the previous point ended (its verbatim beats when all are verbatim, else its notes; the last ~200
+chars), `Bridge in from the previous point: …`, then "Perform it in N beats, straight through, in this order:" and one
+line per beat — `Beat k, word for word: "<verbatim>"` (a quoted sentence comes back word for word, live 2026-10-24) or
+`Beat k, in your own words, one or two short sentences: <gist>; work in "<phrase>"` — each with `Delivery: …`; then
+`Delivery throughout`, `About N seconds in all. Avoid: …`, the rules (say the word-for-word beats exactly; never the
+beat numbers, delivery notes, directions or source ids; no emphasis words of its own) and the usual closing line.
+There is no SSML: pace and pauses come from the lines' punctuation and the delivery notes.
+- **First point:** "These are the first words of your presentation: no greeting, welcome or introduction before them"
+  (instead of the optional welcome). When the first point is guided, the opening phase line becomes
+  `GUIDED_OPENING_LINE`: thank the host in two or three words, no greeting, then `set_presentation_state` start; R (or
+  the demo's `start`) starts with the hook itself.
+- **Length:** `Controller._point_seconds` asks a guided point for `guide.seconds_from(0)` (its `seconds`, else the
+  beats' lengths), up to `GUIDED_POINT_MAX_S` = 45, not its backup render's length capped at `POINT_MAX_S`. No
+  narration timer depends on the length (first audio within `NARRATION_WAIT_S`, an event every `REPLY_STALL_S` while it
+  streams, the drain at its audio + 2 s), so a 25-second hook plays to its end.
+- **A cut mid-point:** `_cut_live` estimates the beat the room was in (`prompts.beat_reached`: the heard share of the
+  response over the beats' lengths, moved on to the last verbatim beat whose opening words were heard) into
+  `Cursor.beat`; the continuing request (`LiveNarration.from_beat`) lists only the beats from there: "You were
+  interrupted during beat k …; the room last heard you say: "…". Pick up from there with a bridge of a few words at
+  most …, say what the room missed of beat k, then go on. Never start the point over …", asked for the time left
+  (`min(seconds_from(k), point length − heard)`).
+- **Hand-over:** `handover_instructions(meeting, talk.handover)` performs the `handover:` guide the same way (beats,
+  length, no greeting, no tools); without it the text is today's.
 
 `tools.tool_specs(talk) -> list[dict]`: five `{"type": "function", name, description, parameters}` specs with the
 brief Appendix D descriptions; `goto_slide.slide_id` is an enum of relay slide ids. `tools.parse_call(call_id,
