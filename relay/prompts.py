@@ -311,7 +311,10 @@ def talking_point_instructions(talk: Talk, meeting: Any, slide: Slide, chunk: Ch
     else:
         lines.append("Say this point now in your own words, as a confident speaker. Don't read the notes word for "
                      "word.")
-    lines.append(f"Use one to three sentences, about {seconds} seconds.")
+    # live 2026-10-24: the model said ~1.4× its notes, added emphasis ("remarkably responsive") and read the slide's
+    # source ids aloud ("RES-1 through RES-4 and LIM-7")
+    lines.append(f"Use one to three sentences, about {seconds} seconds. Don't add examples or emphasis, and never read "
+                 "source ids aloud.")
     lines.append("If you haven't welcomed the room yet, open with one short welcome; otherwise go straight in."
                  if first else "Don't greet or introduce yourself: carry on naturally.")
     lines.append(f"Speak only this point. No lists, markdown, URLs or stage directions. {NO_TOOLS}")
