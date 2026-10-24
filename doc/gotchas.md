@@ -104,6 +104,13 @@ Add our own findings here as we hit them (date them).
   JavaScriptCore (`/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc`).
 - Python: uv-managed 3.12 only. `sounddevice` needs PortAudio (bundled in the macOS wheel). `websockets` ≥ 13 uses
   `additional_headers=` (older versions: `extra_headers=`).
+- **Anthropic SDK 2.3 inside the Claude Code sandbox (2026-10-24):** every request failed with `APIConnectionError`
+  ← `SSLCertVerificationError ('OSStatus -26276',)`. The SDK's HTTP layer (`httpx2`/`httpcore2`) verifies TLS through
+  `truststore`, i.e. the macOS Security framework, which the sandbox can't reach; it falls back to OpenSSL only when
+  `SSL_CERT_FILE` is set. Run live Claude commands here with `SSL_CERT_FILE=<worktree>/.venv/lib/python3.12/site-packages/certifi/cacert.pem`
+  (still full verification, against Mozilla's CA list) and `allowed_domains: ["api.anthropic.com"]`. Outside the
+  sandbox (Ken's terminal, the Zoom bot) nothing is needed. Boson's clients (`httpx` 0.28, `websockets`) use certifi
+  already.
 
 ## Measured (ours, dated)
 

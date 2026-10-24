@@ -76,11 +76,13 @@ uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --passco
 ```
 
 The meeting must allow guests (your personal meeting with "Require authentication to join" off); be in it yourself
-first, with your real microphone. The bot starts `relay serve talks/submission-review --input voice` itself, joins,
-opens `http://localhost:8000/?view=observer` in its second tab and shares it. Keys in the bot's terminal: R start,
-Space send now, ← → slides, P pause, H the operator has the floor, N next phase, 0 restart, `t <text>` type a line,
-q leave. Rehearse without Zoom: `uv run python scripts/zoom_bot.py --dry-run` (a fake Zoom page plays the demo clips
-as the participants, over the fake Realtime). The lines your participants speak and every fallback are in
+first, with your real microphone. The bot starts `relay serve talks/submission-review --input voice --alignment claude`
+itself (both keys from `.env`; without `ANTHROPIC_API_KEY` it warns and nobody checks the discussion; `--alignment
+legacy` runs the old patterns), joins, opens `http://localhost:8000/?view=observer` in its second tab and shares it.
+Keys in the bot's terminal: R start, Space send now, ← → slides, P pause, H the operator has the floor, N next phase,
+0 restart, `t <text>` type a line, q leave. Rehearse without Zoom: `uv run python scripts/zoom_bot.py --dry-run` (a
+fake Zoom page plays the demo clips as the participants, over the fake Realtime, with a scripted stand-in for
+Claude's analysis). The lines your participants speak and every fallback are in
 [`talks/submission-review/run_of_show_zoom.md`](talks/submission-review/run_of_show_zoom.md); the proven spike behind it
 is [`doc/zoom_bot_spike.md`](doc/zoom_bot_spike.md).
 

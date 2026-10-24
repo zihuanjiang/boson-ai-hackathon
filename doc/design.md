@@ -229,16 +229,36 @@ of this.
 | → backend | `speaker` | `name: str\|null` | who the room's next lines are from (the speaker picker; null = the room) |
 | → backend | `typed` | adds `speaker` | in the discussion a typed line is an utterance of the room (no Realtime needed) |
 | → backend | `mic` | `pcm`, and for a participant clip `source: "clip"`, `speaker`, `clip` (step id), `tail: bool`, `reply`, `played_ms`, `at: Position\|null` | input `clips`: the deck streams each clip as it plays (100 ms frames, each sent when its audio starts playing) and then 1.2 s of silence flagged `tail: true`; accepted in every state, ignored with input `mic`. `reply`/`played_ms` = the deck's current reply and how much of it was heard (null/null without one), `at` = the backup narration's position: where a barge-in cuts. A participant's line ends where the clip ends (its first `tail` frame, or another clip's first frame); frames without `tail` end on 1.1 s of silence. Frames without `source` are the room/tap mic, sent only while the backend has the mic open (now also in ROOM) |
-| ← deck | `hello` | adds `narration_mode`, `meeting`, `demo`, `input`; `snapshot` adds `agenda_phase`, `status`, `talking_point`, `checkpoint`, `speaker`, `input` | as `/api/talk` (§3); the bundle ends with `meeting` |
-| ← deck | `state` | adds `narration` (`live`\|`backup`\|`rendered`\|null), `agenda_phase`, `status`, `talking_point`, `checkpoint {slide_id, talking_point_id, status}` | status: presenting · resuming · answering · paused · listening · intervening · wrapping_up · idle |
+| ← deck | `hello` | adds `narration_mode`, `meeting`, `demo`, `input`, `alignment {mode, model, available}`; `snapshot` adds `agenda_phase`, `status`, `talking_point`, `checkpoint`, `speaker`, `input` | as `/api/talk` (§3); the bundle ends with `meeting` |
+| ← deck | `state` | adds `narration` (`live`\|`backup`\|`rendered`\|null), `agenda_phase`, `status`, `talking_point`, `checkpoint {slide_id, talking_point_id, status}`, `alignment` (the full status, below) | status: presenting · resuming · answering · paused · listening · intervening · wrapping_up · idle |
 | ← deck | `reply_start` | adds `kind` | `narration` (presenting a talking point live), `answer`, or the facilitator's own `handover`, `intervention`, `decision`, `summary`; a follow-up after a tool round trip is a new reply of the same kind (a silent tool-only reply drains at once and is no cue for the demo script) |
 | ← deck | `caption` | `role: "user"` adds `speaker` | on a turn a participant's clip started (prepared clip metadata, never diarization) |
 | ← deck | `mic` | `open: true` also in ROOM | the room mic of the discussion; a participant clip's turn opens none (the state still goes LISTENING) |
-| ← deck | `meeting` | the whole meeting state (`MeetingState.to_json()`: phase, agenda, participants, checkpoint, clarifications, decisions, action items, open questions; `notes` once wrapped up) | after every change |
+| ← deck | `meeting` | the whole meeting state (`MeetingState.to_json()`: phase, agenda, participants, checkpoint, clarifications, decisions, action items, open questions, `issues`, `assumptions`, `candidate_decisions`, `alignment`; `notes` once wrapped up, with the open `issues`) | after every change |
 | ← deck | `evidence` | `lookup {id, query, by: model\|engine, purpose, at_s, results: [{source_id, kind, title, excerpt, score}]}` | a lookup (the model's `lookup_evidence`, or the alignment check's before an intervention): the evidence callout and tab |
 | ← deck | `transcript` | `utterance {id, text, speaker, at_s, phase, source: voice\|typed\|clip}` | one line of the discussion |
-| ← deck | `alignment` | `event` (claim, conflict, intervene, resolved, decision_draft, suggestion) | the alignment check's events (chips, the alignment card) |
+| ← deck | `alignment` | `event` (claim, assumption, conflict, intervene, suggestion, resolved, withdrawn, decision_draft) | the alignment check's events (chips, the alignment card); fields below |
 | ← deck | `barge_in` | `speaker`, `clip`, `played_ms`, `reply`, `state` | input `clips`: a participant's clip started while the facilitator was audible (narration, an answer, an intervention); sent just before the cut reply's `reply_flush`. None for an intervention nothing of which was heard yet: it is asked after the participant's line instead |
+
+**Alignment events and status (contract v5 §3–§4, §12).** Every event has `id` (`AL<n>`), `type`, `at_s`. Claude mode:
+
+| `type` | Fields | The deck |
+| --- | --- | --- |
+| `claim` | `utterance_id`, `text`, `kind` (assertion, proposal, question, agreement, correction, plan_change, other), `agrees` (true/false/null), `evidence_ids`, `speaker`, `sentence`; `label` "" | a chip on the line (agree / conflict / open) |
+| `assumption` | `speaker` (the transcript's, null when unlabelled), `utterance_id`, `topic`, `interpretation` | a grey chip `assumes: …` |
+| `conflict` | `issue_id` (`IS<n>`), `issue_type` (evidence_conflict, hidden_disagreement, ambiguous_decision), `topic`, `claim`, `quote`/`quote_speaker`/`quote_utterance_id` (the claim's line), `confirm_quote`, `evidence: [{kind, id, quote}]` (verified), `participant_views: [{speaker, utterance_id, quote, view}]`, `missing_details`, `settled_details`, `source_ids`/`clarification_ids`/`decision_ids`, `established_label`, `commitment`, `confidence`, `recommendation`, `policy` (silent, suggest, clarify), `question`, `status`, `repeat`, `revision`; `label` = `topic`, `slot` = `issue_id` | the card (once per issue and analysis revision) |
+| `intervene` | the conflict's fields + `conflict_id`, `conflict_ids`, `related: []`, `utterance_id` (the commitment line), `query` | the card turns into the facilitator's question (pending → asked when its audio starts) |
+| `suggestion` | the conflict's fields + `conflict_id`; `at_wrapup: true` when the wrap-up turned a pending issue into one | "Possible issue (not raised)" |
+| `resolved` | `issue_id`, `intervene_id`, `conflict_id`, `partial`, `settled`, `remaining`, `note`/`value_label`, `utterance_ids`, `owner` (from the confirmed proposal), `plan_changed`, `follow_up_quote` | Resolved / Partly settled |
+| `withdrawn` | `issue_id`, `intervene_id`, `conflict_id`, `note`, `utterance_ids` | Withdrawn (a queued question is dropped) |
+| `decision_draft` | `decision`, `owner`, `follow_up`, `source_ids`, `utterance_ids`, `agreement_utterance_ids`, `owner_utterance_ids`, `issue_ids`, `plan_changed`, `supersedes`, `by: "analysis"`, `silent` (true: saved without speaking, with `decision_id`) | the decision flow, or a silent note |
+
+The legacy engine's events keep their slot fields and gain `issue_type: "evidence_conflict"` and `topic`. The status
+(`state.alignment`, `meeting.alignment`) is `{mode: claude|legacy|off, model, available, in_flight, waiting,
+last_latency_ms, last_error, analyses, last_policy}`; `hello` and `/api/talk` carry `{mode, model, available}`. The
+deck shows it in Meeting info ("Claude (<model>) · ready | analysing… | unavailable (no key)", "legacy patterns",
+"off") and, when claude mode has no analyzer, the topbar badge *Alignment unavailable*. The observer page renders all of
+it from the same messages.
 
 **Stale deck.** The deck keeps the talk id and `version` of the `/api/talk` it loaded at boot. A `hello` with another
 talk id or version (a re-render or an edit, then a server restart) means its slides, word timings and decoded
@@ -615,7 +635,7 @@ audio heard), connect → `session.created`, and reconnects (old socket closed �
 → first reply audio heard is timed on a rehearsal recording (the speaker's last word → Relay's first word); tap →
 silence is the deck's estimate in the browser console ("space → silence ≈ N ms").
 
-## 12. Semantic alignment (relay/semantic.py; D76–D82)
+## 12. Semantic alignment (relay/semantic.py; D78–D87)
 
 The discussion is checked by a model, not by patterns (`doc/alignment_replacement_prompt.md`). Higgs Realtime keeps
 transcribing and speaking; the **Claude API** (Anthropic Python SDK, async client, `ANTHROPIC_API_KEY`, separate
@@ -632,14 +652,25 @@ utterances. The snapshot is bounded (`MAX_SNAPSHOT_CHARS`, 24 000): the oldest u
 then the documents shrink to the passages BM25 ranks highest for the last six utterances (`passages_truncated`
 tells the model others exist). `AnalysisRunner` runs one request at a time **outside the controller lock**; a
 request while one is in flight replaces the waiting snapshot (the newest snapshot holds every intervening
-utterance). The request: `messages.create` with the guide's instruction and the documents as two system blocks (the
-documents block carries `cache_control`, so a meeting's repeated requests read it from the cache), the rest as the
-user message, `output_config.format` = the strict JSON schema of `AnalysisResult` (refs inlined, every object
-closed, every field required) and `output_config.effort` (`RELAY_ALIGNMENT_EFFORT`, default `low`), timeout
+utterance), and once the result in flight has been applied the waiting snapshot is rebuilt (`_refresh_waiting`), so
+it sees the issues that result raised (built earlier, it couldn't, and the model would raise them again). The new
+utterances are those after the last *successful* analysis: a failed one leaves its lines new. The request:
+`messages.create` with the guide's instruction and the documents as two system blocks (the documents block carries
+`cache_control`, so a meeting's repeated requests read it from the cache), the rest as the user message,
+`output_config.format` = the strict JSON schema of the compact **wire form** `WireResult` (refs inlined, every object
+closed, every field required; converted to `AnalysisResult` on arrival) and `output_config.effort`
+(`RELAY_ALIGNMENT_EFFORT`, default `low`), timeout
 `RELAY_ALIGNMENT_TIMEOUT_S` (20 s), one SDK retry, `RELAY_ALIGNMENT_MAX_TOKENS` (4000). Refusals, truncation
 (`max_tokens`), a missing text block, invalid JSON and schema violations come back as an `error` outcome; so do
 timeouts, 429s and connection errors. The result is delivered to `Controller.on_analysis`, which takes the lock and
 discards it when the meeting generation changed (reset).
+
+**The wire form.** Structured outputs compile a grammar from the schema, and the API refuses one that is too large
+(live 2026-10-24: HTTP 400 "The compiled grammar is too large" for the full `AnalysisResult`, 52 fields; about 41
+fields in 6 object types compile on opus, sonnet and haiku 5.5, 43 don't: `test_the_wire_schema_stays_within_what_the_
+api_compiles` pins it). So the model fills `WireResult`: an assumption is a claim of kind `assumption` (topic, the
+interpretation as text), a participant's reading is the `view` of an utterance it cites as evidence, speakers come from
+the transcript, no explanation fields. A new field must replace one.
 
 **The result** (`AnalysisResult`, `schema_version` 1): `candidate_claims` (utterance, text, kind, agrees with the
 sources?), `participant_assumptions` (attributed interpretations), `issues` (`issue_type` ∈ `evidence_conflict`,
@@ -653,11 +684,14 @@ supersedes; the issues it resolves).
 
 **Validation (`reconcile`).** Every id must exist in its namespace (passages, `U<n>`, `CL-<n>`, `D<n>`, `IS<n>`);
 every quote must be found in the cited text after normalisation (lower case, straight quotes, single spaces, edge
-punctuation stripped); a view's speaker is the utterance's; owners must be participants (else unknown); an issue
-without a valid claim or commitment utterance is dropped; a confirmed proposal without a valid agreement utterance is
-dropped. Each category's evidence requirement: an evidence conflict cites a passage, clarification or decision; a
-hidden disagreement cites two participants' own words; an ambiguous decision names a missing detail. Everything
-dropped is logged (`analysis_result.dropped`).
+punctuation stripped); a view's or an assumption's speaker is the utterance's label, never the model's (an unlabelled
+line stays unknown: a Zoom call labels best effort); owners must be participants (else unknown); an issue without a
+valid claim or commitment utterance is dropped; a confirmed proposal without a valid agreement utterance is dropped.
+Each category's evidence requirement: an evidence conflict cites a passage, clarification or decision; a hidden
+disagreement cites two different utterances whose labelled speakers are not all one person (one labelled and one
+unlabelled line qualify); an ambiguous decision names a missing detail. Everything dropped is logged
+(`analysis_result.dropped`). A confirmed decision changes the plan (`plan_changed`, `semantic.plan_changed`) when it
+supersedes a decision or a `plan_change` claim sits on one of its utterances or cites one of its sources.
 
 **The gate (`decide_policy`).** `clarify` only when the model recommends it, confidence is not low, commitment is
 `confirming` or `committed`, the evidence requirement holds and there is a question; `suggest` when the model
