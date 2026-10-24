@@ -20,8 +20,10 @@ TALKS = ROOT / "talks"
 
 RATE = 24_000  # Hz. PCM16 mono everywhere: TTS wav, Realtime in/out, the browser AudioContext.
 TTS_MODEL = "higgs-tts-3"
-REALTIME_MODEL = "higgs-realtime"  # default; BOSON_REALTIME_MODEL overrides (e.g. higgs-realtime-1.5-preview)
-REALTIME_MODELS = ("higgs-realtime", "higgs-realtime-1.5-preview")  # the ids the fake Realtime accepts
+# The newest Realtime model is the default, always (Ken, 2026-10-24: accessible with the key since then; same
+# resolved session defaults as higgs-realtime). BOSON_REALTIME_MODEL overrides, e.g. back to higgs-realtime.
+REALTIME_MODEL = "higgs-realtime-1.5-preview"
+REALTIME_MODELS = ("higgs-realtime-1.5-preview", "higgs-realtime")  # the ids the fake Realtime accepts
 STT_MODEL = "higgs-stt-3.1"
 PRESET_VOICES = ("default", "chloe", "eleanor", "jake", "marcus", "nora", "oliver")
 MIC_MODES = ("tap", "hold")  # "open" (hands-free) is a nice-to-have, not in v1

@@ -403,7 +403,7 @@ No cursor: source `key` → current slide if relay, else next relay slide after 
 Full config (first `session.update` of every connection; `Controller.session_config()`):
 
 ```json
-{"type": "realtime", "model": "higgs-realtime", "instructions": "<BASE + STATE>",
+{"type": "realtime", "model": "higgs-realtime-1.5-preview", "instructions": "<BASE + STATE>",
  "output_modalities": ["audio"],
  "audio": {"input": {"format": {"type": "audio/pcm", "rate": 24000},
                      "transcription": {"model": "higgs-stt-3.1", "language": "en"},
@@ -416,8 +416,9 @@ Turn detection defaults to semantic VAD with 700 ms of silence (`relay/config.py
 the server's default 100 ms ended spoken lines at their first pause in the live run. Never use
 `tool_choice: "required"`: on Higgs it stalls the response (no `response.done`, no audio; live F5).
 
-`model` = `settings.realtime_model`: `higgs-realtime` unless `BOSON_REALTIME_MODEL` overrides it (e.g.
-`higgs-realtime-1.5-preview`; the link's URL asks for the same model, and the fake accepts both ids).
+`model` = `settings.realtime_model`: `higgs-realtime-1.5-preview`, the newest model, unless `BOSON_REALTIME_MODEL`
+overrides it (e.g. `higgs-realtime`; the link's URL asks for the same model, and the fake accepts both ids). The
+newest Higgs model is always the default (Ken, 2026-10-24).
 `turn_detection` = `settings.turn_detection` in tap mode (default semantic VAD; override with
 `RELAY_TURN_DETECTION` JSON), `null` in hold mode. `temperature` only if `RELAY_TEMPERATURE` is set. Per-turn
 update: `{"type": "session.update", "session": {"type": "realtime", "instructions": "<BASE + STATE>"}}` (full config

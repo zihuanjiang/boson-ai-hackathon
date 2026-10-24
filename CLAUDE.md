@@ -36,7 +36,8 @@ uv run pytest                                              # all tests, no netwo
 ## Key facts
 
 - Base URL `https://api.boson.ai/v1`, header `Authorization: Bearer $BOSON_API_KEY` (key format `bai-…`).
-- Model IDs: `higgs-realtime` (WS `wss://api.boson.ai/v1/realtime`), `higgs-tts-3` (`POST /v1/audio/speech`),
+- Model IDs: `higgs-realtime-1.5-preview` (WS `wss://api.boson.ai/v1/realtime`; `higgs-realtime` is the older id —
+  **the newest Higgs model is always the default**, Ken 2026-10-24), `higgs-tts-3` (`POST /v1/audio/speech`),
   `higgs-avatar` (`POST /v1/videos`), `higgs-stt-3.1` (input transcription inside Realtime only).
 - Realtime is OpenAI-Realtime-compatible, WebSocket only, PCM16 24 kHz mono. Nothing arrives before the first
   `session.update`; `turn_detection` defaults to null; tool outputs are JSON strings.

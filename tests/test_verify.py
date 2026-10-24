@@ -676,7 +676,7 @@ async def test_open_session_sends_the_session_update_first_and_reads_the_ack(liv
     config = verify.session_config(live_settings, voice="marcus", instructions="hi")
     opened = await verify.open_session(Ctx(live_settings, connect=server.connect), config)
     url, kwargs = server.calls[0]
-    assert url == "wss://api.boson.ai/v1/realtime?model=higgs-realtime"
+    assert url == "wss://api.boson.ai/v1/realtime?model=higgs-realtime-1.5-preview"
     assert kwargs["additional_headers"] == {"Authorization": f"Bearer {KEY}"} and kwargs["max_size"] is None
     assert server.connections[0].sent == [{"type": "session.update", "session": config}]
     assert opened.session["audio"]["output"]["voice"] == "marcus"
@@ -689,7 +689,7 @@ async def test_open_session_sends_the_session_update_first_and_reads_the_ack(liv
 def test_session_config_is_the_apps(live_settings):
     config = verify.session_config(live_settings, voice="chloe", instructions="BASE", tools=[{"name": "x"}])
     assert config == {
-        "type": "realtime", "model": "higgs-realtime", "instructions": "BASE", "output_modalities": ["audio"],
+        "type": "realtime", "model": "higgs-realtime-1.5-preview", "instructions": "BASE", "output_modalities": ["audio"],
         "audio": {"input": {"format": {"type": "audio/pcm", "rate": 24000},
                             "transcription": {"model": "higgs-stt-3.1", "language": "en"},
                             "turn_detection": DEFAULT_TURN_DETECTION},

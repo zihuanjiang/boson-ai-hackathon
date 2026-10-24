@@ -231,6 +231,17 @@ Add our own findings here as we hit them (date them).
     answer was "the documents don't specify". Fusing it with a search on the asker's own words
     (`evidence.search_for_question`) puts REQ-2 first for every query the model sent; the answer was then right
     ("Friday is the beta release, not production") in 2/2 runs.
+  - **`higgs-realtime-1.5-preview` (accessible since 2026-10-24 ~01:50; the default from then on, D75):** F6 session
+    check PASS with the same resolved defaults (temperature 0.3, `turn_detection` as sent, 5 tools kept by an
+    instructions-only update); the whole rollout-review demo passed all 8 checks on the first run. Differences from
+    `higgs-realtime`: it speaks a short **preamble before a tool call** ("Let me pull up the rollout schedule
+    details." → lookup_evidence; "Let me save that decision." → save_decision), so a decision reply can end without
+    naming the decision aloud (the controller now sends its confirm follow-up whenever the decision reply didn't name
+    the decision and its owner: second run, "The decision that Friday's release stage is beta and Bob will announce
+    it to beta users is now in the meeting notes, owned by Bob."); end of speech → first audio **672 / 701 ms**
+    (vs ~1000 ms); the answer named both dates ("Friday the 24th is the beta release to the beta group, and production
+    goes out Wednesday the 29th"); its save_decision wording was a plain sentence with the owner ("Friday's release
+    stage is beta and Bob will announce it to beta users.").
   - With "at most thirty words … no dates", the intervention came down from ~40 words / 15 s to ~25 words, and it
     cited the earlier clarification ("…beta to beta users only, per CL-1. Does that align with the plan?"). Decisions
     read as plain sentences once asked for ("Friday's release is beta and the announcement goes to beta users

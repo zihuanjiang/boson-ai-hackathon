@@ -798,7 +798,10 @@ async def test_a_meeting_end_to_end(tmp_path):
         await meeting_run(deck, connector, question, talk_dir=talk_dir)
     entries = [json.loads(line) for path in sorted((tmp_path / "logs").glob("meeting-*.jsonl"))
                for line in path.read_text(encoding="utf-8").splitlines()]
-    assert [e["n"] for e in entries if e["kind"] == "followup"] == [1]
+    # one follow-up per tool round trip: the answer after the lookup, and the decision's confirmation (the fake's
+    # decision reply doesn't name the owner, so the room is told what was decided)
+    assert [(e["turn"], e["followup"], e["n"]) for e in entries if e["kind"] == "followup"] == [
+        ("answer", "lookup", 1), ("decision", "decision", 1)]
     assert not any(e["kind"] in ("narration_failed", "controller_error") for e in entries)
 
 

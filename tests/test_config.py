@@ -40,10 +40,10 @@ def test_an_override_wins_and_a_bad_narration_mode_is_refused(clean_env):
         load_settings()
 
 
-def test_realtime_model_defaults_to_higgs_realtime(clean_env):
-    assert REALTIME_MODEL == "higgs-realtime"
-    assert load_settings().realtime_model == "higgs-realtime"
-    assert Settings().realtime_model == "higgs-realtime"
+def test_realtime_model_defaults_to_the_newest_model(clean_env):
+    assert REALTIME_MODEL == "higgs-realtime-1.5-preview"  # always the latest (Ken, 2026-10-24)
+    assert load_settings().realtime_model == "higgs-realtime-1.5-preview"
+    assert Settings().realtime_model == "higgs-realtime-1.5-preview"
 
 
 def test_realtime_model_comes_from_the_environment(clean_env):
