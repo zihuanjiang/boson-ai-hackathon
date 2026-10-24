@@ -288,3 +288,18 @@ Add our own findings here as we hit them (date them).
     waiting for the analysis of Bob's line + 4.9 s for Carol's + 0.4 s to first audio (pattern check: 0.3 s). The
     analysis cited LIM-2 and the earlier answer (CL-1); the decision with owner Bob landed in the notes. Opus writes
     360–620 output tokens per analysis: that, not input, is the latency.
+- **Guided talking points (D88) live on `higgs-realtime-1.5-preview`, voice default, 2026-10-24 ~09:10:**
+  - `scripts/probe_guided.py --runs 5`: the hook as the first point came back **word for word in 5/5** (word match
+    1.00), 24.0–25.0 s for the 25 s asked, nothing before it, no direction read aloud ("beat", "delivery", the
+    on-screen text). The prepared resume line: 1.00 in 5/5, 8.0–8.3 s (asked 9). The hook picked up at its second
+    beat after a cut: 0.91 in 5/5, the only extra words the four-word bridge ("As I was saying"), 14.8–16.4 s (asked
+    19). So F1 holds for guided beats on 1.5-preview: a quoted line in the per-response instructions is performed
+    exactly, and the delivery notes are not read out.
+  - `scripts/live_check.py --talk talks/project-overview --alignment claude` (Opus): **all 8 checks**. Every one of
+    the ten points and the hand-over was said word for word as scripted (the run's transcripts); the hook ran 25 s;
+    Alice cut `interrupt` 1709 ms in; the model said a preamble before its lookup ("Let me check the evidence on Zoom
+    hand-raise interruptions.", 4.5 s) and then answered from ZOOM-3; the resume was the prepared line. Hand-over at
+    2:23 (the interruption ~23 s of it), the question 9.9 s after Carol's confirmation, the decision with owner Bob in
+    the notes, the decision said in two replies ("I'm saving that decision now." then the sentence), wrap-up done at
+    3:31: about 30 s over the planned ~3:10 (the first-audio gaps between eleven responses, the lookup preamble, the
+    Claude check's ~10 s).

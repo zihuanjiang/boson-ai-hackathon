@@ -4,6 +4,12 @@ Spec: `doc/brief.md`. Build contract (interfaces, protocol, state machine): `doc
 
 ## Status
 
+2026-10-24 (Sat) ~09:10 — **The new deck runs live** (D88, merged into `claude/relay-v1`): the probe performs the
+hook word for word 5/5 (24–25 s), and `scripts/live_check.py --talk talks/project-overview --alignment claude`
+passes all 8 checks with every point said exactly as scripted; the whole demo took 3:31 (planned ~3:10). The
+presentation-ready version of the deck is a private Claude Slides artifact for Ken's comments
+(https://claude.ai/artifact/4UQLEYXV3D9YJ4HsaZPaAy; its files in `.scratch/project-deck/deck/`, not committed).
+
 2026-10-24 (Sat) — **A new demo deck with granular script guidance** (D88, branch `claude/project-deck`, offline
 only): `talks/project-overview` — the facilitator presents On the Same Page itself to the hackathon room (the hook at
 Ken's grain, ~2 min live), Alice interrupts the line that promises it can be interrupted, the team then plans its demo
@@ -234,13 +240,14 @@ Script guidance and the new deck (D88, 2026-10-24, branch `claude/project-deck`)
       the beats left), the beat estimate read off the heard words, bridges only before a gist, the on-screen label, the
       script cut to ~280 words all word for word (the `online` slide folded into the name line), claims made exact
       (Claude wrote the script beforehand; 0.7 s with recorded participants), run of show for real people
-- [ ] **Live probe first**: `uv run python scripts/probe_guided.py --runs 5` (the hook, the resume line, a mid-hook
-      resume): word match, length, anything read aloud that shouldn't be; record in `doc/gotchas.md`. If the
-      on-screen text or "beat" leaks, tighten `GUIDED_SCREEN_LABEL` / `GUIDED_RULES`
-- [ ] **Live**: `scripts/live_check.py --talk talks/project-overview` and the Zoom dry run → real Zoom; measure the
-      live length of each guided point (verbatim pace, the hook's pauses), check that no beat number or delivery note
-      is read aloud and that the hook comes first; re-time `run_of_show.md` (its cut list if it runs past ~3:10);
-      record in `doc/gotchas.md`
+- [x] **Live probe first** (2026-10-24 ~09:10): the hook 5/5 word for word, 24–25 s; the resume line 5/5; nothing
+      read aloud that shouldn't be (`doc/gotchas.md`)
+- [x] **Live**: `scripts/live_check.py --talk talks/project-overview --alignment claude`: 8/8 checks, every point
+      word for word, the hook first; 3:31 in all (`doc/gotchas.md`)
+- [ ] Re-time `run_of_show.md` from that run and decide on its cut list (3:31 vs ~3:10 planned); the lookup preamble
+      and the two-reply decision are the cheapest seconds; then real Zoom
+- [ ] Ken's comments on the Slides artifact (https://claude.ai/artifact/4UQLEYXV3D9YJ4HsaZPaAy) → the deck files and
+      `slides.md` together
 - [ ] The live page shows `slides.md` in reveal's black theme; the designed Slides deck is for a human presenter, the
       video's intro and the write-up. Optional: a per-talk `theme.css` to carry its palette into the live page
 - [ ] Ken: the human-involved run (`talks/project-overview/run_of_show.md`), listen to the hook
