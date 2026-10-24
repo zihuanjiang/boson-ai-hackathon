@@ -138,14 +138,14 @@ def test_slides_points_fragments_agenda_and_demo(talk, pkg, demo):
         if slide.fragments:
             assert [chunk.fragment for chunk in slide.chunks] == list(range(1, len(slide.chunks) + 1)), slide.id
     assert all(chunk.guide is not None for chunk in points(talk)) and talk.handover is not None
-    assert (talk.voice, talk.presenter, pkg.host) == ("default", "Alice", "Alice")
+    assert (talk.voice, talk.presenter, pkg.host) == ("chloe", "Alice", "Alice")
     assert pkg.title == "On the Same Page: project overview"
     # the agenda keeps the clips' cast; real people in Zoom join the roster by speaking (D89)
     assert pkg.participant_names == ["Alice", "Bob", "Carol"]
     assert pkg.phase("discussion").prompt == QUESTION
     assert [step.id for step in demo.steps] == ["start", "alice-question", "bob-plan", "carol-confirm",
                                                 "carol-correct", "wrap"]
-    assert demo.voices == {"Alice": "chloe", "Bob": "jake", "Carol": "eleanor"} and len(demo.clips) == 4
+    assert demo.voices == {"Alice": "nora", "Bob": "jake", "Carol": "eleanor"} and len(demo.clips) == 4
     assert [d["id"] for d in pkg.documents()] == ["limits", "overview", "pipeline", "results", "zoom"]
 
 

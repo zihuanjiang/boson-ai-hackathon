@@ -14,7 +14,7 @@
 # live point further); if a live run is long, run_of_show.md lists what to cut first. The real-people Zoom run:
 # run_of_show_people.md.
 talk: project-overview
-voice: default
+voice: chloe
 presenter: Alice
 slides:
   - id: hook

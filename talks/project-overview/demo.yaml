@@ -5,7 +5,7 @@
 # sees (ZOOM-3; CL-1: it hears voices only), Carol confirms, the facilitator asks one question, Carol corrects it and
 # names the owner. The same story with real people in Zoom is run_of_show_people.md; the cues are web/js/demo.js's
 # (contract v3.1).
-voices: {Alice: chloe, Bob: jake, Carol: eleanor}
+voices: {Alice: nora, Bob: jake, Carol: eleanor}
 steps:
   - id: start
     action: start
