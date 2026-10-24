@@ -323,60 +323,410 @@
   }
 
   // ---- the active speaker, from Zoom's own UI (best effort; never the bot) ----------------------------------
-  // Zoom's web client marks the speaking tile/row with an "active"/"speaking" class or aria-label; the exact
-  // names change between releases, so several are tried and the one that works is remembered (speakerHow).
-  const SPEAKER_SELECTORS = [
+  // The web client's markup changes between releases, and the first guesses (one "speaker-active" class) found
+  // nothing live on 2026-10-24. So independent signals are tried in order, the one that worked last first:
+  //   class    an "active speaker" class on a tile or a participants row, a name label inside;
+  //   aria     an aria-label saying who is speaking or talking;
+  //   frame    the green frame Zoom draws round the active speaker's tile: tile-like elements that hold a roster
+  //            name, their computed border / outline / box-shadow colour (this survives class renames);
+  //   captions Zoom's own live captions or transcript, when the host has them on (a line names its speaker);
+  //   only     the fallback: exactly one other person on the roster.
+  // The roster: the display names Zoom shows (tile name labels, the participants panel when it is open), never the
+  // bot's. A read is a few hundred DOM and style lookups, so it is cached for SPEAKER_TTL_MS (the ears drain every
+  // 100 ms) and the roster for ROSTER_TTL_MS. B.probe() describes what the page offered, for the runner to save.
+  const SPEAKER_TTL_MS = 300;
+  const ROSTER_TTL_MS = 1000;
+  const CAPTION_FRESH_MS = 3000; // a caption line that hasn't changed for this long is somebody who stopped
+  const NAME_SELECTORS = [
+    '[class*="avatar-name"]',
+    '[class*="avatar__name"]',
+    '[class*="avatar-footer"]',
+    '[class*="participants-item__display-name"]',
+    '[class*="participants-item__name"]',
+    '[class*="participant-name"]',
+    '[class*="display-name"]',
+    '[class*="displayName"]',
+    '[class*="user-name"]',
+    '[class*="name-label"]',
+    '[class*="nameLabel"]',
+  ];
+  const ACTIVE_SELECTORS = [
     '[class*="speaker-active"] [class*="name"]',
     '[class*="active-speaker"] [class*="name"]',
     '[class*="avatar--active"] [class*="avatar-name"]',
     '[class*="--active"] [class*="avatar-name"]',
+    '[class*="--active"] [class*="avatar-footer"]',
+    '[class*="frame--active"] [class*="name"]',
+    '[class*="tile--active"] [class*="name"]',
     '[class*="is-speaking"] [class*="name"]',
     '[class*="speaking"] [class*="name"]',
+    '[class*="talking"] [class*="name"]',
     '[class*="participants-item"][class*="active"] [class*="name"]',
   ];
-  const SPEAKING_LABEL = /^(.{1,80}?)[,\s]+(?:is\s+)?(?:speaking|talking)\b/i;
+  const SPEAKING_LABELS = [
+    /^(.{1,80}?)[,\s]+(?:is\s+)?(?:speaking|talking)\b/i,
+    /\b(?:active speaker|now speaking|speaking now|currently speaking)\s*[:,-]?\s*(.{1,80})$/i,
+  ];
+  const CAPTION_SELECTORS = [
+    '[class*="live-transcription"]',
+    '[class*="closed-caption"]',
+    '[class*="caption"]',
+    '[class*="subtitle"]',
+    '[class*="transcript"]',
+  ];
+  const CAPTION_NAME_SELECTORS = ['[class*="display-name"]', '[class*="speaker"]', '[class*="name"]'];
+  const TILE_SELECTORS = [
+    '[class*="video-avatar"]',
+    '[class*="avatar"]',
+    '[class*="tile"]',
+    '[class*="video-frame"]',
+    '[class*="speaker"]',
+    '[class*="gallery"]',
+    '[class*="participants-item"]',
+    '[class*="active"]',
+  ];
+  const UI_WORDS = /^(mute|unmute|more|video|audio|share|participants|chat|reactions|leave|you|me|host|start video|stop video)$/i;
+  const SUFFIX = /\s*\((?:host|co-host|me|you|guest)(?:\s*,\s*(?:host|co-host|me|you|guest))*\)\s*$/i;
+  const bot = BOT_NAME.toLowerCase();
+  const clip = (text, n) => {
+    const s = String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+    return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+  };
+
   function cleanName(text) {
     if (!text) return null;
     let name = String(text).replace(/\s+/g, " ").trim();
-    if (name.toLowerCase().includes(BOT_NAME.toLowerCase())) return null; // (before any suffix goes)
-    name = name.replace(/\s*\((?:host|co-host|me|you|guest)\)\s*$/i, "").trim();
-    if (!name || name.length > 80) return null;
+    if (name.toLowerCase().includes(bot)) return null; // (before any suffix goes: "(AI)" is part of the name)
+    name = name.replace(SUFFIX, "").trim();
+    if (!name || name.length > 80 || UI_WORDS.test(name)) return null;
     return name;
   }
-  B.speaker = () => {
-    const tried = B.speakerHow ? [B.speakerHow, ...SPEAKER_SELECTORS] : SPEAKER_SELECTORS;
-    for (const sel of tried) {
-      let nodes;
+  function query(root, sel) {
+    try {
+      return Array.from(root.querySelectorAll(sel));
+    } catch {
+      return [];
+    }
+  }
+  const textOf = (el) => (el && typeof el.textContent === "string" ? el.textContent : "");
+  const attr = (el, name) => (el && typeof el.getAttribute === "function" ? el.getAttribute(name) || "" : "");
+  const classOf = (el) => {
+    const c = el && el.className;
+    return typeof c === "string" ? c : c && typeof c.baseVal === "string" ? c.baseVal : "";
+  };
+
+  // the roster: [{name, el}] in page order, the bot left out
+  let roster = { at: -1e9, names: [], labels: [], botLabels: [], from: {}, patterns: [] };
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  function readRoster(t, force) {
+    if (!force && t - roster.at < ROSTER_TTL_MS) return roster;
+    const names = [];
+    const labels = [];
+    const botLabels = [];
+    const from = {};
+    const seen = new Set();
+    for (const sel of NAME_SELECTORS) {
+      for (const el of query(document, sel)) {
+        if (textOf(el).toLowerCase().includes(bot)) botLabels.push(el);
+        const name = cleanName(textOf(el));
+        if (!name || name.length > 60 || name.split(" ").length > 6) continue;
+        labels.push({ name, el });
+        from[sel] = (from[sel] || 0) + 1;
+        if (!seen.has(name.toLowerCase())) {
+          seen.add(name.toLowerCase());
+          names.push(name);
+        }
+      }
+    }
+    // the participants panel's rows say "Ken Jiang (Host, me), Computer audio unmuted, …" in an aria-label
+    for (const el of query(document, '[class*="participants-item"][aria-label]')) {
+      const label = attr(el, "aria-label");
+      if (label.toLowerCase().includes(bot)) continue;
+      const name = cleanName(label.replace(/\s*\([^)]*\)/g, "").split(",")[0]);
+      if (name && !seen.has(name.toLowerCase())) {
+        seen.add(name.toLowerCase());
+        names.push(name);
+        from["participants aria-label"] = (from["participants aria-label"] || 0) + 1;
+      }
+    }
+    const patterns = names.map((name) => ({ name, re: new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRe(name)}($|[^\\p{L}\\p{N}])`, "iu") }));
+    roster = { at: t, names, labels, botLabels, from, patterns };
+    return roster;
+  }
+  /** A name read off the page, against the roster: its own spelling, or the longest roster name the text holds
+   * ("Ken Jiang muted"); `strict` (free text: aria-labels, captions) needs a roster match when there is a roster. */
+  function resolve(text, r, strict) {
+    const name = cleanName(text);
+    if (!name) return null;
+    const key = name.toLowerCase();
+    const exact = r.names.find((n) => n.toLowerCase() === key);
+    if (exact) return exact;
+    let best = null;
+    for (const p of r.patterns) if (p.re.test(name) && (!best || p.name.length > best.length)) best = p.name;
+    if (best) return best;
+    if (strict && r.names.length) return null;
+    return name.length <= 60 && name.split(" ").length <= (strict ? 4 : 6) ? name : null;
+  }
+
+  // the green frame: a colour classifier and the computed styles that draw a frame
+  function colorsIn(value) {
+    const out = [];
+    const s = String(value || "");
+    for (const m of s.matchAll(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+%?))?\s*\)/gi)) {
+      let a = m[4] === undefined ? 1 : parseFloat(m[4]);
+      if (m[4] && m[4].endsWith("%")) a /= 100;
+      out.push([+m[1], +m[2], +m[3], a]);
+    }
+    for (const m of s.matchAll(/#([0-9a-f]{6})\b/gi)) {
+      const n = parseInt(m[1], 16);
+      out.push([(n >> 16) & 255, (n >> 8) & 255, n & 255, 1]);
+    }
+    return out;
+  }
+  /** Zoom's active-speaker green (≈ #23d959; older clients drew yellow-green): bright green, not blue, white or orange. */
+  function isActiveColor(rgba) {
+    const [r, g, b, a] = rgba;
+    return a >= 0.3 && g >= 140 && g - b >= 60 && r <= g + 10 && !(r > 200 && g > 200 && b > 200);
+  }
+  B.isActiveColor = (value) => colorsIn(value).some(isActiveColor); // (tests)
+  function frameColor(el, pseudo) {
+    let cs = null;
+    try {
+      cs = getComputedStyle(el, pseudo || null);
+    } catch {
+      return null;
+    }
+    if (!cs) return null;
+    for (const side of ["Top", "Left", "Bottom", "Right"]) {
+      const style = cs[`border${side}Style`];
+      const color = cs[`border${side}Color`];
+      if (style && style !== "none" && parseFloat(cs[`border${side}Width`]) > 0 && B.isActiveColor(color)) {
+        return `border ${color}`;
+      }
+    }
+    if (cs.outlineStyle && cs.outlineStyle !== "none" && parseFloat(cs.outlineWidth) > 0 && B.isActiveColor(cs.outlineColor)) {
+      return `outline ${cs.outlineColor}`;
+    }
+    if (cs.boxShadow && cs.boxShadow !== "none" && B.isActiveColor(cs.boxShadow)) return `box-shadow ${cs.boxShadow}`;
+    return null;
+  }
+  function framed(el) {
+    return frameColor(el) || frameColor(el, "::before") || frameColor(el, "::after");
+  }
+  /** The tile of a name label: its ancestors up to (not including) the first one that holds another roster name or
+   * the bot's own tile (the bot is never on the roster, so its green frame must not count for a neighbour). */
+  function tilePath(label, r) {
+    const path = [label.el];
+    const others = r.labels.filter((l) => l.name !== label.name).map((l) => l.el).concat(r.botLabels);
+    let el = label.el;
+    for (let depth = 0; depth < 8 && el.parentElement; depth++) {
+      const up = el.parentElement;
+      if (others.some((o) => typeof up.contains === "function" && up.contains(o))) break;
+      path.push(up);
+      el = up;
+    }
+    return path;
+  }
+
+  const strategies = {
+    class(r) {
+      for (const sel of ACTIVE_SELECTORS) {
+        for (const el of query(document, sel)) {
+          const name = resolve(textOf(el), r, false);
+          if (name) return { name, detail: sel };
+        }
+      }
+      return null;
+    },
+    aria(r) {
+      for (const el of query(document, "[aria-label]")) {
+        const label = attr(el, "aria-label");
+        for (const re of SPEAKING_LABELS) {
+          const m = re.exec(label);
+          const name = m ? resolve(m[1], r, true) : null;
+          if (name) return { name, detail: clip(label, 80) };
+        }
+      }
+      return null;
+    },
+    frame(r) {
+      for (const label of r.labels) {
+        const path = tilePath(label, r);
+        for (const el of path) {
+          const how = framed(el);
+          if (how) return { name: label.name, detail: `${clip(classOf(el), 60) || el.tagName}: ${how}` };
+        }
+        const tile = path[path.length - 1];
+        const inside = query(tile, "*");
+        for (let i = 0; i < inside.length && i < 40; i++) {
+          const how = frameColor(inside[i]);
+          if (how) return { name: label.name, detail: `${clip(classOf(inside[i]), 60) || inside[i].tagName}: ${how}` };
+        }
+      }
+      return null;
+    },
+    captions(r, t) {
+      for (const sel of CAPTION_SELECTORS) {
+        const els = query(document, sel);
+        for (let i = els.length - 1; i >= 0 && i >= els.length - 12; i--) {
+          const el = els[i];
+          const text = textOf(el);
+          if (!text.trim()) continue;
+          let name = null;
+          for (const nsel of CAPTION_NAME_SELECTORS) {
+            const named = query(el, nsel);
+            if (named.length) name = resolve(textOf(named[named.length - 1]), r, true);
+            if (name) break;
+          }
+          if (!name) {
+            const m = /^\s*([^:\n]{1,60}):\s/.exec(text);
+            if (m) name = resolve(m[1], r, true);
+          }
+          if (!name) name = r.patterns.find((p) => text.trim().toLowerCase().startsWith(p.name.toLowerCase()))?.name || null;
+          if (!name) continue;
+          const key = `${sel}|${clip(textOf(el.parentElement || el), 300)}`; // (the whole line: a name span never changes)
+          if (captionSeen.key !== key) captionSeen = { key, at: t };
+          if (t - captionSeen.at > CAPTION_FRESH_MS) return null; // the latest line is old: nobody is captioned now
+          return { name, detail: sel };
+        }
+      }
+      return null;
+    },
+  };
+  const ORDER = ["class", "aria", "frame", "captions"];
+  let captionSeen = { key: null, at: 0 };
+  let preferred = null; // the strategy that worked last (not the fallback): tried first
+  let cache = { at: -1e9, result: { name: null, how: null, detail: null, tried: [] } };
+  let lastNamed = null;
+  B.speakerHow = null;
+  B.speakerChanges = 0;
+
+  function readSpeaker(t) {
+    const r = readRoster(t, true); // (fresh: Zoom re-renders tiles, and a cached label element may be detached)
+    const order = preferred ? [preferred, ...ORDER.filter((s) => s !== preferred)] : ORDER;
+    const tried = [];
+    let found = null;
+    for (const how of order) {
+      let got = null;
       try {
-        nodes = document.querySelectorAll(sel);
-      } catch {
+        got = strategies[how](r, t);
+      } catch (err) {
+        tried.push(`${how}: error ${err}`);
         continue;
       }
-      for (const node of nodes) {
-        const name = cleanName(node.textContent);
-        if (name) {
-          if (B.speakerHow !== sel) {
-            B.speakerHow = sel;
-            log(`active speaker read from ${sel}`);
-          }
-          return { name, how: sel };
+      tried.push(got ? `${how}: ${got.name}` : `${how}: nothing`);
+      if (got) {
+        found = { name: got.name, how, detail: got.detail };
+        if (preferred !== how) {
+          preferred = how;
+          log(`active speaker read via ${how} (${got.detail})`);
         }
+        break;
       }
     }
-    for (const node of document.querySelectorAll("[aria-label]")) {
-      const m = SPEAKING_LABEL.exec(node.getAttribute("aria-label") || "");
-      if (m) {
-        const name = cleanName(m[1]);
-        if (name) {
-          if (B.speakerHow !== "aria-label") {
-            B.speakerHow = "aria-label";
-            log("active speaker read from an aria-label");
-          }
-          return { name, how: "aria-label" };
-        }
+    if (!found && r.names.length === 1) {
+      found = { name: r.names[0], how: "only", detail: "the only other person on the roster" };
+      tried.push(`only: ${r.names[0]}`);
+    } else if (!found) {
+      tried.push(`only: ${r.names.length} on the roster`);
+    }
+    return { ...(found || { name: null, how: null, detail: null }), tried };
+  }
+  /** Zoom's active speaker {name, how, detail, tried}: cached SPEAKER_TTL_MS unless `force`. */
+  B.speaker = (force) => {
+    const t = performance.now();
+    if (!force && t - cache.at < SPEAKER_TTL_MS) return cache.result;
+    const result = readSpeaker(t);
+    cache = { at: t, result };
+    if (result.how) B.speakerHow = result.how;
+    if (result.name && result.name !== lastNamed) {
+      lastNamed = result.name;
+      B.speakerChanges++;
+      log(`speaker: ${result.name} (via ${result.how})`);
+    }
+    return result;
+  };
+  B.roster = () => readRoster(performance.now()).names.slice();
+
+  /** What the page offers for finding the speaker, pruned (the runner saves it when it hears speech and finds nobody). */
+  B.probe = () => {
+    const t = performance.now();
+    const r = readRoster(t, true);
+    const speaker = B.speaker(true);
+    const describe = (el) => {
+      const d = { tag: String(el.tagName || "").toLowerCase(), cls: clip(classOf(el), 200) };
+      if (el.id) d.id = clip(el.id, 60);
+      const role = attr(el, "role");
+      if (role) d.role = role;
+      const aria = attr(el, "aria-label");
+      if (aria) d.aria = clip(aria, 120);
+      d.text = clip(textOf(el), 80);
+      try {
+        const cs = getComputedStyle(el);
+        d.border = `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`;
+        if (cs.outlineStyle && cs.outlineStyle !== "none") d.outline = `${cs.outlineWidth} ${cs.outlineStyle} ${cs.outlineColor}`;
+        if (cs.boxShadow && cs.boxShadow !== "none") d.shadow = clip(cs.boxShadow, 120);
+      } catch {
+        // no styles (detached)
+      }
+      try {
+        const box = el.getBoundingClientRect();
+        d.box = [Math.round(box.x), Math.round(box.y), Math.round(box.width), Math.round(box.height)];
+      } catch {
+        // no layout
+      }
+      const how = framed(el);
+      if (how) d.green = how;
+      return d;
+    };
+    const tiles = [];
+    const seen = new Set();
+    const add = (el, why) => {
+      if (!el || seen.has(el) || tiles.length >= 80) return;
+      seen.add(el);
+      tiles.push({ why, ...describe(el) });
+    };
+    for (const label of r.labels.slice(0, 12)) for (const el of tilePath(label, r)) add(el, `tile of ${label.name}`);
+    for (const sel of TILE_SELECTORS) for (const el of query(document, sel).slice(0, 15)) add(el, sel);
+    const greens = [];
+    const all = query(document, "*");
+    for (let i = 0; i < all.length && i < 4000 && greens.length < 20; i++) {
+      const el = all[i];
+      const deep = /video|avatar|tile|frame|speaker|active|gallery/i.test(classOf(el));
+      const how = deep ? framed(el) : frameColor(el);
+      if (how) greens.push({ ...describe(el), green: how });
+    }
+    const aria = query(document, "[aria-label]")
+      .filter((el) => /speak|talk|active|mute|video|caption|participant/i.test(attr(el, "aria-label")))
+      .slice(0, 40)
+      .map((el) => ({ tag: String(el.tagName || "").toLowerCase(), cls: clip(classOf(el), 120), aria: clip(attr(el, "aria-label"), 160) }));
+    const captions = [];
+    for (const sel of CAPTION_SELECTORS) {
+      for (const el of query(document, sel).slice(-6)) {
+        captions.push({ sel, cls: clip(classOf(el), 120), text: clip(textOf(el), 160) });
       }
     }
-    return { name: null, how: null };
+    return {
+      at_s: Number(now()),
+      title: clip(document.title, 120),
+      url: (() => {
+        try {
+          return String(location.href).split("?")[0];
+        } catch {
+          return null;
+        }
+      })(),
+      elements: all.length,
+      roster: r.names,
+      roster_from: r.from,
+      speaker: { name: speaker.name, how: speaker.how, detail: speaker.detail },
+      tried: speaker.tried,
+      preferred,
+      tiles,
+      greens,
+      aria,
+      captions,
+    };
   };
 
   // ---- for the runner: the primary tap's audio since the last drain, levels, the player's position -----------
@@ -395,7 +745,7 @@
   }
   B.drain = () => {
     const out = { events: B.events.splice(0), counts: { ...B.counts }, rate: 48000, pcm: "", peak_db: -120, others: {},
-      position: B.position(), speaker: null, speaker_how: B.speakerHow };
+      position: B.position(), speaker: null, speaker_how: null, speaker_detail: null, roster: [] };
     let primary = null;
     for (const tap of taps.values()) {
       if (tap.rate === 48000 && (!primary || tap.frames > primary.frames)) primary = tap;
@@ -428,9 +778,17 @@
       primary.peakDb = -120;
     }
     try {
-      out.speaker = B.speaker().name;
-    } catch {
+      const s = B.speaker();
+      out.speaker = s.name;
+      out.speaker_how = s.how;
+      out.speaker_detail = s.detail;
+      out.roster = roster.names.slice(0, 30);
+    } catch (err) {
       out.speaker = null;
+      if (!B.speakerError) {
+        B.speakerError = true;
+        log(`speaker read failed: ${err}`);
+      }
     }
     return out;
   };
