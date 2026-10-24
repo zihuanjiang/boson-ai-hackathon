@@ -115,9 +115,9 @@ Add our own findings here as we hit them (date them).
 - **Worktrees: run from the checkout you mean (2026-10-24).** `uv run --project <worktree> python -m relay.talk …`
   started from another directory imports `relay` from the *current* directory (`python -m` puts the cwd first on
   `sys.path`): from the main checkout it validated a worktree's package with the main checkout's older code ("unknown
-  keys ignored: guide"). Likewise `tests/test_server.py::test_cli_serves_with_flags` resolves `talks/test` against the
-  cwd and fails when pytest runs from elsewhere. Use `uv run --directory <worktree> …` (it runs in that directory), or
-  run from the worktree itself.
+  keys ignored: guide"). Use `uv run --directory <worktree> …` (it runs in that directory), or run from the worktree
+  itself. (`pytest` itself imports the worktree's code from any cwd; its one cwd-dependent test,
+  `test_cli_serves_with_flags`, now changes into the repo first.)
 
 ## Measured (ours, dated)
 

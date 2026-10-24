@@ -949,7 +949,9 @@ def served(tmp_path: Path, web: Path, monkeypatch: pytest.MonkeyPatch) -> Iterat
         calls["app"].state.log.close()  # uvicorn never ran, so the lifespan never closed it
 
 
-def test_cli_serves_with_flags(served: dict[str, Any], capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_serves_with_flags(served: dict[str, Any], capsys: pytest.CaptureFixture[str],
+                               monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(TEST_TALK_DIR.parent.parent)  # "talks/test" is relative to the repo, wherever pytest started
     code = cli.main(["serve", "talks/test", "--port", "8123", "--fake-realtime", "--mic-mode", "hold",
                      "--narration", "rendered"])
     assert code == 0
