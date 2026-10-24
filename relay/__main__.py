@@ -217,7 +217,9 @@ def serve(args: argparse.Namespace) -> int:
         return 1
 
     talk, chunks = app.state.talk, app.state.chunks
-    meeting = getattr(app.state.controller, "meeting", None)
+    meeting = getattr(app.state, "meeting", None)
+    if meeting is None:
+        meeting = getattr(app.state.controller, "meeting", None)
     alignment = getattr(app.state, "alignment", None) if meeting is not None else None
     print(f"Relay: talk '{talk.id}' ({len(talk.slides)} slides, {len(chunks)} narration chunks, voice {talk.voice}, "
           f"mic mode {settings.mic_mode})")

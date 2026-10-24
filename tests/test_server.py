@@ -417,11 +417,6 @@ def test_the_real_controller_reports_the_alignment_status(tmp_path: Path, web: P
             assert hello["alignment"] == info and hello["snapshot"]["alignment"]["mode"] == "claude"
 
 
-ALIGNMENT_WIP = pytest.mark.xfail(strict=True, reason="alignment WIP (dae4f64, merged 2026-10-24): `relay serve` doesn't "
-                                  "print the alignment note yet; the alignment-worker finishes it and drops this marker")
-
-
-@ALIGNMENT_WIP
 def test_the_cli_has_an_alignment_flag_and_warns_without_a_key(served: dict[str, Any],
                                                                 capsys: pytest.CaptureFixture[str], tmp_path: Path,
                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
@@ -450,7 +445,6 @@ def test_the_cli_has_an_alignment_flag_and_warns_without_a_key(served: dict[str,
     assert "alignment" not in capsys.readouterr().out
 
 
-@ALIGNMENT_WIP
 def test_the_cli_describes_claude_alignment_with_a_key(served: dict[str, Any], capsys: pytest.CaptureFixture[str],
                                                         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tests.test_meeting_flow import write_meeting

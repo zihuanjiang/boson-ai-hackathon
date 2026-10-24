@@ -711,6 +711,7 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     app.state.hub = hub
     app.state.log = log
     app.state.analyzer = analyzer
+    app.state.meeting = meeting  # the meeting package (None for a plain talk): the controller's, else loaded here
     app.state.alignment = alignment
 
     @app.get("/", include_in_schema=False)
