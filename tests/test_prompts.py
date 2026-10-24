@@ -360,7 +360,9 @@ def test_talking_point_instructions(meeting_pair):
     assert lines[1].startswith('Now: slide 1 of 2, "The plan". On screen: The plan / Friday: beta to the beta group')
     assert lines[2] == ("Talking point 1 of 2 on this slide: Release four point three ships in two stages. Friday's "
                         "rollout is for our beta group.")
-    assert "You just said" not in first and "Use one to three sentences, about 7 seconds." in lines
+    assert "You just said" not in first
+    assert ("Use one to three sentences, about 7 seconds. Don't add examples or emphasis, and never read source ids "
+            "aloud.") in lines  # live 2026-10-24: 1.4× the notes, "remarkably responsive", "RES-1 through RES-4"
     assert "If you haven't welcomed the room yet" in first
     assert lines[-1] == "Speak only this point. No lists, markdown, URLs or stage directions. Don't call any tool."
     second = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[1], seconds=5, continuing=True,
