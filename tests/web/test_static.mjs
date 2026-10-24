@@ -102,6 +102,9 @@ check("the disclosure badge sits in the topbar, hidden", inside('<div class="top
 check("the demo script's controls sit in the agenda strip before the phase button, hidden", inside('<nav class="agenda"', '<div class="demo"', '<button type="button" class="phase-button"') && /<div class="demo"[^>]* hidden>/.test(html));
 check("Run demo and Play next are buttons named exactly so", />Run demo<\/button>/.test(html) && />Play next<\/button>/.test(html));
 check("the routing line sits in Meeting info, hidden", inside('<section class="strip"', '<p class="strip-routing" hidden>', "</section>") && html.includes("participant clips only (facilitator audio is not sent)"));
+// model-based alignment (contract v5 §4): the Alignment line in Meeting info and the badge in the topbar, hidden until a meeting talk says
+check("the alignment badge sits in the topbar, hidden", inside('<div class="topbar-center">', 'class="pill alignment-pill"', '<div class="topbar-right">') && /class="pill alignment-pill"[^>]*\shidden\s*>Alignment unavailable</.test(html));
+check("the Alignment row sits in Meeting info, hidden, the last analysis under the rows", inside('<section class="strip"', '<div class="strip-alignment" hidden>', "</dl>") && inside('<section class="strip"', '<p class="strip-analysis" hidden>', "</section>"));
 
 // ---- assets referenced from JS
 for (const file of JS) {

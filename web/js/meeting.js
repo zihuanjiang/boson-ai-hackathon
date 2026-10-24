@@ -15,7 +15,7 @@
  * socket and every action. It calls these methods from its message handlers, and the controls call back through
  * MeetingHandlers.
  */
-import { FACILITATOR_KINDS, idKind } from "./facilitator.js";
+import { FACILITATOR_KINDS, alignmentWords, idKind } from "./facilitator.js";
 import { Agenda, Callout, DemoStrip, ParticipantTiles, SidePanel, Speakers } from "./panels.js";
 import { RT_LABELS } from "./status.js";
 import { talkTitle } from "./talk.js";
@@ -28,6 +28,7 @@ import { clockText, meterLevel, toolLabel } from "./util.js";
 /** @typedef {import("./facilitator.js").Lookup} Lookup */
 /** @typedef {import("./facilitator.js").Utterance} Utterance */
 /** @typedef {import("./facilitator.js").AlignmentEvent} AlignmentEvent */
+/** @typedef {import("./facilitator.js").AlignmentStatus} AlignmentStatus */
 /** @typedef {import("./facilitator.js").Checkpoint} Checkpoint */
 /** @typedef {"next"|"prev"|"pause"|"human"|"relay"|"type"} ControlAction */
 
@@ -236,6 +237,8 @@ export class Meeting {
     this.meetingOffsetMs = null;
     /** @type {ReturnType<typeof setTimeout>|undefined} */
     this.resetTimer = undefined;
+    /** @type {AlignmentStatus|null} who checks the discussion, as last reported (`alignment()` is the event method) */
+    this.alignmentState = null;
     // a simulated online meeting (the participants are prerecorded clips, the mic is off)
     this.clips = false;
     /** @type {Map<string, number>} participant → performance.now() of their clip's last loud frame */
@@ -294,6 +297,12 @@ export class Meeting {
     this.side = new SidePanel(this.chat, { onChange: () => this.renderUnread() });
     this.demoPill = part(root, ".demo-pill");
     this.routingEl = part(root, ".strip-routing");
+    this.alignmentPill = part(root, ".alignment-pill");
+    this.alignmentRow = part(root, ".strip-alignment");
+    this.alignmentBadge = part(root, ".alignment-badge");
+    this.alignmentText = part(root, ".alignment-text");
+    this.analysisEl = part(root, ".strip-analysis");
+    this.analysisText = part(root, ".analysis-text");
     this.demoStrip = new DemoStrip(part(root, ".demo"), {
       onRun: () => this.handlers.onDemoRun?.(),
       onPlay: () => this.handlers.onDemoPlay?.(),
@@ -548,6 +557,8 @@ export class Meeting {
     this.agendaPhaseChanged(st.phase);
     if (st.checkpoint) this.checkpoint(st.checkpoint);
     this.side.notes(st);
+    this.side.issues(st.issues);
+    if (st.alignment) this.alignmentStatus(st.alignment);
     const seen = this.decisionIds;
     this.decisionIds = new Set(st.decisions.map((d) => d.id));
     if (!seen) return; // the first one (a join, a reconnect): nothing is new
@@ -588,6 +599,28 @@ export class Meeting {
   /** An alignment event. @param {AlignmentEvent} ev */
   alignment(ev) {
     if (this.facilitator) this.side.alignment(ev);
+  }
+
+  /**
+   * Who checks the discussion (contract v5 §4): the Meeting info line "Alignment: Claude (<model>) · ready |
+   * analysing… | unavailable (no key) | legacy patterns | off" with the last analysis under it, and the topbar badge
+   * when Claude mode has no analyzer. A brief record (hello, /api/talk: mode, model, available) keeps the runner's
+   * fields the last full one (state, meeting) reported.
+   * @param {AlignmentStatus|null} a
+   */
+  alignmentStatus(a) {
+    if (!this.facilitator || !a) return;
+    const prev = this.alignmentState;
+    const next = !a.full && prev && prev.mode === a.mode ? { ...prev, model: a.model || prev.model, available: a.available } : a;
+    this.alignmentState = next;
+    const w = alignmentWords(next);
+    this.alignmentRow.hidden = false;
+    this.alignmentBadge.dataset.status = w.status;
+    this.alignmentBadge.title = w.title;
+    this.alignmentText.textContent = w.text;
+    this.analysisText.textContent = w.detail;
+    this.analysisEl.hidden = !w.detail;
+    this.alignmentPill.hidden = !(next.mode === "claude" && !next.available);
   }
 
   /** A reply started (its kind). @param {string} kind */

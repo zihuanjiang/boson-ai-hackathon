@@ -292,6 +292,8 @@ async function run() {
   });
   const card = () => $(".align-card");
   check("the alignment card", card() !== null);
+  eq("…titled as before (a legacy pattern check names no kind of issue)", text(".align-card .align-title"), "Alignment check");
+  eq("…the legacy blocks only: no views, proposal or question", [$(".align-views").hidden, $(".align-proposed").hidden, $(".align-missing").hidden, $(".align-question").hidden, $(".align-sources").hidden, $(".align-diffs").hidden], [true, true, true, true, false, false]);
   eq("…right after Carol's line", (() => { const items = $(".transcript").children; return items[items.indexOf(card()) - 1].dataset.utt; })(), "U3");
   eq("…pending", [card().dataset.status, text(".align-card .align-status")], ["pending", "Pending"]);
   eq("…heard: Bob's sentence", [text(".align-heard .align-label"), text(".align-heard .align-quote")], ["Heard · Bob · 01:35", `“${BOB}”`]);
@@ -355,7 +357,7 @@ async function run() {
   for (const [id, at] of [["U6", 121], ["U7", 122], ["U8", 123]]) utterance(id, null, "Mm-hm.", at);
   alignment({ id: "AL10", type: "suggestion", ...AUDIENCE, utterance_id: "U5", at_s: 123, conflict_id: "AL9", claimed: "all_customers", claimed_label: "all customers", established: "beta_users", established_label: "beta users", source_ids: ["DEC-2"], clarification_ids: [], decision_ids: [], quote: "And the beta notes go to all customers too.", has_action: false, observed_utterance_id: "U8" });
   const sugg = $('.align-card[data-kind="suggestion"]');
-  eq("a dashed card, never said", [sugg && text('.align-card[data-kind="suggestion"] .align-title'), sugg && sugg.dataset.status], ["Possible mismatch (not raised)", "suggestion"]);
+  eq("a dashed card, never said", [sugg && text('.align-card[data-kind="suggestion"] .align-title'), sugg && sugg.dataset.status], ["Possible issue (not raised)", "suggestion"]);
   eq("…after the line it is about", (() => { const items = $(".transcript").children; return items[items.indexOf(sugg) - 1].dataset.utt; })(), "U5");
   eq("unlabelled lines are the room's", text('[data-utt="U6"] .utt-who'), "Room");
 

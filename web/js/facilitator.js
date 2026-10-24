@@ -2,9 +2,11 @@
 /**
  * On the Same Page (doc/brief_updated.md; contract v3 §6–§7): the facilitator's meeting as the deck sees it. The
  * meeting package (`/api/talk.meeting`, `hello.meeting`), the live meeting state (`meeting`: MeetingState.to_json()),
- * evidence lookups (`evidence`), discussion utterances (`transcript`) and alignment events (`alignment`), normalised
- * so that a sparse or odd payload can't break the page, plus the words the agenda strip, the tiles and the panels
- * show. No DOM: unit-tested under JavaScriptCore. A talk without a meeting has `meeting: null` and none of this runs.
+ * evidence lookups (`evidence`), discussion utterances (`transcript`), alignment events (`alignment`: legacy pattern
+ * checks and, contract v5, the model-based issues of three kinds) and the alignment status (who checks the
+ * discussion: `state.alignment`, `meeting.alignment`, `hello.alignment`), normalised so that a sparse or odd payload
+ * can't break the page, plus the words the agenda strip, the tiles, the panels and the Meeting info line show. No DOM:
+ * unit-tested under JavaScriptCore. A talk without a meeting has `meeting: null` and none of this runs.
  */
 import { clockText } from "./util.js";
 
@@ -52,6 +54,31 @@ import { clockText } from "./util.js";
  * @property {number|null} generated_at_s
  */
 /**
+ * An alignment issue the backend tracks (IssueRecord, contract v5 §2), as `meeting.issues` lists them.
+ * @typedef {object} Issue
+ * @property {string} id  IS<n>
+ * @property {string} issue_type  evidence_conflict | hidden_disagreement | ambiguous_decision
+ * @property {string} topic
+ * @property {string} status  pending | suggested | asked | partially_resolved | resolved | withdrawn | open
+ * @property {string} claim
+ * @property {string} question
+ */
+/**
+ * Who checks the discussion (contract v5 §3: `state.alignment`, `meeting.alignment`; `hello.alignment` and
+ * `/api/talk.alignment` carry only mode, model and available: `full` is false for those).
+ * @typedef {object} AlignmentStatus
+ * @property {string} mode  claude | legacy | off
+ * @property {string} model
+ * @property {boolean} available
+ * @property {boolean} full  the record carries the runner's fields (in flight, latency, policy), not just the mode
+ * @property {boolean} in_flight
+ * @property {boolean} waiting
+ * @property {number|null} last_latency_ms
+ * @property {string|null} last_error
+ * @property {number|null} analyses
+ * @property {string} last_policy  the last policy decision, as words ("IS1: clarify (…reason)"); "" when none yet
+ */
+/**
  * The live meeting state (the `meeting` message).
  * @typedef {object} MeetingState
  * @property {string} phase  presentation | discussion | wrapup
@@ -62,6 +89,8 @@ import { clockText } from "./util.js";
  * @property {Decision[]} decisions
  * @property {ActionItem[]} action_items
  * @property {OpenQuestion[]} open_questions
+ * @property {Issue[]} issues  the alignment issues so far (model-based alignment; empty otherwise)
+ * @property {AlignmentStatus|null} alignment  when the message carries it
  * @property {Notes|null} notes  set once the meeting is wrapped up
  * @property {Utterance[]|null} transcript  when the backend includes it (else the deck keeps its own)
  * @property {Lookup[]|null} lookups  likewise
@@ -86,10 +115,16 @@ import { clockText } from "./util.js";
  * @property {string} phase
  * @property {string} source  voice | typed
  */
+/** A cited passage, clarification, decision or utterance on an alignment event, with the model's verbatim quote. */
+/** @typedef {{kind: string, id: string, quote: string, text: string, speaker: string|null}} EvidenceRef */
+/** One participant's reading of the thing the group is agreeing to (a hidden disagreement). */
+/** @typedef {{speaker: string|null, utterance_id: string, quote: string, view: string}} ParticipantView */
 /**
- * An alignment event (claim | conflict | intervene | suggestion | resolved | decision_draft): the common fields
- * normalised, the type's own fields kept as they came (the list fields as string arrays).
- * @typedef {{id: string, type: string, slot: string, label: string, utterance_id: string|null, at_s: number|null, [field: string]: any}} AlignmentEvent
+ * An alignment event (claim | assumption | conflict | intervene | suggestion | resolved | withdrawn | decision_draft):
+ * the common fields normalised (`slot` falls back to the issue id, then the event id; `label` to the topic, then the
+ * slot; `issue_type` is "" when the event doesn't say, as a legacy pattern check didn't), the type's own fields kept
+ * as they came (the id and detail lists as string arrays, `evidence` and `participant_views` as records).
+ * @typedef {{id: string, type: string, slot: string, label: string, issue_id: string|null, issue_type: string, topic: string, utterance_id: string|null, at_s: number|null, evidence: EvidenceRef[], participant_views: ParticipantView[], [field: string]: any}} AlignmentEvent
  */
 /**
  * What an id stands for, for chips and the alignment card.
@@ -227,6 +262,10 @@ export function normalizeMeetingState(raw, info = null) {
     open_questions: list(m.open_questions)
       .map((q) => ({ id: str(q.id), text: str(q.text), at_s: num(q.at_s), resolved: Boolean(q.resolved) }))
       .filter((q) => q.id),
+    issues: list(m.issues)
+      .map((i) => ({ id: str(i.id), issue_type: str(i.issue_type), topic: str(i.topic), status: str(i.status), claim: str(i.claim), question: str(i.question) }))
+      .filter((i) => i.id),
+    alignment: normalizeAlignment(m.alignment),
     notes: notes ? { title: str(notes.title), phase: str(notes.phase), generated_at_s: num(notes.generated_at_s) } : null,
     transcript: Array.isArray(m.transcript) ? m.transcript.map(normalizeUtterance).filter((u) => u.id) : null,
     lookups: Array.isArray(m.lookups) ? m.lookups.map(normalizeLookup).filter((l) => l.id) : null,
@@ -264,20 +303,87 @@ export function normalizeUtterance(raw) {
   return { id: str(u.id), text: str(u.text).trim(), speaker: strOrNull(u.speaker), at_s: num(u.at_s), phase: str(u.phase), source: str(u.source) || "voice" };
 }
 
-const EVENT_ID_LISTS = ["source_ids", "clarification_ids", "decision_ids", "utterance_ids"];
+/** the event fields that are lists of ids or of short texts (kept as clean string arrays) */
+const EVENT_ID_LISTS = ["source_ids", "clarification_ids", "decision_ids", "utterance_ids", "conflict_ids", "issue_ids", "evidence_ids", "missing_details", "settled", "remaining"];
+
+/** @param {any} r @returns {EvidenceRef} */
+function normalizeEvidenceRef(r) {
+  return { kind: str(r.kind) || "source", id: str(r.id), quote: str(r.quote), text: str(r.text), speaker: strOrNull(r.speaker) };
+}
+
+/** @param {any} v @returns {ParticipantView} */
+function normalizeView(v) {
+  return { speaker: strOrNull(v.speaker), utterance_id: str(v.utterance_id), quote: str(v.quote), view: str(v.view) };
+}
 
 /**
- * An `alignment` message's event (`{event: {...}}`, or the event itself).
+ * An `alignment` message's event (`{event: {...}}`, or the event itself). A model-derived event names its issue
+ * (`issue_id`, `issue_type`, `topic`) and may have no configured `slot`: the slot is then the issue id (else the
+ * event's own id) and the label the topic.
  * @param {unknown} raw
  * @returns {AlignmentEvent}
  */
 export function normalizeEvent(raw) {
   const outer = raw && typeof raw === "object" ? /** @type {any} */ (raw) : {};
   const e = outer.event && typeof outer.event === "object" ? outer.event : outer;
+  const issueId = strOrNull(e.issue_id);
+  const slot = str(e.slot) || issueId || str(e.id);
   /** @type {AlignmentEvent} */
-  const ev = { ...e, id: str(e.id), type: str(e.type), slot: str(e.slot), label: str(e.label) || str(e.slot), utterance_id: strOrNull(e.utterance_id), at_s: num(e.at_s) };
+  const ev = {
+    ...e,
+    id: str(e.id),
+    type: str(e.type),
+    slot,
+    label: str(e.label) || str(e.topic) || slot,
+    issue_id: issueId,
+    issue_type: str(e.issue_type),
+    topic: str(e.topic),
+    utterance_id: strOrNull(e.utterance_id),
+    at_s: num(e.at_s),
+    evidence: list(e.evidence).map(normalizeEvidenceRef).filter((r) => r.id),
+    participant_views: list(e.participant_views).map(normalizeView).filter((v) => v.quote || v.view),
+  };
   for (const key of EVENT_ID_LISTS) if (key in e) ev[key] = ids(e[key]);
   return ev;
+}
+
+/**
+ * The alignment status (`state.alignment`, `meeting.alignment`, `hello.alignment`, `/api/talk.alignment`); null when
+ * the message has none.
+ * @param {unknown} raw
+ * @returns {AlignmentStatus|null}
+ */
+export function normalizeAlignment(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const a = /** @type {any} */ (raw);
+  return {
+    mode: str(a.mode) || "off",
+    model: str(a.model),
+    available: Boolean(a.available),
+    full: "in_flight" in a || "analyses" in a || "last_latency_ms" in a,
+    in_flight: Boolean(a.in_flight),
+    waiting: Boolean(a.waiting),
+    last_latency_ms: num(a.last_latency_ms),
+    last_error: strOrNull(a.last_error),
+    analyses: num(a.analyses),
+    last_policy: policyWords(a.last_policy),
+  };
+}
+
+/**
+ * The last policy decision as words: a string as it is; a record `{issue_id, decision | policy, reason}` as
+ * "IS1: clarify (the reason)".
+ * @param {unknown} p
+ */
+function policyWords(p) {
+  if (typeof p === "string") return p;
+  if (!p || typeof p !== "object") return "";
+  const r = /** @type {any} */ (p);
+  const decision = str(r.decision ?? r.policy);
+  if (!decision) return "";
+  const issue = str(r.issue_id);
+  const reason = str(r.reason);
+  return `${issue ? `${issue}: ` : ""}${decision}${reason ? ` (${reason})` : ""}`;
 }
 
 // ---------------------------------------------------------------- words on screen
@@ -388,22 +494,143 @@ function kindOf(kind) {
   return kind === "clarification" || kind === "decision" ? kind : "source";
 }
 
+// ---------------------------------------------------------------- alignment issues (contract v5 §4)
+
+/** The three kinds of alignment issue, as the cards name them. */
+export const ISSUE_TYPE_WORDS = Object.freeze({
+  evidence_conflict: "evidence conflict",
+  hidden_disagreement: "hidden disagreement",
+  ambiguous_decision: "unresolved detail",
+});
+
+/** A silent suggestion's card title (an issue shown, never raised aloud). */
+export const SUGGESTION_TITLE = "Possible issue (not raised)";
+
+/** An alignment card's status pill, by the card's status. */
+export const CARD_STATUS_WORDS = Object.freeze({
+  pending: "Pending",
+  asked: "Asked",
+  resolved: "Resolved",
+  partial: "Partly settled",
+  withdrawn: "Withdrawn",
+  open: "Open",
+  suggestion: "Silent",
+});
+
+/** a card's statuses in the order they may move: a card never goes back (from `meeting.issues`) */
+const CARD_STATUS_RANK = /** @type {Record<string, number>} */ ({ suggestion: 0, pending: 0, asked: 1, open: 2, partial: 3, withdrawn: 4, resolved: 4 });
+
 /**
- * A claim chip on a transcript line: "Friday's release stage: production", green when it agrees with what the
- * sources and clarifications established, amber when it conflicts, grey when nothing is established.
- * @param {AlignmentEvent} ev  a claim or conflict event
+ * The kind of issue an event is about; an event that doesn't say (a legacy pattern check) is an evidence conflict.
+ * @param {{issue_type?: unknown}} ev
+ * @returns {"evidence_conflict"|"hidden_disagreement"|"ambiguous_decision"}
+ */
+export function issueTypeOf(ev) {
+  const type = str(ev.issue_type);
+  return type in ISSUE_TYPE_WORDS ? /** @type {any} */ (type) : "evidence_conflict";
+}
+
+/**
+ * An alignment card's title: "Alignment check · evidence conflict"; plain "Alignment check" when the event doesn't
+ * name its kind (a legacy pattern check from before the kinds existed).
+ * @param {{issue_type?: unknown}} ev
+ */
+export function cardTitle(ev) {
+  const words = /** @type {Record<string, string>} */ (ISSUE_TYPE_WORDS)[str(ev.issue_type)];
+  return words ? `Alignment check · ${words}` : "Alignment check";
+}
+
+/**
+ * The backend's issue status (IssueRecord.status) as a card status ("" for one the cards don't show).
+ * @param {string} status
+ */
+export function cardStatus(status) {
+  const map = /** @type {Record<string, string>} */ ({
+    pending: "pending",
+    suggested: "suggestion",
+    asked: "asked",
+    partially_resolved: "partial",
+    resolved: "resolved",
+    withdrawn: "withdrawn",
+    open: "open",
+  });
+  return map[status] ?? "";
+}
+
+/**
+ * May a card move from `current` to `next`? Forward only: the backend's issue list never takes a settled card back
+ * to pending, and a card the facilitator is asking about stays asked until something settles or opens it.
+ * @param {string} current
+ * @param {string} next
+ */
+export function cardMoves(current, next) {
+  return next in CARD_STATUS_RANK && (CARD_STATUS_RANK[next] ?? -1) > (CARD_STATUS_RANK[current] ?? -1);
+}
+
+/**
+ * The Meeting info line about who checks the discussion: "Claude (claude-opus-5-5) · ready | analysing… |
+ * unavailable (no key)", "legacy patterns", "off"; `status` colours its dot; `detail` is the last analysis (its
+ * latency, the last policy decision, an error).
+ * @param {AlignmentStatus|null} a
+ * @returns {{status: "ready"|"analysing"|"unavailable"|"legacy"|"off", text: string, detail: string, title: string}}
+ */
+export function alignmentWords(a) {
+  if (!a || a.mode === "off") return { status: "off", text: "off", detail: "", title: "Alignment off: the discussion is transcribed and recorded, nobody checks it" };
+  if (a.mode === "legacy") {
+    return { status: "legacy", text: "legacy patterns", detail: "", title: "Alignment: the legacy pattern checks of checks.yaml, not the model" };
+  }
+  const who = a.model ? `Claude (${a.model})` : "Claude";
+  if (!a.available) {
+    return { status: "unavailable", text: `${who} · unavailable (no key)`, detail: "", title: "Alignment: Claude mode, but ANTHROPIC_API_KEY is missing: the discussion is transcribed and recorded, nobody checks it" };
+  }
+  const busy = a.in_flight || a.waiting;
+  const parts = [];
+  if (a.last_latency_ms !== null) parts.push(`${a.last_latency_ms < 1000 ? `${Math.round(a.last_latency_ms)} ms` : `${(a.last_latency_ms / 1000).toFixed(2)} s`}${a.analyses !== null ? ` (${a.analyses} so far)` : ""}`);
+  if (a.last_policy) parts.push(`policy: ${a.last_policy}`);
+  if (a.last_error) parts.push(`error: ${a.last_error}`);
+  return {
+    status: busy ? "analysing" : "ready",
+    text: `${who} · ${busy ? "analysing…" : "ready"}`,
+    detail: parts.join(" · "),
+    title: `Alignment: the Claude API (${a.model || "model unset"}) reads the discussion; Higgs Realtime transcribes and speaks`,
+  };
+}
+
+/**
+ * A chip on a transcript line. A claim: its text ("The announcement goes to all customers on Friday"; a legacy
+ * pattern check's "Friday's release stage: production"), green when it agrees with what the sources and
+ * clarifications established, amber when it conflicts, grey when nothing is established. An assumption: a grey
+ * "assumes: …". A conflict: amber; a model-derived one names its topic and kind ("Friday's audience · evidence
+ * conflict"), a legacy one "Friday's release stage: production".
+ * @param {AlignmentEvent} ev  a claim, assumption or conflict event
  * @returns {{text: string, tone: "agree"|"conflict"|"open", title: string}}
  */
 export function claimChip(ev) {
-  if (ev.type === "conflict") {
-    const claimed = str(ev.claimed_label) || valueLabel(ev.claimed);
-    const established = str(ev.established_label) || valueLabel(ev.established);
-    return { text: `${ev.label}: ${claimed}`, tone: "conflict", title: `Heard ${claimed}; the sources say ${established}` };
+  if (ev.type === "assumption") {
+    const who = str(ev.speaker) || "This participant";
+    const about = str(ev.topic);
+    return { text: `assumes: ${str(ev.interpretation)}`, tone: "open", title: `${who} seems to assume this${about ? ` about ${about}` : ""}: an attributed reading, not an established fact` };
   }
-  const value = str(ev.value_label) || valueLabel(ev.value);
+  if (ev.type === "conflict") {
+    const claimed = str(ev.claimed_label) || valueLabel(ev.claimed) || str(ev.claim);
+    const established = str(ev.established_label) || valueLabel(ev.established);
+    const type = issueTypeOf(ev);
+    const why =
+      type === "hidden_disagreement"
+        ? "the participants seem to mean different things"
+        : type === "ambiguous_decision"
+          ? "a material detail is unresolved"
+          : established
+            ? `the sources say ${established}`
+            : "it conflicts with the sources";
+    const text = ev.issue_id ? `${ev.label} · ${ISSUE_TYPE_WORDS[type]}` : `${ev.label}: ${claimed}`;
+    return { text, tone: "conflict", title: `Heard ${claimed}; ${why}` };
+  }
+  const value = str(ev.text) || str(ev.value_label) || valueLabel(ev.value);
   const tone = ev.agrees === true ? "agree" : ev.agrees === false ? "conflict" : "open";
   const title = tone === "agree" ? "Matches the sources" : tone === "conflict" ? "Differs from the sources" : "Nothing established for this yet";
-  return { text: `${ev.label}: ${value}`, tone, title };
+  const kind = str(ev.kind);
+  return { text: ev.label ? `${ev.label}: ${value}` : value, tone, title: kind ? `${title} (${kind})` : title };
 }
 
 /**

@@ -9,7 +9,8 @@
          1920×1080 (window size, or the DevTools device toolbar): it walks through the meeting's states and measures
          each one. The plain-Relay states switch the meeting additions off (a talk without a meeting); the
          "facilitator" states are On the Same Page (the agenda strip, the evidence callout, the tabbed side panel with
-         the alignment card and the notes, the speaker picker); the "demo" states are the simulated online meeting
+         the alignment cards of the three kinds of issue and the notes, the speaker picker, the Alignment line in
+         Meeting info and the badge when Claude is unavailable); the "demo" states are the simulated online meeting
          (prerecorded participants' tiles, the disclosure badge, the demo script's controls in the agenda strip, the
          routing line in Meeting info, the join dialog with the mic off). The verdict in the corner must say PASS.
          tests/web/test_static.mjs checks that this copy still has every class of the real window. -->
@@ -65,6 +66,7 @@
           <span class="pill backup-badge">Backup audio</span>
           <span class="pill fake-pill">Fake</span>
           <span class="pill server-pill">Server offline</span>
+          <span class="pill alignment-pill" hidden>Alignment unavailable</span>
           <span class="viewing"
             ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
               <rect x="3" y="4.5" width="18" height="12" rx="2" />
@@ -122,10 +124,18 @@
             <dd><span class="rt" data-status="reconnecting"><i class="dot"></i><span class="rt-text">Realtime reconnecting…</span></span></dd>
           </div>
           <div><dt>Mic mode</dt><dd><span class="micmode">Hold</span></dd></div>
+          <div class="strip-alignment">
+            <dt>Alignment</dt>
+            <dd><span class="alignment-badge" data-status="ready"><i class="dot"></i><span class="alignment-text">Claude (claude-opus-5-5) · ready</span></span></dd>
+          </div>
         </dl>
         <p class="strip-routing" hidden>
           <span class="routing-label">Higgs input:</span>
           <span class="routing-text">participant clips only (facilitator audio is not sent)</span>
+        </p>
+        <p class="strip-analysis">
+          <span class="analysis-label">Last analysis:</span>
+          <span class="analysis-text">1.84 s (3 so far) · policy: IS1: clarify (a cited passage, clarification or decision; confirming; high confidence)</span>
         </p>
         <p class="strip-badges"><span class="badge fake-badge">Fake audio</span><span class="badge server-badge">Server offline</span></p>
         <p class="strip-hint">Click for the audio and connection check</p>
@@ -398,60 +408,102 @@
                 <div class="utt-meta"><span class="utt-who">Bob</span><span class="utt-time">01:35</span><span class="utt-source">typed</span></div>
                 <p class="utt-text">I'll draft the announcement for Friday's production launch to all customers.</p>
                 <p class="utt-claims"
-                  ><span class="claim" data-tone="conflict">Friday's release stage: production</span
-                  ><span class="claim" data-tone="conflict">Friday's audience: all customers</span
-                  ><span class="claim" data-tone="agree">Owner: Bob</span></p
+                  ><span class="claim" data-tone="conflict">The announcement goes to all customers on Friday</span
+                  ><span class="claim" data-tone="open" data-kind="assumption">assumes: Friday is the production release</span
+                  ><span class="claim" data-tone="conflict">Friday's announcement audience · evidence conflict</span
+                  ><span class="claim" data-tone="agree">Bob drafts the announcement</span></p
                 >
               </li>
               <li class="utt" data-who="participant">
                 <div class="utt-meta"><span class="utt-who">Carol</span><span class="utt-time">01:39</span></div>
                 <p class="utt-text">Sounds good. Let's finalize that.</p>
               </li>
-              <li class="align-card fresh" data-kind="intervention" data-status="asked">
-                <header class="align-head"><span class="align-title">Alignment check</span><span class="align-status">Asked</span></header>
+              <!-- an evidence conflict: the claim against the passage, the sources with the model's quotes, the question; partly settled -->
+              <li class="align-card fresh" data-kind="intervention" data-issue-type="evidence_conflict" data-status="partial">
+                <header class="align-head"><span class="align-title">Alignment check · evidence conflict</span><span class="align-status">Partly settled</span></header>
                 <div class="align-heard">
                   <span class="align-label">Heard · Bob · 01:35</span>
                   <p class="align-quote">“I'll draft the announcement for Friday's production launch to all customers.”</p>
                 </div>
                 <ul class="align-diffs">
-                  <li class="align-diff"><span class="diff-slot">Friday's release stage</span><span class="diff-heard">production</span><span class="diff-vs">≠</span><span class="diff-source">beta</span></li>
-                  <li class="align-diff"><span class="diff-slot">Friday's audience</span><span class="diff-heard">all customers</span><span class="diff-vs">≠</span><span class="diff-source">beta users</span></li>
+                  <li class="align-diff"><span class="diff-slot">Friday's announcement audience</span><span class="diff-heard">The announcement goes to all customers on Friday</span><span class="diff-vs">≠</span><span class="diff-source">the beta release goes to the beta group only</span></li>
                 </ul>
+                <div class="align-views" hidden><span class="align-label">Views</span><ul class="align-view-list"></ul></div>
+                <div class="align-proposed" hidden><span class="align-label">Proposed</span><p class="align-proposed-text"></p></div>
+                <div class="align-missing" hidden><span class="align-label">Unresolved</span><ul class="align-missing-list"></ul></div>
                 <div class="align-sources">
                   <span class="align-label">Sources say</span>
                   <ol class="align-refs">
                     <li class="align-ref" data-kind="source">
                       <div class="align-ref-head"><span class="src-chip" data-kind="source">REQ-2</span><span class="align-ref-title">Rollout plan v3</span></div>
-                      <p class="align-ref-text">“Stage one of the rollout: on Friday 24 October the beta release goes to the beta group only.”</p>
+                      <p class="align-ref-text">“the beta release goes to the beta group only”</p>
                     </li>
                     <li class="align-ref" data-kind="clarification">
                       <div class="align-ref-head"><span class="src-chip" data-kind="clarification">CL-1</span><span class="align-ref-title">Earlier clarification</span></div>
-                      <p class="align-ref-text">“The approved rollout plan says beta on Friday and production next Wednesday.”</p>
+                      <p class="align-ref-text">“beta on Friday and production next Wednesday”</p>
                     </li>
                   </ol>
                 </div>
+                <div class="align-question"><span class="align-label">Question</span><p class="align-question-text">Has the audience changed? The plan I have says beta users only on Friday.</p></div>
                 <div class="align-confirm"><span class="align-label">Before confirming · Carol</span><p class="align-quote">“Sounds good. Let's finalize that.”</p></div>
                 <div class="align-outcome">
-                  <p class="align-result">Confirmed · Friday's release stage: beta</p>
-                  <p class="align-result">Confirmed · Friday's audience: beta users</p>
+                  <p class="align-result">Partly settled · Friday's announcement audience: Beta users only; the channel is still open</p>
+                  <p class="align-note">Settled: audience: beta users only</p>
+                  <p class="align-note">Still open: channel</p>
                   <span class="owner-chip">Owner: Bob</span>
-                  <p class="align-decision">To the notes: Friday's release stage: beta; Friday's audience: beta users</p>
+                  <p class="align-decision">To the notes: Friday's announcement goes to beta users only</p>
                 </div>
               </li>
               <li class="utt" data-who="facilitator" data-kind="intervention">
                 <div class="utt-meta"><span class="utt-who">Facilitator</span><span class="utt-time">01:40</span></div>
-                <p class="utt-text">One clarification before we confirm: we established that Friday is a beta release, not production. Should Friday's announcement go only to beta users?</p>
+                <p class="utt-text">Has the audience changed? The plan I have says beta users only on Friday.</p>
               </li>
-              <li class="utt" data-who="room">
-                <div class="utt-meta"><span class="utt-who">Room</span><span class="utt-time">01:52</span></div>
-                <p class="utt-text">And the beta notes go to all customers too.</p>
+              <li class="utt" data-who="participant">
+                <div class="utt-meta"><span class="utt-who">Alice</span><span class="utt-time">02:00</span></div>
+                <p class="utt-text">So Friday's release is the beta, and we announce it then.</p>
               </li>
-              <li class="align-card" data-kind="suggestion" data-status="suggestion">
-                <header class="align-head"><span class="align-title">Possible mismatch (not raised)</span><span class="align-status">Silent</span></header>
-                <div class="align-heard"><span class="align-label">Heard · 01:52</span><p class="align-quote">“And the beta notes go to all customers too.”</p></div>
-                <ul class="align-diffs">
-                  <li class="align-diff"><span class="diff-slot">Friday's audience</span><span class="diff-heard">all customers</span><span class="diff-vs">≠</span><span class="diff-source">beta users</span></li>
-                </ul>
+              <li class="utt" data-who="participant">
+                <div class="utt-meta"><span class="utt-who">Bob</span><span class="utt-time">02:02</span></div>
+                <p class="utt-text">Right, Friday's release goes out to everyone.</p>
+                <p class="utt-claims"><span class="claim" data-tone="conflict">Friday's release · hidden disagreement</span></p>
+              </li>
+              <!-- a hidden disagreement: each participant's own words and reading; no source settles it -->
+              <li class="align-card" data-kind="intervention" data-issue-type="hidden_disagreement" data-status="asked">
+                <header class="align-head"><span class="align-title">Alignment check · hidden disagreement</span><span class="align-status">Asked</span></header>
+                <div class="align-heard"><span class="align-label">Heard · Bob · 02:02</span><p class="align-quote">“Right, Friday's release goes out to everyone.”</p></div>
+                <ul class="align-diffs" hidden></ul>
+                <div class="align-views">
+                  <span class="align-label">Views</span>
+                  <ul class="align-view-list">
+                    <li class="align-view"><span class="view-who">Alice</span><span class="view-sep"> · </span><span class="view-quote">“Friday's release is the beta”</span><span class="view-arrow"> → </span><span class="view-meaning">beta release</span></li>
+                    <li class="align-view"><span class="view-who">Bob</span><span class="view-sep"> · </span><span class="view-quote">“goes out to everyone”</span><span class="view-arrow"> → </span><span class="view-meaning">production release</span></li>
+                  </ul>
+                </div>
+                <div class="align-proposed" hidden><span class="align-label">Proposed</span><p class="align-proposed-text"></p></div>
+                <div class="align-missing" hidden><span class="align-label">Unresolved</span><ul class="align-missing-list"></ul></div>
+                <div class="align-sources" hidden><span class="align-label">Sources say</span><ol class="align-refs"></ol></div>
+                <div class="align-question"><span class="align-label">Question</span><p class="align-question-text">Before we confirm Friday, do we mean the beta release or the production release?</p></div>
+                <div class="align-confirm"><span class="align-label">Before confirming · Carol</span><p class="align-quote">“Great, Friday it is.”</p></div>
+                <div class="align-outcome" hidden></div>
+              </li>
+              <li class="utt" data-who="participant">
+                <div class="utt-meta"><span class="utt-who">Carol</span><span class="utt-time">02:10</span></div>
+                <p class="utt-text">We deploy the new model on Monday.</p>
+              </li>
+              <!-- an ambiguous decision, shown and never said: the proposal and its missing detail; never a source -->
+              <li class="align-card" data-kind="suggestion" data-issue-type="ambiguous_decision" data-status="suggestion">
+                <header class="align-head"><span class="align-title">Possible issue (not raised)</span><span class="align-status">Silent</span></header>
+                <div class="align-heard"><span class="align-label">Heard · Carol · 02:10</span><p class="align-quote">“We deploy the new model on Monday.”</p></div>
+                <ul class="align-diffs" hidden></ul>
+                <div class="align-views" hidden><span class="align-label">Views</span><ul class="align-view-list"></ul></div>
+                <div class="align-proposed"><span class="align-label">Proposed</span><p class="align-proposed-text">Deploy the new model on Monday</p></div>
+                <div class="align-missing">
+                  <span class="align-label">Unresolved</span>
+                  <ul class="align-missing-list"><li class="align-missing-item">who owns rollback if the deployment fails</li></ul>
+                </div>
+                <div class="align-sources" hidden><span class="align-label">Sources say</span><ol class="align-refs"></ol></div>
+                <div class="align-question"><span class="align-label">Question</span><p class="align-question-text">Who owns rollback if Monday's deployment fails?</p></div>
+                <div class="align-outcome" hidden></div>
               </li>
             </ol>
           </div>
@@ -652,6 +704,7 @@
           ".people", ".chat", ".strip", ".more-menu", ".left-card", ".overlay", ".tile-hint", ".banner", ".agenda", ".callout",
           ".chat-title", ".tabs", ".evidence-pane", ".notes-pane", ".transcript-pane", ".chat-log", ".speakers",
           ".tile-you", ".demo-pill", ".demo", ".strip-routing", ".panel-demo", '[data-item="clips"]',
+          ".alignment-pill", ".backup-badge",
         ].map($),
         ...document.querySelectorAll(".tile-participant"),
       ];
@@ -702,6 +755,10 @@
         { name: "facilitator: participants and panel hidden", apply: () => (($(".chat").hidden = true), ($(".people").hidden = true), meeting.classList.add("side-off")) },
         { name: "facilitator: captions off", apply: () => meeting.classList.add("captions-off") },
         { name: "facilitator: you left, meeting info open", apply: () => (($(".left-card").hidden = false), ($(".strip").hidden = false)) },
+        {
+          name: "facilitator: alignment unavailable (the badge), meeting info open",
+          apply: () => (($(".alignment-pill").hidden = false), ($(".backup-badge").hidden = true), ($(".strip").hidden = false)),
+        },
         { name: "facilitator: join dialog", apply: () => ($(".overlay").hidden = false) },
         { name: "demo: discussion, intervention callout, prerecorded participants", apply: demo },
         { name: "demo: presenting, Alice's clip, evidence callout", apply: () => (demo(), pane("evidence"), ($(".callout").dataset.kind = "evidence"), ($(".speakers").hidden = true)) },

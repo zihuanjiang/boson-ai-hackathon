@@ -5,11 +5,12 @@
  * chunk plays, and the narration audio to preload. No DOM: unit-tested under JavaScriptCore.
  */
 import { normalizeDemo } from "./demo.js";
-import { normalizeMeetingInfo } from "./facilitator.js";
+import { normalizeAlignment, normalizeMeetingInfo } from "./facilitator.js";
 import { resolveSlide, toInt } from "./util.js";
 
 /** @typedef {import("./util.js").Word} Word */
 /** @typedef {import("./facilitator.js").MeetingInfo} MeetingInfo */
+/** @typedef {import("./facilitator.js").AlignmentStatus} AlignmentStatus */
 /** @typedef {import("./demo.js").DemoInfo} DemoInfo */
 /**
  * @typedef {object} TalkChunk
@@ -46,6 +47,8 @@ import { resolveSlide, toInt } from "./util.js";
  *   null for a plain talk, which looks and behaves exactly like Relay
  * @property {DemoInfo|null} demo  the simulated online meeting (demo.yaml: prerecorded participant clips and their
  *   cues) and the backend's input (`clips`: the mic stays off); null for a talk without one
+ * @property {AlignmentStatus|null} alignment  who checks the discussion (contract v5: mode, model, available); null
+ *   from a server that doesn't say
  */
 
 /** @param {unknown} raw @returns {Word[]} */
@@ -107,6 +110,7 @@ export function normalizeTalk(raw) {
     }),
     meeting: normalizeMeetingInfo(raw?.meeting),
     demo: normalizeDemo(raw?.demo),
+    alignment: normalizeAlignment(raw?.alignment),
   };
 }
 
