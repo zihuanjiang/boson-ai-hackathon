@@ -449,8 +449,7 @@ class Controller:
         self._analysis: AnalysisRunner | None = None
         self.alignment_mode = ALIGNMENT_OFF
         self._generation = 0  # the meeting generation: a reset bumps it, and a late analysis of the old one is dropped
-        self._analysed_revision = 0  # transcript length of the last snapshot whose result came back
-        self._inflight_revision: int | None = None  # … of the snapshot being analysed (new utterances count from it)
+        self._analysed_revision = 0  # transcript length of the last snapshot analysed successfully (new lines after it)
         self._alignment_events = 0  # AL<n> ids of the alignment events the controller emits (claude mode)
         self._claims_seen: set[tuple[str, str]] = set()  # (utterance id, text) of the claim chips shown
         self._conflict_revisions: dict[str, int] = {}  # issue id → revision of its latest conflict card
@@ -1468,7 +1467,6 @@ class Controller:
         if self._analysis is not None:
             self._analysis.cancel()
         self._analysed_revision = 0
-        self._inflight_revision = None
         self._alignment_events = 0
         self._claims_seen.clear()
         self._conflict_revisions.clear()
@@ -3137,30 +3135,44 @@ class Controller:
 
     # --- model-based alignment (claude mode, contract v5 §3) ---------------------------------------------------
 
+    def _snapshot(self) -> Snapshot:
+        """The meeting as it is now. The utterances after the last successful analysis are the new ones (the model's
+        focus): a failed analysis leaves its lines new for the next one."""
+        new_ids = [utterance.id for utterance in self.mstate.transcript[max(0, self._analysed_revision):]]
+        return build_snapshot(self.meeting, self.mstate, generation=self._generation, new_utterance_ids=new_ids)
+
     def _request_analysis(self) -> None:
         """Ask for an analysis of the meeting as it is now (one in flight at a time; a request while busy replaces the
-        waiting one, and the newest snapshot holds every intervening utterance). The utterances since the snapshot
-        being analysed are the new ones (the model's focus)."""
+        waiting one, and the newest snapshot holds every intervening utterance). A waiting snapshot is rebuilt when
+        the result in flight has been applied (`_refresh_waiting`), so it sees the issues that result recorded."""
         runner = self._analysis
         if runner is None or self.mstate is None:
             return
-        base = self._inflight_revision if self._inflight_revision is not None else self._analysed_revision
-        new_ids = [utterance.id for utterance in self.mstate.transcript[max(0, base):]]
-        snapshot = build_snapshot(self.meeting, self.mstate, generation=self._generation, new_utterance_ids=new_ids)
-        starts_now = not runner.in_flight
+        snapshot = self._snapshot()
+        queued = runner.in_flight
         runner.request(snapshot)
-        if starts_now:
-            self._inflight_revision = snapshot.revision
         self._refresh_alignment()
-        self._note("analysis_request", {"revision": snapshot.revision, "new": new_ids, "generation": self._generation,
-                                        "queued": not starts_now, "utterances_dropped": snapshot.utterances_dropped,
+        self._note("analysis_request", {"revision": snapshot.revision, "new": list(snapshot.new_utterance_ids),
+                                        "generation": self._generation, "queued": queued,
+                                        "utterances_dropped": snapshot.utterances_dropped,
                                         "passages_truncated": snapshot.passages_truncated})
 
-    async def _al_event(self, kind: str, **fields: Any) -> dict:
+    def _refresh_waiting(self) -> None:
+        """The result in flight has been applied: the waiting snapshot (if any) is rebuilt from the meeting as it is
+        now (same utterances, plus the issues, decisions and candidates that result recorded)."""
+        runner = self._analysis
+        if runner is not None and runner.waiting:
+            snapshot = self._snapshot()
+            runner.refresh(snapshot)
+            self._note("analysis_refreshed", {"revision": snapshot.revision, "new": list(snapshot.new_utterance_ids),
+                                              "issues": [issue["id"] for issue in snapshot.issues]})
+
+    async def _al_event(self, event_type: str, /, **fields: Any) -> dict:
         """One alignment event of the controller's own (claude mode), numbered like the legacy engine's (AL<n>), kept in
-        state.alerts and sent to the deck."""
+        state.alerts and sent to the deck. (`event_type` is positional-only: a claim event has a `kind` field.)"""
         self._alignment_events += 1
-        event = {"id": f"AL{self._alignment_events}", "type": kind, "at_s": round(self._meeting_time(), 3), **fields}
+        event = {"id": f"AL{self._alignment_events}", "type": event_type, "at_s": round(self._meeting_time(), 3),
+                 **fields}
         self.mstate.alerts.append(event)
         await self._send({"type": "alignment", "event": event})
         return event
@@ -3169,23 +3181,22 @@ class Controller:
         """One analysis result, under the lock: dropped when the meeting was reset meanwhile; an error only updates the
         status; else the validated claims, assumptions, issues, updates and proposals are applied in that order, then
         the flows run (an intervention, a decision) and the wrap-up goes on if it waited for this."""
-        runner = self._analysis
         if snapshot.generation != self._generation:
             self._note("analysis_discarded", {"generation": snapshot.generation, "current": self._generation,
                                               "revision": snapshot.revision})
             self._refresh_alignment()
             return
-        self._analysed_revision = max(self._analysed_revision, snapshot.revision)
-        self._inflight_revision = runner.current_revision if runner is not None and runner.waiting else None
         if outcome.error or outcome.result is None:
             self._note("analysis_error", {"error": outcome.error, "latency_ms": outcome.latency_ms,
                                           "revision": snapshot.revision, "model": outcome.model,
                                           "truncated": outcome.truncated, "refused": outcome.refused,
                                           "request_id": outcome.request_id})
+            self._refresh_waiting()  # (its lines stay new for the next analysis)
             self._refresh_alignment()
             await self._send_meeting()
             await self._after_analysis()
             return
+        self._analysed_revision = max(self._analysed_revision, snapshot.revision)
         rec = semantic.reconcile(outcome.result, snapshot)
         self._note("analysis_result", {"revision": snapshot.revision, "latency_ms": outcome.latency_ms,
                                        "usage": outcome.usage, "model": outcome.model, "request_id": outcome.request_id,
@@ -3198,6 +3209,7 @@ class Controller:
         await self._apply_updates(rec, snapshot)
         await self._apply_proposals(rec, snapshot)
         self._expire_asked(rec, snapshot)
+        self._refresh_waiting()
         self._refresh_alignment()
         await self._send_meeting()
         await self._after_analysis()
@@ -3361,8 +3373,8 @@ class Controller:
                                      resolution_utterance_ids=resolution, revision=snapshot.revision)
             self._unqueue_intervention(record.id, status)
             proposal = by_issue.get(record.id)
-            plan_changed = bool(proposal is not None and proposal.supersedes) or any(
-                uid in plan_changes for uid in update.utterance_ids)
+            plan_changed = (semantic.plan_changed(proposal, rec.claims, update.utterance_ids) if proposal is not None
+                            else any(uid in plan_changes for uid in update.utterance_ids))
             last = snapshot.utterance(update.utterance_ids[-1]) if update.utterance_ids else None
             await self._al_event("resolved", **base, partial=partial, settled=settled, remaining=remaining,
                                  value_label=update.note, owner=proposal.owner if proposal is not None else None,
@@ -3424,13 +3436,12 @@ class Controller:
                                      conflict_id=issue.conflict_event_id, partial=False, settled=[], remaining=[],
                                      note=model.explanation, value_label=model.decision,
                                      utterance_ids=proposal.agreement_utterance_ids, owner=proposal.owner,
-                                     plan_changed=proposal.supersedes is not None,
+                                     plan_changed=semantic.plan_changed(proposal, rec.claims),
                                      follow_up_quote=last["text"] if last else "")
         claim_ids = [uid for issue in resolved for uid in issue.claim_utterance_ids]
         utterance_ids = list(dict.fromkeys([*claim_ids, *proposal.agreement_utterance_ids,
                                             *proposal.owner_utterance_ids]))
-        plan_changes = {claim.utterance_id for claim in rec.claims if claim.kind == "plan_change"}
-        plan_changed = proposal.supersedes is not None or any(uid in plan_changes for uid in utterance_ids)
+        plan_changed = semantic.plan_changed(proposal, rec.claims, utterance_ids)
         draft = {"issue_ids": [issue.id for issue in resolved], "decision": model.decision, "owner": proposal.owner,
                  "owner_unsupported": proposal.owner_unsupported, "follow_up": model.follow_up or "",
                  "source_ids": proposal.source_ids, "utterance_ids": utterance_ids,

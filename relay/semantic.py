@@ -76,7 +76,9 @@ snapshot already lists under open_issues, set existing_issue_id and report what 
 same utterances may settle, partly settle or withdraw it); list a new issue only once. The utterances named in
 new_utterance_ids are the newest; everything earlier was analysed before. The question of a clarify issue is the one
 neutral sentence the facilitator may say, at most thirty words. Owners are participant names from the snapshot; use
-null when nobody was assigned. An empty result is correct for ordinary discussion."""
+null when nobody was assigned. An utterance whose speaker is null was not labelled: it may come from any participant,
+so never attribute it to a name (speaker null in your views and assumptions) and never treat two such lines as the
+same person or as different people unless their words say so. An empty result is correct for ordinary discussion."""
 
 
 # --- the snapshot -------------------------------------------------------------------------------------------------------
@@ -619,7 +621,8 @@ def reconcile(result: AnalysisResult, snapshot: Snapshot) -> Reconciled:
             elif not quote_matches(view.quote, u["text"]):
                 mine.append(f"{here}: view quote not in {view.utterance_id}: {_clip(view.quote, 80)!r}")
             else:
-                views.append({"speaker": u.get("speaker") or view.speaker, "utterance_id": u["id"],
+                # the speaker is the transcript's label, never the model's guess (an unlabelled line stays unknown)
+                views.append({"speaker": u.get("speaker"), "utterance_id": u["id"],
                               "quote": view.quote, "view": view.view})
         existing = issue.existing_issue_id if issue.existing_issue_id in known_issues else None
         if issue.existing_issue_id and existing is None:
@@ -681,8 +684,21 @@ def reconcile(result: AnalysisResult, snapshot: Snapshot) -> Reconciled:
         if u is None:
             dropped.append(f"assumption: unknown utterance {assumption.utterance_id}")
             continue
-        assumptions.append(assumption.model_copy(update={"speaker": u.get("speaker") or assumption.speaker}))
+        assumptions.append(assumption.model_copy(update={"speaker": u.get("speaker")}))
     return Reconciled(issues, updates, proposals, claims, assumptions, dropped)
+
+
+def plan_changed(proposal: ValidProposal, claims: Iterable[Claim], utterance_ids: Iterable[str] = ()) -> bool:
+    """Whether a confirmed proposal changes the plan (the notes say so, and it is not challenged against the old
+    sources again): it supersedes a decision, or the same result reports a plan change (a claim of kind
+    `plan_change`) on one of its own utterances (agreement, owner, or the extra `utterance_ids`, e.g. the utterances
+    of the issues it resolves) or about a source it cites."""
+    if proposal.supersedes:
+        return True
+    own = {*proposal.agreement_utterance_ids, *proposal.owner_utterance_ids, *utterance_ids}
+    sources = set(proposal.source_ids)
+    return any(claim.kind == "plan_change" and (claim.utterance_id in own or sources & set(claim.evidence_ids))
+               for claim in claims)
 
 
 def _evidence_requirement(issue_type: str, refs: list[dict], views: list[dict], missing: list[str],
@@ -694,14 +710,22 @@ def _evidence_requirement(issue_type: str, refs: list[dict], views: list[dict], 
             return True, "a cited passage, clarification or decision"
         return False, "an evidence conflict cites no passage, clarification or decision"
     if issue_type == "hidden_disagreement":
-        cited = [*views, *[ref for ref in refs if ref["kind"] == "utterance"]]
-        speakers = {str(item.get("speaker") or "") for item in cited}
+        # two different utterances; their labelled speakers (the transcript's, never the model's) must not all be one
+        # and the same person. Unlabelled lines (a Zoom call: labels are best effort) may come from anyone.
+        cited: dict[str, str | None] = {}
+        for item in [*views, *[ref for ref in refs if ref["kind"] == "utterance"]]:
+            uid = str(item.get("utterance_id") or item.get("id") or "")
+            if uid:
+                cited.setdefault(uid, item.get("speaker") or None)
+        if len(cited) < 2:
+            return False, "a hidden disagreement cites fewer than two utterances"
+        speakers = list(cited.values())
         known = {s for s in speakers if s}
-        if len(cited) >= 2 and (len(known) >= 2 or (not known and len(cited) >= 2)):
+        if len(known) >= 2:
             return True, "two participants' own words"
-        if len(cited) >= 2 and len(known) < 2:
-            return False, "the cited utterances are not from two different participants"
-        return False, "a hidden disagreement cites fewer than two utterances"
+        if len(known) == 1 and None not in speakers:
+            return False, "the cited utterances are all from one participant"
+        return True, "two utterances' own words (speakers partly unlabelled)"
     if issue_type == "ambiguous_decision":
         if any(" ".join(detail.split()) for detail in missing):
             return True, "a named missing detail"
@@ -776,6 +800,15 @@ class AnalysisRunner:
             self._waiting = snapshot
             return
         self._start(snapshot)
+
+    def refresh(self, snapshot: Snapshot) -> bool:
+        """Replace the waiting snapshot (if one waits) with a newer view of the same meeting. The controller calls it
+        after applying the result in flight, so the next analysis sees the issues and decisions that result recorded
+        (a snapshot built while it was in flight could not). True when there was one to replace."""
+        if self._waiting is None:
+            return False
+        self._waiting = snapshot
+        return True
 
     def _start(self, snapshot: Snapshot) -> None:
         self._idle.clear()

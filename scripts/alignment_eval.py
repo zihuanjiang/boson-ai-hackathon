@@ -329,8 +329,8 @@ class Tracker:
     suggested issue marks it `asked` (the eval assumes the question is voiced and heard), `suggest` on a pending one
     marks it `suggested`; updates change statuses; confirmed proposals are recorded `by="analysis"` and resolve the
     issues they name; asked issues with no answer within ALIGNMENT_ANSWER_WINDOW utterances are left `open`.
-    `plan_changed` is inferred when a confirmed proposal's agreement, owner or the new utterances carry a claim of
-    kind `plan_change` (the controller builder may refine this rule)."""
+    `plan_changed` follows the controller's rule (`semantic.plan_changed`): the proposal supersedes a decision, or a
+    `plan_change` claim sits on one of its utterances (or the claims of the issues it resolves) or cites its sources."""
 
     def __init__(self, state: MeetingState) -> None:
         self.state = state
@@ -344,7 +344,6 @@ class Tracker:
         rec = semantic.reconcile(outcome.result, snapshot)
         result.dropped = list(rec.dropped)
         state = self.state
-        plan_change_utterances = {c.utterance_id for c in rec.claims if c.kind == "plan_change"}
         for assumption in rec.assumptions:
             entry = {"speaker": assumption.speaker, "utterance_id": assumption.utterance_id, "topic": assumption.topic,
                      "interpretation": assumption.interpretation}
@@ -398,12 +397,13 @@ class Tracker:
                 if duplicate is not None:
                     result.duplicates.append(f"{duplicate.id}: {m.decision}")
                     continue
-                provenance = {*prop.agreement_utterance_ids, *prop.owner_utterance_ids, *snapshot.new_utterance_ids}
+                resolved_claims = [uid for iid in prop.resolves_issue_ids if state.issue(iid) is not None
+                                   for uid in state.issue(iid).claim_utterance_ids]
                 decision = state.add_decision(m.decision, prop.owner, m.follow_up, prop.source_ids, by="analysis",
                                               supersedes=prop.supersedes,
                                               agreement_utterance_ids=prop.agreement_utterance_ids,
                                               owner_utterance_ids=prop.owner_utterance_ids,
-                                              plan_changed=bool(provenance & plan_change_utterances))
+                                              plan_changed=semantic.plan_changed(prop, rec.claims, resolved_claims))
                 for issue_id in prop.resolves_issue_ids:
                     record = state.issue(issue_id)
                     if record is not None and record.is_open:

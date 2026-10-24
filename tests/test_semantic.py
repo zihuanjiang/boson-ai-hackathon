@@ -220,7 +220,8 @@ def test_reconcile_evidence_requirements_per_category(package, state):
     u1 = state.add_utterance("Friday is our beta release to the beta group.", "Alice", "clip")
     u2 = state.add_utterance("Friday is production for everyone, let's announce it.", "Bob", "clip")
     u3 = state.add_utterance("Agreed on Friday.", "Carol", "clip")
-    s = snap(package, state, u3.id)
+    u4 = state.add_utterance("I'll send it to everyone then.", "Bob", "clip")
+    s = snap(package, state, u4.id)
     rec = semantic.reconcile(result(issues=[
         issue(issue_type="evidence_conflict", claim_utterance_ids=[u2.id],
               evidence=[{"kind": "utterance", "id": u2.id, "quote": "Friday is production"}]),  # no passage: not ok
@@ -228,9 +229,9 @@ def test_reconcile_evidence_requirements_per_category(package, state):
               participant_views=[{"speaker": "Alice", "utterance_id": u1.id, "quote": "beta release", "view": "beta"},
                                  {"speaker": "Bob", "utterance_id": u2.id, "quote": "Friday is production",
                                   "view": "production"}]),
-        issue(issue_type="hidden_disagreement", claim_utterance_ids=[u2.id],
+        issue(issue_type="hidden_disagreement", claim_utterance_ids=[u2.id],  # two lines, both Bob's
               participant_views=[{"speaker": "Bob", "utterance_id": u2.id, "quote": "production", "view": "p"},
-                                 {"speaker": "Bob", "utterance_id": u2.id, "quote": "announce", "view": "p"}]),
+                                 {"speaker": "Bob", "utterance_id": u4.id, "quote": "everyone", "view": "p"}]),
         issue(issue_type="hidden_disagreement", claim_utterance_ids=[u2.id],
               participant_views=[{"speaker": "Bob", "utterance_id": u2.id, "quote": "production", "view": "p"}]),
         issue(issue_type="ambiguous_decision", claim_utterance_ids=[u3.id], missing_details=["who owns rollback"],
@@ -242,11 +243,38 @@ def test_reconcile_evidence_requirements_per_category(package, state):
                    ("hidden_disagreement", False), ("ambiguous_decision", True), ("ambiguous_decision", False)]
     assert "cites no passage" in rec.issues[0].evidence_reason
     assert "two participants' own words" in rec.issues[1].evidence_reason
-    assert "not from two different participants" in rec.issues[2].evidence_reason
+    assert "all from one participant" in rec.issues[2].evidence_reason
     assert "fewer than two utterances" in rec.issues[3].evidence_reason
     assert "names no missing detail" in rec.issues[5].evidence_reason
     views = rec.issues[1].participant_views
     assert [v["speaker"] for v in views] == ["Alice", "Bob"]  # the utterance's speaker wins
+
+
+def test_unlabelled_lines_keep_an_unknown_speaker_and_can_still_disagree(package, state):
+    """A Zoom call labels speakers best effort (contract v5, the Zoom integration): an unlabelled line is nobody's in
+    particular. The model may not name its speaker, and two lines, one labelled and one not, can still be a hidden
+    disagreement; two lines by the same labelled person cannot."""
+    u1 = state.add_utterance("Friday is our beta release to the beta group.", "Alice", "voice")
+    u2 = state.add_utterance("Friday is production for everyone, let's announce it.", None, "voice")
+    u3 = state.add_utterance("Sounds good, Friday it is.", None, "voice")
+    s = snap(package, state, u3.id)
+    views = [{"speaker": "Alice", "utterance_id": u1.id, "quote": "beta release", "view": "beta"},
+             {"speaker": "Bob", "utterance_id": u2.id, "quote": "Friday is production", "view": "production"}]
+    rec = semantic.reconcile(result(
+        issues=[issue(issue_type="hidden_disagreement", claim_utterance_ids=[u2.id], commitment_utterance_ids=[u3.id],
+                      participant_views=views),
+                issue(issue_type="hidden_disagreement", claim_utterance_ids=[u2.id],
+                      participant_views=[{**views[1], "speaker": None},
+                                         {"speaker": None, "utterance_id": u3.id, "quote": "Friday it is",
+                                          "view": "agrees"}])],
+        participant_assumptions=[{"speaker": "Bob", "utterance_id": u2.id, "topic": "Friday", "interpretation": "p"}]),
+        s)
+    first, second = rec.issues
+    assert [v["speaker"] for v in first.participant_views] == ["Alice", None]  # never the model's "Bob"
+    assert first.evidence_ok and "partly unlabelled" in first.evidence_reason
+    assert second.evidence_ok  # two unlabelled lines: may be two people (the question is neutral either way)
+    assert rec.assumptions[0].speaker is None
+    assert semantic.decide_policy(first, s)[0] == "clarify"
 
 
 def test_reconcile_view_quotes_and_speakers(package, state):
