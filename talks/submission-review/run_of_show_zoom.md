@@ -63,11 +63,13 @@ Speak at a normal pace, close to your microphone; pause under about half a secon
 the line early — the backend ends an utterance after 0.7 s of silence). Don't talk over each other: the facilitator
 hears one mixed stream.
 
-**Zoom display names must be exactly the agenda's names** — `Alice`, `Bob`, `Carol` (rename yourself in Zoom before
-the demo: Participants → More → Rename). The bot reads the active speaker from Zoom's display and the backend labels a
-line only with a participant it knows from `agenda.yaml`; any other name, or no match, leaves the line unlabelled.
-The alignment check and the decision work without labels, but the Transcript and Notes read better with them (the
-decision's owner comes from the words "Bob owns…", not from who spoke).
+**Renaming yourselves in Zoom is no longer needed** (D89, 2026-10-24). The bot reads the active speaker from Zoom's
+page (an active class, an aria-label, the green frame round the speaker's tile, Zoom's captions, or the only other
+person in the call) and the backend labels the line with the name Zoom shows, real or agenda: `Alice`, `Bob`, `Carol`
+still match the agenda if you did rename. Anyone who has spoken under their Zoom name can also own a decision. A line
+whose speaker Zoom didn't show stays unlabelled; the alignment check and the decision still work. Gallery view gives
+the most signals. `out/zoom_bot/summary.json` (`speaker_strategy`, `speakers_seen`) and `out/zoom_bot/speaker-probe/`
+tell afterwards how it went.
 
 ## The run (about 3 minutes; re-time after the first rehearsal)
 

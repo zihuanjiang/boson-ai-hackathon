@@ -44,8 +44,11 @@ uv run python -m relay.talk talks/project-overview       # the package is valid
 
 ## Real people: how to speak
 
-- **Zoom: rename yourselves exactly Alice, Bob and Carol** (Participants → More → Rename). The bot labels a line only
-  with a name from `agenda.yaml`; any other name leaves it unlabelled (the check and the decision still work).
+- **Zoom: no renaming needed** (D89, 2026-10-24). The bot reads the active speaker off Zoom's page and a line is
+  labelled with the name Zoom shows ("Ken Jiang"), which, once that person has spoken, can also own a decision. If you
+  did rename yourselves Alice, Bob and Carol, those agenda names are matched as before. Gallery view helps: the green
+  frame round the speaker's tile is one of the signals. After the run, `out/zoom_bot/summary.json` says how speakers
+  were read (`speaker_strategy`), and `out/zoom_bot/speaker-probe/` holds what the page offered when nobody was named.
 - Say each line in one go, with no pause over about half a second: a line ends after 0.7 s of silence. Never talk
   over someone else: the facilitator hears one mixed stream.
 - To interrupt the facilitator, just talk (Zoom) or tap Space and talk (room). It hears voices only: never a raised
