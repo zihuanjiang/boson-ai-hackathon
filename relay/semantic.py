@@ -76,9 +76,17 @@ snapshot already lists under open_issues, set existing_issue_id and report what 
 same utterances may settle, partly settle or withdraw it); list a new issue only once. The utterances named in
 new_utterance_ids are the newest; everything earlier was analysed before. The question of a clarify issue is the one
 neutral sentence the facilitator may say, at most thirty words. Owners are participant names from the snapshot; use
-null when nobody was assigned. An utterance whose speaker is null was not labelled: it may come from any participant,
-so never attribute it to a name (speaker null in your views and assumptions) and never treat two such lines as the
-same person or as different people unless their words say so. An empty result is correct for ordinary discussion."""
+null when nobody was assigned. A participant's assumption is a candidate claim of kind "assumption": its topic, and
+their interpretation as the text. In an issue's evidence, an utterance cited for what a participant means carries that
+reading as its view (for a hidden disagreement, one per participant); every other reference has an empty view. Who said
+an utterance is the snapshot's speaker field: a null speaker was not labelled, may be any participant, and is never
+attributed to a name; two unlabelled lines are neither the same person nor different people unless their words say so.
+An open issue's status says what the room has seen: "asked" means the facilitator asked its question aloud just before
+the utterances that follow it, "suggested" was shown on screen only, "pending" was not raised. A participant's answer
+that settles an asked issue, with nobody objecting, is the group's resolution: report the update, and the decision it
+settles as confirmed with that answer as the agreement. Keep every text field short: a topic, claim, view, note or
+missing detail in under fifteen words, a decision in one sentence; quotes stay verbatim. An empty result is correct
+for ordinary discussion."""
 
 
 # --- the snapshot -------------------------------------------------------------------------------------------------------
@@ -318,6 +326,90 @@ def empty_result() -> AnalysisResult:
                           updates=[], decision_proposals=[])
 
 
+# --- the wire format: what the model fills ---------------------------------------------------------------------------
+# Claude's structured outputs compile a grammar from the schema, and the full AnalysisResult was refused live
+# (2026-10-24, every model: HTTP 400 "The compiled grammar is too large"; measured: about 41 fields in 6 object types
+# compile, 44 in 7 don't). The model therefore fills this compact form: an assumption is a claim of kind
+# "assumption" (its topic, the speaker's interpretation as the text), a participant's reading is the `view` of a cited
+# utterance, speakers come from the transcript, the schema version is the application's. `WireResult.to_result()`
+# rebuilds the AnalysisResult that reconcile, the controller, the fakes and the eval use.
+
+WireClaimKind = Literal["assertion", "proposal", "question", "agreement", "correction", "plan_change", "assumption",
+                        "other"]
+
+
+class WireClaim(BaseModel):
+    utterance_id: str
+    kind: WireClaimKind
+    topic: str
+    text: str
+    agrees_with_sources: Optional[bool]
+    evidence_ids: list[str]
+
+
+class WireRef(BaseModel):
+    kind: EvidenceKind
+    id: str
+    quote: str
+    view: str
+
+
+class WireIssue(BaseModel):
+    existing_issue_id: Optional[str]
+    issue_type: IssueType
+    topic: str
+    claim: Optional[str]
+    claim_utterance_ids: list[str]
+    evidence: list[WireRef]
+    missing_details: list[str]
+    material_consequence: Optional[str]
+    commitment: Commitment
+    commitment_utterance_ids: list[str]
+    confidence: Confidence
+    recommendation: Recommendation
+    question: Optional[str]
+
+
+class WireProposal(BaseModel):
+    decision: str
+    status: Literal["proposed", "nearing", "confirmed", "rejected", "superseded"]
+    owner: Optional[str]
+    owner_utterance_ids: list[str]
+    agreement_utterance_ids: list[str]
+    follow_up: Optional[str]
+    source_ids: list[str]
+    supersedes_decision_id: Optional[str]
+    resolves_issue_ids: list[str]
+
+
+class WireResult(BaseModel):
+    candidate_claims: list[WireClaim]
+    issues: list[WireIssue]
+    updates: list[IssueUpdate]
+    decision_proposals: list[WireProposal]
+
+    def to_result(self) -> AnalysisResult:
+        claims, assumptions = [], []
+        for claim in self.candidate_claims:
+            if claim.kind == "assumption":
+                assumptions.append(Assumption(speaker=None, utterance_id=claim.utterance_id, topic=claim.topic,
+                                              interpretation=claim.text))
+            else:
+                claims.append(Claim(utterance_id=claim.utterance_id, text=claim.text, kind=claim.kind,
+                                    agrees_with_sources=claim.agrees_with_sources, evidence_ids=claim.evidence_ids))
+        issues = []
+        for issue in self.issues:
+            views = [ParticipantView(speaker=None, utterance_id=ref.id, quote=ref.quote, view=ref.view)
+                     for ref in issue.evidence if ref.kind == "utterance" and ref.view.strip()]
+            refs = [EvidenceRef(kind=ref.kind, id=ref.id, quote=ref.quote) for ref in issue.evidence
+                    if not (ref.kind == "utterance" and ref.view.strip())]
+            fields = issue.model_dump(exclude={"evidence"})
+            issues.append(Issue(**fields, evidence=refs, participant_views=views, explanation=""))
+        proposals = [DecisionProposal(**proposal.model_dump(), explanation="") for proposal in self.decision_proposals]
+        return AnalysisResult(schema_version=SCHEMA_VERSION, candidate_claims=claims, participant_assumptions=assumptions,
+                              issues=issues, updates=list(self.updates), decision_proposals=proposals)
+
+
 def _inline_refs(node: Any, defs: dict) -> Any:
     if isinstance(node, dict):
         if "$ref" in node and len(node) == 1:
@@ -342,17 +434,26 @@ def _strict(node: Any) -> Any:
     return node
 
 
-_SCHEMA: dict | None = None
+_SCHEMAS: dict[type, dict] = {}
+
+
+def _schema_of(model: type[BaseModel]) -> dict:
+    if model not in _SCHEMAS:
+        raw = model.model_json_schema()
+        defs = raw.pop("$defs", {})
+        _SCHEMAS[model] = _strict(_inline_refs(raw, defs))
+    return copy.deepcopy(_SCHEMAS[model])
 
 
 def result_schema() -> dict:
-    """The JSON schema of AnalysisResult for `output_config.format` (refs inlined, strict)."""
-    global _SCHEMA
-    if _SCHEMA is None:
-        raw = AnalysisResult.model_json_schema()
-        defs = raw.pop("$defs", {})
-        _SCHEMA = _strict(_inline_refs(raw, defs))
-    return copy.deepcopy(_SCHEMA)
+    """The JSON schema of the internal AnalysisResult (refs inlined, strict): documentation and tests. Too large for
+    the API's grammar compiler: the request uses `wire_schema()`."""
+    return _schema_of(AnalysisResult)
+
+
+def wire_schema() -> dict:
+    """The JSON schema of WireResult for `output_config.format` (refs inlined, strict): what the model fills."""
+    return _schema_of(WireResult)
 
 
 # --- analyzers -----------------------------------------------------------------------------------------------------------
@@ -406,7 +507,7 @@ class ClaudeAnalyzer:
             response = await self._client.messages.create(
                 model=model, max_tokens=self.settings.alignment_max_tokens, system=snapshot.system_blocks(),
                 messages=[{"role": "user", "content": snapshot.user_text()}],
-                output_config={"format": {"type": "json_schema", "schema": result_schema()},
+                output_config={"format": {"type": "json_schema", "schema": wire_schema()},
                                "effort": self.settings.alignment_effort})
         except anthropic.APITimeoutError:
             return done(error=f"timeout after {self.settings.alignment_timeout_s:g} s")
@@ -437,7 +538,7 @@ class ClaudeAnalyzer:
             return done(error="no text block in the response", usage=usage_dict, request_id=request_id)
         truncated = stop == "max_tokens"
         try:
-            result = AnalysisResult.model_validate_json(text)
+            result = WireResult.model_validate_json(text).to_result()
         except (ValidationError, ValueError) as exc:
             reason = "truncated at max_tokens" if truncated else f"invalid output: {_clip(exc, 200)}"
             return done(error=reason, truncated=truncated, usage=usage_dict, raw_text=text[:4000],

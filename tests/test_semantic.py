@@ -511,10 +511,71 @@ def analyzer(client) -> semantic.ClaudeAnalyzer:
     return created
 
 
+def wire_issue(**fields) -> dict:
+    base = {"existing_issue_id": None, "issue_type": "evidence_conflict", "topic": "Friday's release stage",
+            "claim": "Friday is a production launch", "claim_utterance_ids": [], "evidence": [], "missing_details": [],
+            "material_consequence": None, "commitment": "confirming", "commitment_utterance_ids": [],
+            "confidence": "high", "recommendation": "clarify", "question": "Is Friday beta or production?"}
+    return {**base, **fields}
+
+
+def wire(**fields) -> str:
+    return json.dumps({"candidate_claims": [], "issues": [], "updates": [], "decision_proposals": [], **fields})
+
+
+def count_fields(node) -> int:
+    if isinstance(node, dict):
+        own = len(node["properties"]) if isinstance(node.get("properties"), dict) else 0
+        return own + sum(count_fields(value) for value in node.values())
+    if isinstance(node, list):
+        return sum(count_fields(item) for item in node)
+    return 0
+
+
+def test_the_wire_schema_stays_within_what_the_api_compiles():
+    """Live 2026-10-24: the API refuses a structured-output schema whose compiled grammar is too large. The full
+    AnalysisResult (52 fields) and the wire form plus two explanation fields (43) were refused on opus, sonnet and
+    haiku 5.5; the wire form (41 fields in 6 object types) compiles on all three. A new field must replace one."""
+    schema = semantic.wire_schema()
+    assert count_fields(schema) <= 41 and json.dumps(schema).count('"properties"') <= 6
+    assert schema["additionalProperties"] is False and set(schema["required"]) == set(schema["properties"])
+    assert "$ref" not in json.dumps(schema) and "explanation" not in json.dumps(schema)
+
+
+def test_the_wire_result_becomes_the_analysis_result():
+    """Assumptions travel as claims of kind assumption, participant views as utterance evidence with a view; the
+    speakers are left to reconcile (the transcript's), the schema version is the application's."""
+    text = wire(
+        candidate_claims=[{"utterance_id": "U2", "kind": "proposal", "topic": "Friday", "text": "production launch",
+                           "agrees_with_sources": False, "evidence_ids": ["REQ-1"]},
+                          {"utterance_id": "U2", "kind": "assumption", "topic": "Friday's release",
+                           "text": "production for everyone", "agrees_with_sources": None, "evidence_ids": []}],
+        issues=[wire_issue(issue_type="hidden_disagreement", evidence=[
+            {"kind": "utterance", "id": "U1", "quote": "beta release", "view": "the beta"},
+            {"kind": "utterance", "id": "U2", "quote": "production", "view": "production"},
+            {"kind": "utterance", "id": "U3", "quote": "agreed", "view": "  "},
+            {"kind": "source", "id": "REQ-1", "quote": "two stages", "view": ""}])],
+        updates=[{"issue_id": "IS1", "status": "resolved", "utterance_ids": ["U4"], "settled": [], "note": "beta"}],
+        decision_proposals=[{"decision": "Friday is beta", "status": "confirmed", "owner": "Bob",
+                             "owner_utterance_ids": ["U4"], "agreement_utterance_ids": ["U4"], "follow_up": None,
+                             "source_ids": ["REQ-1"], "supersedes_decision_id": None, "resolves_issue_ids": ["IS1"]}])
+    converted = semantic.WireResult.model_validate_json(text).to_result()
+    assert converted.schema_version == semantic.SCHEMA_VERSION
+    assert [(c.kind, c.text) for c in converted.candidate_claims] == [("proposal", "production launch")]
+    (assumption,) = converted.participant_assumptions
+    assert (assumption.speaker, assumption.topic, assumption.interpretation) == (None, "Friday's release",
+                                                                                 "production for everyone")
+    (issue_,) = converted.issues
+    assert [(v.utterance_id, v.view, v.speaker) for v in issue_.participant_views] == [("U1", "the beta", None),
+                                                                                       ("U2", "production", None)]
+    assert [(e.kind, e.id) for e in issue_.evidence] == [("utterance", "U3"), ("source", "REQ-1")]
+    assert converted.updates[0].status == "resolved" and converted.decision_proposals[0].owner == "Bob"
+
+
 async def test_claude_analyzer_sends_the_structured_request_and_parses_the_result(package, state):
     u1 = state.add_utterance(BOB, "Bob", "clip")
     s = snap(package, state, u1.id)
-    payload = result(issues=[issue(claim_utterance_ids=[u1.id])]).model_dump_json()
+    payload = wire(issues=[wire_issue(claim_utterance_ids=[u1.id])])
     client = StubClient(lambda kw: response(payload))
     outcome = await analyzer(client).analyze(s)
     assert outcome.error is None and outcome.result.issues[0].claim_utterance_ids == [u1.id]
@@ -524,7 +585,7 @@ async def test_claude_analyzer_sends_the_structured_request_and_parses_the_resul
     assert not outcome.truncated and not outcome.refused and outcome.raw_text == payload
     (call,) = client.calls
     assert call["model"] == "claude-opus-5-5" and call["max_tokens"] == 1234
-    assert call["output_config"] == {"format": {"type": "json_schema", "schema": semantic.result_schema()},
+    assert call["output_config"] == {"format": {"type": "json_schema", "schema": semantic.wire_schema()},
                                      "effort": "low"}
     assert call["system"] == s.system_blocks() and call["messages"] == [{"role": "user", "content": s.user_text()}]
     assert "sk-ant-test" not in json.dumps(call)  # the key travels in the client, never in the request body
@@ -535,11 +596,11 @@ async def test_claude_analyzer_handles_refusal_truncation_and_bad_output(package
     refused = await analyzer(StubClient(lambda kw: response(None, stop="refusal", details=SimpleNamespace(
         category="x", explanation="declined")))).analyze(s)
     assert refused.refused and refused.error == "refused: declined" and refused.result is None
-    cut = await analyzer(StubClient(lambda kw: response('{"schema_version": 1, "cand', stop="max_tokens"))).analyze(s)
-    assert cut.truncated and cut.error == "truncated at max_tokens" and cut.raw_text.startswith('{"schema')
+    cut = await analyzer(StubClient(lambda kw: response('{"candidate_claims": [', stop="max_tokens"))).analyze(s)
+    assert cut.truncated and cut.error == "truncated at max_tokens" and cut.raw_text.startswith('{"cand')
     garbage = await analyzer(StubClient(lambda kw: response("not json at all"))).analyze(s)
     assert garbage.error.startswith("invalid output:") and garbage.result is None
-    wrong = await analyzer(StubClient(lambda kw: response(json.dumps({"schema_version": 1, "issues": [{}]})))).analyze(s)
+    wrong = await analyzer(StubClient(lambda kw: response(wire(issues=[{}])))).analyze(s)
     assert wrong.error.startswith("invalid output:")
     no_text = await analyzer(StubClient(lambda kw: response(None))).analyze(s)
     assert no_text.error == "no text block in the response"
