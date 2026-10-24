@@ -1,0 +1,12 @@
+# The facilitator presents On the Same Page to the hackathon room, then the team plans its next demo.
+title: "On the Same Page: project overview"
+host: Alice
+participants:
+  - {name: Alice, role: Team lead}
+  - {name: Bob, role: Demo producer}
+  - {name: Carol, role: Engineer}
+phases:
+  - {id: presentation, title: The project}
+  - {id: discussion, title: The next demo, prompt: "How do we run the demo with real people, and who sets it up?"}
+  - {id: wrapup, title: Decisions and next steps}
+discussion_slide: discussion

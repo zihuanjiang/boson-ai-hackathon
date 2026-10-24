@@ -411,7 +411,7 @@ def test_the_injected_page_script_under_jsc():
 # --- the dry run, end to end ------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("talk_id", ["submission-review", "rollout-review"])
+@pytest.mark.parametrize("talk_id", ["submission-review", "rollout-review", "project-overview"])
 async def test_the_dry_runs_scripted_analysis_survives_the_real_validation(talk_id):
     """DRY_RUN_ANALYSIS stands in for Claude in the dry run: its quotes must be verbatim in the talk's passages (else
     reconcile drops them and the dry run would prove nothing), and its verdicts must give one question at the

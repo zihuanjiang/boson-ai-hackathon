@@ -112,6 +112,13 @@ Add our own findings here as we hit them (date them).
   sandbox (Ken's terminal, the Zoom bot) nothing is needed. Boson's clients (`httpx` 0.28, `websockets`) use certifi
   already.
 
+- **Worktrees: run from the checkout you mean (2026-10-24).** `uv run --project <worktree> python -m relay.talk …`
+  started from another directory imports `relay` from the *current* directory (`python -m` puts the cwd first on
+  `sys.path`): from the main checkout it validated a worktree's package with the main checkout's older code ("unknown
+  keys ignored: guide"). Likewise `tests/test_server.py::test_cli_serves_with_flags` resolves `talks/test` against the
+  cwd and fails when pytest runs from elsewhere. Use `uv run --directory <worktree> …` (it runs in that directory), or
+  run from the worktree itself.
+
 ## Measured (ours, dated)
 
 - 2026-10-23, `scripts/e2e_chrome.py` in headless Chrome at 1280×720 (fake mic, fake Realtime, fake renders):

@@ -1,0 +1,15 @@
+# The legacy regex check (`--alignment legacy` only; the default is Claude's check, which needs none of this).
+# One slot: how people get the facilitator's attention in Zoom. The sources establish `speak_up` (ZOOM-2: "people just
+# speak up"); ZOOM-3 mentions raised hands as a noun ("never sees raised hands"), which the `raise_hand` patterns don't
+# match: they need the verb ("raise a hand", "raising their hands"), the plan Bob proposes in the discussion.
+slots:
+  - id: zoom_interrupt
+    label: "How people interrupt the facilitator in Zoom"
+    context: ['\bzoom\b', '\bhands?\b', '\binterrupt', '\bcalled on\b', '\bjust (speak|talk)\b', '\bspeak up\b']
+    values:
+      speak_up: ['\bspeak(s|ing)? up\b', '\bjust (speak|talk)\b']
+      raise_hand: ['\b(raise|raises|raising) (a |their |your |his |her |our )?hands?\b', '\bput (a |their |your )?hands? up\b']
+actions: ['\bi''ll\b', '\bi will\b', '\blet''s\b', '\btell\b', '\bbrief', '\bask (everyone|people)\b']
+confirmations: ['\bsounds good\b', '\block (that|it) in\b', '\bfinali[sz]e\b', '\bagreed\b']
+ownership: ['\bowns?\b', '\bwill brief\b']
+window_utterances: 3

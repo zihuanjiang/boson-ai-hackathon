@@ -4,6 +4,14 @@ Spec: `doc/brief.md`. Build contract (interfaces, protocol, state machine): `doc
 
 ## Status
 
+2026-10-24 (Sat) — **A new demo deck with granular script guidance** (D88, branch `claude/project-deck`, offline
+only): `talks/project-overview` — the facilitator presents On the Same Page itself to the hackathon room (the hook at
+Ken's grain, ~2 min live), Alice interrupts the line that promises it can be interrupted, the team then plans its demo
+with real people and the check catches a raised-hands plan that contradicts ZOOM-3 / CL-1. Every talking point has a
+guide (Claude wrote it; Higgs Realtime performs it). Offline: the Zoom bot dry run passes all 8 checks in claude
+(scripted) and legacy mode; the package joins the e2e demo tests. To do: the live run (the pace of verbatim lines on
+`higgs-realtime-1.5-preview` is not measured yet), Ken's human-involved run (`talks/project-overview/run_of_show.md`).
+
 2026-10-24 (Sat) — **Model-based alignment works live** (D78–D87, branch `claude/semantic-alignment`): Claude Opus 5.5
 reads the discussion (compact wire schema), the controller verifies and gates, the Zoom bot defaults to it.
 `scripts/live_check.py --talk talks/submission-review --alignment claude`: all 8 checks, the question 7.6 s after the
@@ -135,6 +143,7 @@ start of its sentence for the resume. Details: `doc/design.md`.
 | D85 | The model fills a **compact wire schema** (`WireResult`: assumptions as claims of kind `assumption`, participant views as utterance evidence with a `view`, speakers from the transcript, no explanation fields), converted to the unchanged `AnalysisResult` | live 2026-10-24: the full schema got HTTP 400 "The compiled grammar is too large" on every model; ≈ 41 fields in 6 object types compile, 43 don't (a test pins the budget) |
 | D86 | A snapshot waiting behind an analysis in flight is **rebuilt once that result is applied**; the new utterances are those after the last successful analysis | found by the flow tests: a snapshot built earlier lacks the issue the running analysis raises, so the model raised it again; a failed analysis must not hide its lines |
 | D87 | **Zoom (`--input voice`) runs the model-based check**: `zoom_bot.py --alignment` defaults to `claude` (passes `ANTHROPIC_API_KEY` from `.env`, warns without it); its offline dry run proves the path with a scripted stand-in (`DRY_RUN_ANALYSIS`, quotes verified against the talk); an unlabelled line keeps an unknown speaker, and one labelled plus one unlabelled line may be a hidden disagreement | the finished Zoom path wins conflicts (Ken via the main session); Zoom labels speakers best effort, so the check must never invent who said what |
+| D88 | **Script guidance: Claude writes the script, Higgs Realtime performs it** (Ken, 2026-10-24: "write the script 'guidance' … more granular", the hook at his grain; branch `claude/project-deck`). A talking point may carry a `guide` (intent, bridge, beats — verbatim lines or a gist with key phrases — delivery, seconds, avoid; a top-level `handover` likewise); the per-response instructions perform it beat by beat; a guided point is asked for its own length (≤ 45 s), resumes after a cut at the beat the room was in, and a guided first point opens the presentation with no greeting before it. `say` stays the TTS 3 backup (derived from all-verbatim beats). The new demo deck `talks/project-overview` uses it on every point | one "say it in your own words, one to three sentences" line per point couldn't land a hook, a punchline or a disclosure; live findings shaped the wording (a quoted sentence comes back word for word, ~1.4× the notes, emphasis words, source ids read aloud); beats inside one point keep a hook continuous (each point is its own response.create, so there is a first-audio gap between points), and truncate-to-heard still handles a cut |
 
 ## Decided earlier (Ken): the Relay voice was chloe (superseded by D54: `default`)
 
@@ -210,6 +219,17 @@ Model-based alignment (D76–D82, 2026-10-24, branch `claude/semantic-alignment`
       the default model (D79)
 - [ ] Commit on `claude/semantic-alignment`; Ken pushes and opens the PR; completion report (provider/model/billing,
       live vs fake, what fails, how to reproduce)
+
+Script guidance and the new deck (D88, 2026-10-24, branch `claude/project-deck`)
+- [x] `guide` / `handover` in the talk package (relay/talk.py: model, validator, CLI summary); guided prompts
+      (relay/prompts.py: points, the opening line, resume at a beat, hand-over); controller (length, beat on a cut);
+      `tests/test_guidance.py`
+- [x] `talks/project-overview` (slides, guided script, agenda, sources, checks, demo, run of show) +
+      `tests/test_project_overview.py`; the Zoom bot's scripted analysis for it; offline dry run (both modes)
+- [ ] **Live**: `scripts/live_check.py --talk talks/project-overview` and the Zoom dry run → real Zoom; measure the
+      live length of each guided point (verbatim pace, the hook's pauses), check that no beat number or delivery note
+      is read aloud and that the hook comes first; record in `doc/gotchas.md`
+- [ ] Ken: the human-involved run (`talks/project-overview/run_of_show.md`), listen to the hook
 
 ## Risks and fallbacks
 

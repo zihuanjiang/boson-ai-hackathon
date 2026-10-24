@@ -1,0 +1,11 @@
+# Limitations
+
+What it does not do yet (README "Known limitations", doc/online_meeting_patch.md §2 and §6, doc/design.md §12).
+
+- [LIM-1] It is built for online meetings, where each participant's audio arrives as its own stream.
+- [LIM-2] In a room with one shared microphone the facilitator would also hear itself, so in-person meetings need echo handling and possibly single-microphone diarization: future work, and an integration question for Boson rather than a known Higgs limitation.
+- [LIM-3] It runs in English only.
+- [LIM-4] Claude's check is a model's judgement, validated but not calibrated: it can miss a conflict, or raise one that a participant would have corrected a sentence later.
+- [LIM-5] Each check is a model round trip, so the question comes a few seconds after the confirming line, not instantly.
+- [LIM-6] The check needs an Anthropic key and the network; without them the meeting goes on without it.
+- [LIM-7] In Zoom there is one facilitator per meeting.

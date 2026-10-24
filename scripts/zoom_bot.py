@@ -804,6 +804,17 @@ DRY_RUN_ANALYSIS: dict[str, dict[str, Any]] = {
         "decision": "Friday is the beta release, announced to beta users only",
         "owner": "Bob", "follow_up": "Bob announces the beta to beta users",
     },
+    "project-overview": {
+        "claim": "bob-plan", "confirm": "carol-confirm", "fix": "carol-correct",
+        "evidence": [("ZOOM-3", "it never sees raised hands or the chat"),
+                     ("ZOOM-2", "people just speak up")],
+        "topic": "How people interrupt the facilitator in Zoom",
+        "said": "Everyone raises a hand in Zoom and waits to be called on",
+        "question": "Before we confirm: didn't we establish that in Zoom I hear voices, not raised hands? Should "
+                    "people just speak up instead?",
+        "decision": "In the demo with real people, everyone interrupts by speaking up; no raised hands",
+        "owner": "Bob", "follow_up": "Bob briefs the participants",
+    },
 }
 
 
