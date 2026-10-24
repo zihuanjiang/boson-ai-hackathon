@@ -47,12 +47,10 @@ BACKING = {
     "interrupt": {"HOW-4": "interrupts", "HOW-5": "shown on screen", "HOW-6": "not from the top"},
     "listen": {"HOW-7": "transcribed", "HOW-8": "a hidden disagreement", "HOW-9": "one neutral question",
                "WHAT-4": "speech to text"},
-    "achieved": {"ZOOM-6": "joined a real Zoom meeting as its own participant, shared its slides as its screen",
-                 "MEAS-9": "every talking point was said word for word", "MEAS-3": "cut the facilitator by voice",
-                 "MEAS-7": "the facilitator's question came 7.6 s after the confirming line",
-                 "LIM-8": "with recorded participants, not yet with real people"},
-    "limits": {"LIM-2": "one shared microphone", "ZOOM-4": "Zoom's web page", "LIM-5": "a few seconds",
-               "LIM-4": "it can miss a conflict", "MEAS-5": "matched 47 lines"},
+    "achieved": {"ZOOM-1": "its own participant", "ZOOM-5": "two real people speaking live in Zoom",
+                 "HOW-9": "one neutral question", "HOW-10": "only once the participants confirm"},
+    "limits": {"LIM-8": "one mixed stream", "ZOOM-4": "Zoom's active-speaker display", "LIM-5": "a few seconds",
+               "LIM-4": "it can miss a conflict", "ZOOM-3": "never sees raised hands or the chat"},
 }
 ID_RE = re.compile(r"\b[A-Z]{2,5}-\d{1,3}\b")
 STAGE_RE = re.compile(r"[()\[\]*_#<>\"]|https?://|www\.")
@@ -239,13 +237,15 @@ def test_every_spoken_line_obeys_the_spoken_rules_and_stays_true_on_the_backup(t
             assert beat.verbatim is None or ends_sentence(beat.verbatim), chunk.id
     # nothing claims to be live (the backup may be playing); the disclosure says what is
     assert not [where for where, text in spoken_lines(talk) if re.search(r"\blive\b", text, re.I)]
-    # what works is said with how far it was tested: the interruption and the check with recorded participants only
+    # Describe the final Zoom workflow; the discussion test is upcoming, not a claimed rehearsal result.
     achieved = verbatims(talk, "achieved")
-    assert "real Zoom calls as my own participant" in achieved[1] and "word for word" in achieved[1]
-    assert achieved[2].startswith("And with recorded participants,") and "real people" not in " ".join(achieved)
+    assert "my own participant" in achieved[1] and "share these slides" in achieved[1]
+    assert "Next, you'll test the discussion check" in achieved[2]
+    assert "recorded participants" not in " ".join(text for _, text in spoken_lines(talk))
     limits = verbatims(talk, "limits")
     assert limits[0] == "Now, my limits."
-    assert any("echo cancellation" in line for line in limits) and any("Zoom's web page" in line for line in limits)
+    assert any("one mixed stream" in line for line in limits)
+    assert "Names come from Zoom's speaker display, so I can mislabel who said what." in limits
     assert limits[-1] == "And Claude's check takes a few seconds, and it can miss one."
     # Claude wrote the script before the meeting: never a runtime step of the product
     assert talk.slide("present").chunks[0].guide.beats[1].verbatim.endswith("from a script Claude wrote beforehand.")
@@ -329,16 +329,17 @@ def test_every_cited_source_id_exists_and_backs_its_claim(talk, pkg):
 
 
 def test_the_table_says_what_the_sources_say(pkg):
-    """Every cell of the achievements-and-limits table is backed: the numbers are the measured ones, what ran with
-    recorded participants says so, and no language claim anywhere (Ken: the pipeline is language-agnostic)."""
+    """The final presentation describes live Zoom input and its limits without presenting earlier clip-based
+    measurements as human Zoom results."""
     html = (DECK / "achieved.html").read_text(encoding="utf-8")
     cells = re.sub(r"<[^>]+>", " ", html.split("<aside>")[0])
-    assert "47 of 53" in cells and "Opus 5.5 matched 47 lines" in pkg.statement("MEAS-5").text
-    assert cells.count("with recorded participants") == 3 and "not yet with real people" in pkg.statement("LIM-8").text
-    assert "Real people, end to end" in cells
-    assert "Zoom’s web page" in cells and "Zoom's web page" in pkg.statement("ZOOM-4").text
-    assert "echo cancellation" in cells and "echo handling" in pkg.statement("LIM-2").text
-    assert "shares these slides" in cells and "shared its slides as its screen" in pkg.statement("ZOOM-6").text
+    assert "recorded participants" not in cells and "47 of 53" not in cells
+    assert "Next: test the discussion check" in cells and "two real people speaking live" in pkg.statement("ZOOM-5").text
+    assert "Speaker attribution can be wrong" in cells
+    assert "Zoom’s active-speaker display" in cells and "Zoom's active-speaker display" in pkg.statement("ZOOM-4").text
+    assert "one mixed Zoom audio stream" in cells and "one mixed stream" in pkg.statement("LIM-8").text
+    assert "shares these slides" in cells and "shares the meeting page" in pkg.statement("ZOOM-1").text
+    assert "cannot read Zoom chat" in cells and "never sees raised hands or the chat" in pkg.statement("ZOOM-3").text
     for name in ("slides.md", "script.yaml", "run_of_show.md", "run_of_show_people.md"):
         assert not re.search(r"english|multilingual|languages?\b", (TALK / name).read_text(encoding="utf-8"),
                              re.I), name
@@ -389,13 +390,14 @@ def test_the_demo_cues_point_at_real_talking_points(talk, demo):
     assert all(step.action in ("start", "phase") for step in demo.steps if not step.is_clip)
 
 
-def test_the_run_of_show_covers_every_line_and_mode(say):
+def test_the_run_of_show_uses_the_live_zoom_sequence():
     text = (TALK / "run_of_show.md").read_text(encoding="utf-8")
-    for line in say.values():
+    for line in (KEN_QUESTION, PARTNER_PLAN, KEN_CONFIRM, PARTNER_FIX, QUESTION):
         assert line in text, line
-    for needle in ("--input mic", "zoom_bot.py", "Run demo", "Wrap up", "prerecorded", "CL-1",
-                   "run_of_show_people.md"):
+    for needle in ("zoom_bot.py", "--input voice --alignment claude", "Wrap up", "CL-1",
+                   "run_of_show_people.md", "rehearsal", "speak live"):
         assert needle in text, needle
+    assert "relay.clips" not in text and "Run demo" not in text and "--input mic" not in text
 
 
 def test_the_real_people_script_covers_the_demo_for_ken_and_partner():

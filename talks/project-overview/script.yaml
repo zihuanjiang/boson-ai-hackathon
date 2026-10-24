@@ -81,8 +81,8 @@ slides:
               delivery: crisp, a tiny pause after it
             - verbatim: "I look the answer up, show you the source, and pick up where I was cut."
               delivery: brisk, one breath
-          # the demo's interruption lands about a second and a half into this point (Alice in demo.yaml; Ken in
-          # run_of_show_people.md): the prepared line finishes the promise, now kept
+          # Ken speaks over this point in the Zoom call (run_of_show_people.md): the prepared line finishes
+          # the promise after the cited answer
           resume:
             verbatim: "As I was saying, I stop, look it up, show you the source, and pick up right where I left off. Just like that."
             delivery: brisk, a small smile on the last three words
@@ -110,26 +110,26 @@ slides:
       - id: achieved
         fragment: 1
         guide:
-          intent: say what works today, and how it was tested, without overclaiming real people
+          intent: describe the live Zoom workflow and invite the upcoming discussion test without claiming it already passed
           seconds: 14
           delivery: confident and brisk
           beats:
-            - verbatim: "Here's what works so far."
+            - verbatim: "Here's the Zoom workflow."
               delivery: plain, a short pause after it
-            - verbatim: "I join real Zoom calls as my own participant, and present Claude's script word for word."
-            - verbatim: "And with recorded participants, I've taken interruptions, answered from the documents, and flagged a plan that contradicted them."
-              delivery: a light stress on recorded participants, then each item
+            - verbatim: "I join your Zoom call as my own participant, share these slides, and present Claude's script."
+            - verbatim: "Next, you'll test the discussion check, and we'll keep the confirmed decision and its owner in the notes."
+              delivery: inviting, a light stress on confirmed decision and owner
       - id: limits
         fragment: 2
         guide:
-          intent: say plainly where it does not work yet, without apology, and warn the room about the pause before it asks
+          intent: explain the live Zoom limits, overlapping voices and potentially wrong speaker attribution, and the pause before a clarification
           seconds: 14
           delivery: plain, no apology
           beats:
             - verbatim: "Now, my limits."
               delivery: plain, a brief pause after it
-            - verbatim: "In one room, a shared microphone needs echo cancellation."
-            - verbatim: "I read speaker names off Zoom's web page, so one can be wrong."
+            - verbatim: "I hear one mixed stream, so overlapping voices can blur together."
+            - verbatim: "Names come from Zoom's speaker display, so I can mislabel who said what."
             - verbatim: "And Claude's check takes a few seconds, and it can miss one."
               delivery: lighter, an open ending
 

@@ -4,6 +4,14 @@ Spec: `doc/brief.md`. Build contract (interfaces, protocol, state machine): `doc
 
 ## Status
 
+2026-10-24 (Sat) — **Final demo format: live Zoom bot with two human speakers.** The project-overview narration,
+designed slides and source facts describe the Zoom workflow, with voice interruption, cited answers, resumption,
+and a live discussion that produces confirmed notes. Launch instructions use `scripts/zoom_bot.py`; participant
+clips are not part of the final demo. Earlier measurements retain their input provenance in `sources/results.md`.
+The achievements slide invites the discussion test rather than claiming a completed human rehearsal. Validation:
+76 presentation checks pass; TTS 3 backup narration regenerated (three chunks rendered, four cached). Next: restart
+the bot and rehearse the full sequence in Zoom, including the decision owner.
+
 2026-10-24 (Sat) — **Deck v2: the demo is real Zoom with real people** (D90, branch `claude/deck-v2`, offline only).
 `talks/project-overview` now has six slides, all in one dark visual language: the `problem` slide is dropped (its one
 idea, "meetings end in an agreement nobody checked against the documents", is the name slide's last line), and

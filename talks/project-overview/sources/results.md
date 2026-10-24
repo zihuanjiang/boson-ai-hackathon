@@ -1,6 +1,8 @@
 # Measured results
 
-Live measurements, dated (doc/gotchas.md "Measured", doc/plan.md Status).
+Earlier test measurements, dated (doc/gotchas.md "Measured", doc/plan.md Status). Runs with recorded participants
+used prepared audio inputs against live APIs. Their timings do not establish performance with live human voices
+in Zoom. The final demo uses real people in Zoom; its full sequence still needs a separately recorded rehearsal.
 
 - [MEAS-1] On higgs-realtime-1.5-preview the facilitator's voice started 672 ms and 701 ms after the end of a prerecorded participant's clip (streamed in real time) in the live demo runs of 24 October 2026; with real people a line ends only after 0.7 s of silence, which these numbers don't include.
 - [MEAS-2] Two earlier test meetings, the rollout review and the submission review, passed all eight checks of the online-meeting definition of done live on higgs-realtime-1.5-preview on 24 October 2026.

@@ -8,7 +8,8 @@ plan is saved, the plan is corrected, and the decision goes into the notes with 
 the end of the wrap-up (a plan: re-time it after the first rehearsal).
 
 **Partner** is your co-worker: write their real name here: `______`. Nothing else changes for them (no line names
-the Partner). The unattended version of the same story, with prerecorded clips, is `run_of_show.md`.
+the Partner). This is the final demo: both people speak live in Zoom. Setup and acceptance steps are in
+[`run_of_show.md`](run_of_show.md).
 
 ## The cast
 
@@ -26,8 +27,10 @@ the Partner). The unattended version of the same story, with prerecorded clips, 
 2. Display names: the bot labels each line with the name Zoom shows; no renaming to Alice, Bob or Carol is needed
    (D89). The owner line below says "Ken": if Zoom shows Ken as "Ken Jiang", either set the display name to "Ken"
    before joining or say "Ken Jiang" in that line.
-3. Start the bot (`BOSON_API_KEY` and `ANTHROPIC_API_KEY` in `.env`; the backup narration rendered):
-   `! uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --passcode <passcode> --talk talks/project-overview`
+3. Render the backup after script changes: `uv run python -m relay.render talks/project-overview`. Start the bot
+   (`BOSON_API_KEY` and `ANTHROPIC_API_KEY` in `.env`):
+   `uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --talk talks/project-overview`.
+   Add `--passcode <passcode>` if the join link does not contain it.
    Admit "Chloe (AI host)" from the waiting room if Zoom asks. Wait until its screen share shows "Imagine…".
    What to do when it can't join or share: `talks/submission-review/run_of_show_zoom.md` ("Starting the bot",
    "Fallbacks"; the same bot).
@@ -42,8 +45,9 @@ the Partner). The unattended version of the same story, with prerecorded clips, 
   never a raised hand.
 - **Stay muted when it isn't your line** (typing, a cough or a door can cut it mid-sentence), and unmute a second
   before you speak.
-- **In the discussion, let it finish** before you talk, and don't fill its silences: it is listening, not stuck. Its
-  question comes several seconds after the confirmation (7.6 to 9.9 s in the live runs with recorded participants).
+- **In the discussion, let it finish** before you talk, and don't fill its silences: it is listening. Leave a quiet
+  pause after the confirmation so transcription, analysis and speech generation can finish. Measure this wait in
+  the Zoom rehearsal; earlier test timings used prepared participant audio.
 
 ## The disclosure (Ken, before pressing R, ~10 s)
 
@@ -98,7 +102,7 @@ Why these lines work:
   the bot terminal, `t Sorry, quick question: in Zoom, can people raise a hand to interrupt you?` and Enter.
 - **It doesn't go back to the slide** after its answer: **R** in the bot terminal; **→** moves on a point.
 - **An optional second interruption**, only if the first went well and you have time (~15 s): during "Achievements
-  and limits", right after "Here's what works so far.", Partner says: "Wait, what happens if your connection drops?"
+  and limits", right after "Here's the Zoom workflow.", Partner says: "Wait, what happens if your connection drops?"
   It answers from HOW-3: the Higgs TTS 3 recording of the same script presents instead.
 
 ## If the facilitator misses its moment
@@ -108,8 +112,9 @@ Why these lines work:
   one: that's the limit on our slide."
 - **It asks after the plan alone** (before Ken confirms): skip the confirmation and go straight to the correction.
 - **It asks about something else**, or a question you didn't expect: answer in one short line, then the correction.
-- **The notes have the decision but no owner:** Ken's name wasn't read off the page for his line (speaker names are
-  best effort, ZOOM-4). Ken says once: "I'll brief the judges." That helps only if this line does carry his name;
+- **The notes have the decision but no owner:** Ken's line may have the wrong name or no name because speaker
+  attribution comes from Zoom's active-speaker display, best effort (ZOOM-4). Ken says once: "I'll brief the judges."
+  That helps only if this line does carry his name;
   otherwise the decision stays without an owner: note it. After the run, `out/zoom_bot/summary.json` shows how
   speakers were read (`speaker_strategy`, `speakers_seen`).
 - **A dropped connection** to Higgs: the Higgs TTS 3 backup presents the same points; carry on (no live answers until

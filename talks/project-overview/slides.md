@@ -33,9 +33,9 @@ Conflict · hidden disagreement · detail nobody settled
 <!-- .slide: id="achieved" -->
 ## Achievements and limits
 
-Runs in real Zoom calls <!-- .element: class="fragment" -->
+Live Zoom: interrupt, cite, resume, confirm <!-- .element: class="fragment" -->
 
-Limits: echo, check delay, speaker names <!-- .element: class="fragment" -->
+Limits: overlapping voices, delay, wrong speaker labels <!-- .element: class="fragment" -->
 
 ---
 

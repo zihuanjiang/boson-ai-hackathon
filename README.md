@@ -48,7 +48,7 @@ No key? Everything runs offline with stand-ins: `uv run python -m relay.render t
 A re-render takes effect at the next server restart (the server serves the narration it loaded at startup); an open
 deck then reloads itself, and you click Arm again.
 
-### Run the project overview (`talks/project-overview`): the demo deck
+### Final demo: the project overview in Zoom (`talks/project-overview`)
 
 The facilitator presents On the Same Page to the room in about two minutes, from a script Claude wrote before the
 meeting and Higgs Realtime performs live: every talking point carries **guidance** (what it must do for the listener,
@@ -58,16 +58,19 @@ morning…"). In a real Zoom call it joins as its own participant and shares its
 that promises it can be interrupted; the team then plans how the judges put their questions in Zoom, and the
 facilitator asks one question before a plan that contradicts the documents (the Zoom chat, which it never sees) is
 confirmed. The format: [`doc/design.md`](doc/design.md) §2; who says what with two real people in Zoom:
-[`talks/project-overview/run_of_show_people.md`](talks/project-overview/run_of_show_people.md); the unattended run
-with prerecorded clips and the room mode: [`talks/project-overview/run_of_show.md`](talks/project-overview/run_of_show.md).
+[`talks/project-overview/run_of_show_people.md`](talks/project-overview/run_of_show_people.md). The final demo uses
+live human voices in Zoom. Setup and the rehearsal acceptance steps are in
+[`talks/project-overview/run_of_show.md`](talks/project-overview/run_of_show.md).
 
 ```bash
 uv run python -m relay.render talks/project-overview    # backup narration (TTS 3)
-uv run python -m relay.clips talks/project-overview     # the participants' clips (unattended run)
-uv run python scripts/probe_guided.py --runs 3          # live: are the guided lines performed word for word?
-uv run python -m relay serve talks/project-overview     # open http://localhost:8000, Join, then Run demo
-uv run python scripts/zoom_bot.py --dry-run --talk talks/project-overview   # offline rehearsal of the Zoom run
+uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --talk talks/project-overview
 ```
+
+Join the Zoom meeting first with your teammate, admit **Chloe (AI host)**, and wait for the screen share. Say the
+short disclosure, then press **R** in the bot terminal to start; **N** advances to wrap-up and **q** leaves. The bot
+starts the server with `--input voice --alignment claude`; both API keys belong in `.env`. Render again after script
+changes. The prepared narration is a connection-loss backup; participants speak live throughout the final demo.
 
 ### Run the self-introduction demo (`talks/submission-review`)
 
@@ -237,7 +240,8 @@ tap-to-talk floor control in the room (no speaker identification).
 
 The meeting demos are online meetings: either simulated (the participants are prerecorded clips with prepared speaker
 labels, and the script is fixed) or a real Zoom call the facilitator joins as its own participant (`scripts/zoom_bot.py`;
-real people speak; speaker names come best-effort from Zoom's active-speaker display, never from the audio; one bot
+real people speak; speaker names come best-effort from Zoom's active-speaker display, so a line can be attributed to
+the wrong person or have no name (there is no voice recognition for identity); one bot
 per meeting; it can't react to chat or raised hands). In-person or hybrid meetings, where one room microphone also
 hears the facilitator's speakers, would need echo handling and possibly single-microphone diarization: future work,
 and an integration question for Boson rather than a known Higgs limitation.
