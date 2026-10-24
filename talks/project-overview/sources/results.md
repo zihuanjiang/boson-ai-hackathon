@@ -11,5 +11,5 @@ in Zoom. The final demo uses real people in Zoom; its full sequence still needs 
 - [MEAS-5] In the alignment evaluation (14 scenarios, 53 labelled lines, effort low), Claude Opus 5.5 matched 47 lines, Sonnet 5.5 48 and Haiku 5.5 43.
 - [MEAS-6] One Claude Opus 5.5 analysis took 3.7 s at the median and 5.9 s at the 95th percentile.
 - [MEAS-7] End to end with Claude Opus 5.5, the facilitator's question came 7.6 s after the confirming line, and the decision with its owner landed in the notes.
-- [MEAS-8] About 1,900 offline tests run without the network, with stand-ins for Higgs and Claude.
+- [MEAS-8] Every change is verified live in a real Zoom call with real people; the project keeps no offline test suite and no recorded backup.
 - [MEAS-9] In a live run of this presentation with recorded participants on 24 October 2026, every talking point was said word for word; a participant's question cut it 1.7 s into a point, the answer came from the documents, and the question came 9.9 s after the confirming line.

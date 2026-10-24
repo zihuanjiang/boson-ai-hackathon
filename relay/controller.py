@@ -117,12 +117,23 @@ AUTO_RESUME_S = 3.0  # a point Higgs Realtime didn't answer is tried again this 
 # A discussion line that asks to end it: "let's wrap up", "let's wrap it up", "Alice, wrap up", "wrap up the meeting".
 WRAPUP_REQUEST_RE = re.compile(r"\b(?:let'?s|let us|time to|we can|okay|ok|alice,?)\s+(?:now\s+)?wrap\s+"
                                r"(?:it\s+|this\s+|things\s+)?up\b|\bwrap\s+up\s+the\s+meeting\b", re.I)
-# A discussion line put to Alice herself: it opens or ends with her name ("Alice, can people…?", "…, Alice?") and is
-# a question or a request. Answered at once, like a question during the presentation (no key in a Zoom call).
-_LEAD_IN = r"(?:(?:hey|hi|okay|ok|so|um|uh|and|but|wait|sorry|quick question)\W+)*"
-ADDRESSED_RE = re.compile(rf"^\W*{_LEAD_IN}alice\b|\balice\W*$", re.I)
+# A discussion line put to Alice herself: it opens with her name ("Alice, can people…?", "Alice, please explain.") or
+# ends with it as a vocative ("…, Alice?"), and is not just thanks or an acknowledgement. Answered at once, like a
+# question during the presentation (no key in a Zoom call). Live 2026-10-24 14:07 "Alice, please uh give us an
+# explanation." went unanswered when a question word or "?" was required. "Alice said earlier…" is about her, not to.
+_LEAD_IN = r"(?:(?:hey|hi|okay|ok|so|um|uh|and|but|wait|sorry|quick question|now|then|please)\W+)*"
+ADDRESSED_RE = re.compile(rf"^\W*{_LEAD_IN}alice\b(?!['’]s\b|\s+(?:said|says|told|tells|will|would|is|was|has|had|"
+                          r"and|or|thinks?|mentioned|just|did|does)\b)|[,;:]\s*alice\W*$", re.I)
+ACK_RE = re.compile(rf"^\W*{_LEAD_IN}(?:alice\W+)?(?:(?:thanks|thank you|okay|ok|great|good|right|yeah|yes|cool|perfect|"
+                    r"got it|nice|sounds good|agreed|sure|no problem|uh-huh|mm-hmm)\W*)+(?:alice)?\W*$", re.I)
 QUESTION_RE = re.compile(rf"\?|^\W*{_LEAD_IN}(?:alice\W+)?(?:can|could|would|will|do|does|did|is|are|was|were|what|"
                          r"how|who|when|where|why|which|tell|remind|explain|check|look)\b", re.I)
+# Right after she answered in the discussion, a follow-up needs no name: a question, a request or a correction
+# (live 14:07: "No, it's about the Higgs API usage…", "Uh, please reply to this question." went unanswered).
+FOLLOWUP_RE = re.compile(r"\?|^\W*(?:uh\W+|um\W+)?no\b|\b(?:please|explain|answer|reply|tell us|look (?:it )?up|"
+                         r"check|try again|you should|can you|could you|what about)\b", re.I)
+ROOM_FOLLOWUP_S = 45.0  # after her answer in the discussion ended, this long a follow-up counts as put to her
+CONTEXT_MAX_WORDS = 8  # a question this short ("Alice, can you explain?") carries the lines before it
 # Asking Alice to speak faster or slower ("Alice, can you speak a bit faster?", "speed up", "slow down"): her playback
 # rate (the bot plays every later reply at it) moves one step and stays for the rest of the meeting. Higgs Realtime
 # has no speed setting and kept its own pace whatever length a point asked for (live 2026-10-24 13:30).
@@ -132,6 +143,7 @@ SPEED_UP_RE = re.compile(r"\bfaster\b|\bquicker\b|\b(?:speed|beat|sped|speeding)
                          r"|\bpick\s+up\s+the\s+pace\b|\bhurry\s+up\b", re.I)
 SPEED_MAX_RE = re.compile(r"\b(?:max(?:imum)?|top|full)\s+speed\b|\bfastest\b|\bas\s+fast\s+as\b", re.I)
 SLOW_DOWN_RE = re.compile(r"\bslower\b|\bslow\s+(?:it\s+)?down\b", re.I)
+SPEED_DEFAULT_RE = re.compile(r"\b(?:default|normal|regular|original|usual)\s+(?:speed|pace)\b", re.I)
 # Right after a change, "a little bit more" / "more" / "again" repeats it (within SPEED_AGAIN_S).
 SPEED_AGAIN_RE = re.compile(r"^\W*(?:(?:a|just|even|one)\s+)?(?:little\s+)?(?:bit\s+|step\s+)?(?:more|again)"
                             r"(?:\s+please)?\W*$", re.I)
@@ -504,6 +516,7 @@ class Controller:
         # that starts while she speaks is a barge-in. A line ends after the participant segmenter's own silence.
         self.input_mode = settings.input
         self.speed = min(SPEED_MAX, max(SPEED_MIN, settings.speed))  # Alice's playback rate (the bot plays at it)
+        self._room_answered_at = -1e9  # when her last answer in the discussion ended (a follow-up needs no name)
         self._speed_dir = 0  # the last change's direction (+1 faster, -1 slower), for "a little bit more"
         self._speed_at = -1e9  # when it was made (clock)
         self._clip_seg: Segmenter | None = (Segmenter(end_ms=CLIP_END_MS) if self.input_mode == INPUT_CLIPS
@@ -1089,6 +1102,8 @@ class Controller:
         after it), else None. Only a short line counts (a request, not a question that happens to say "faster")."""
         if len(text.split()) > SPEED_REQUEST_MAX_WORDS:
             return None
+        if SPEED_DEFAULT_RE.search(text):  # "slow down to your default speed" (live 14:07: one step only)
+            return min(SPEED_MAX, max(SPEED_MIN, self.settings.speed))
         if SLOW_DOWN_RE.search(text):
             return max(SPEED_MIN, round(self.speed - SPEED_STEP, 2))
         if SPEED_MAX_RE.search(text):
@@ -2803,6 +2818,8 @@ class Controller:
         next analysis decides whether to ask); a presentation question answered from a lookup leaves a clarification
         behind (by=auto) when the model did not record one: the question, the facilitator's final words, the top
         sources."""
+        if turn.kind == KIND_ANSWER and turn.phase == DISCUSSION:
+            self._room_answered_at = self.clock.now()  # a follow-up in the next ROOM_FOLLOWUP_S needs no name
         if turn.kind == KIND_DECISION and turn.draft and not turn.decision_saved:
             turn.decision_saved = True
             await self._save_draft(turn.draft)
@@ -2963,11 +2980,14 @@ class Controller:
             await self._halt(None, cut=False)
             await self._enter_wrapup()
             return
+        to_alice = bool(ADDRESSED_RE.search(text)) and not ACK_RE.search(text)
+        followup = (self.clock.now() - self._room_answered_at < ROOM_FOLLOWUP_S and bool(FOLLOWUP_RE.search(text))
+                    and not ACK_RE.search(text))
         if (self.agenda_phase == DISCUSSION and self.state == ROOM and self.turn is None and self.realtime.ready
-                and not speed_asked and ADDRESSED_RE.search(text) and QUESTION_RE.search(text)):
+                and not speed_asked and (to_alice or followup)):
             self._note("utterance", {"id": utterance.id, "speaker": speaker, "source": source, "text": text,
-                                     "events": ["question_to_alice"]})
-            await self._answer_room_question(text, speaker)
+                                     "events": ["question_to_alice" if to_alice else "followup_to_alice"]})
+            await self._answer_room_question(self._question_in_context(utterance), speaker, said=text)
             return
         events: list[dict] = []
         if self.engine is not None:
@@ -2995,7 +3015,17 @@ class Controller:
         elif self.agenda_phase == WRAPUP:
             await self._late_line()
 
-    async def _answer_room_question(self, text: str, speaker: str | None) -> None:
+    def _question_in_context(self, utterance: Any) -> str:
+        """The question as the answer needs it: the line itself, and for a short one that points back ("Alice, can
+        you explain?") the two lines before it (live 14:07 the real question was the guest's line just before)."""
+        text = utterance.text
+        if len(text.split()) > CONTEXT_MAX_WORDS:
+            return text
+        before = [u for u in self.mstate.recent_utterances(3) if u.id != utterance.id][-2:]
+        lines = [f"{u.speaker or 'Someone'}: {u.text}" for u in before]
+        return " / ".join([*lines, f"{utterance.speaker or 'Someone'}: {text}"]) if lines else text
+
+    async def _answer_room_question(self, text: str, speaker: str | None, *, said: str | None = None) -> None:
         """A discussion line put to Alice by name: answered like a question during the presentation, with no key.
         Its audio is in the conversation already (the room commit), so one response.create asks for the answer: the
         meeting's instructions (the discussion phase) make her look it up and answer in a sentence or two; the answer
@@ -3007,8 +3037,8 @@ class Controller:
         await self._request_events(turn, [{"type": "response.create"}])
         self._enter_replying(turn, "addressed")
         self._note("room_question", {"speaker": speaker, "text": text, "reply": turn.reply})
-        await self._send({"type": "caption", "role": "user", "text": text, "final": True, "reply": turn.reply,
-                          "speaker": speaker})
+        await self._send({"type": "caption", "role": "user", "text": said or text, "final": True,
+                          "reply": turn.reply, "speaker": speaker})
 
     def _room_line_in_flight(self) -> bool:
         """A room line was committed (or waits to be) and its transcript hasn't come yet."""

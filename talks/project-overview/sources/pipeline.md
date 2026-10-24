@@ -4,7 +4,7 @@ The pipeline (doc/design.md §5–§7 and §12, doc/plan.md D53, D59–D61, D78�
 
 - [HOW-1] One Higgs Realtime session runs the whole meeting, so what was clarified during the presentation stays in its context for the discussion.
 - [HOW-2] The facilitator presents one talking point per response, and performs the guidance Claude wrote for it in advance, before the meeting: what the point must do, the exact lines that must land, the delivery and the length.
-- [HOW-3] If the connection to Higgs Realtime fails, Higgs TTS 3 recordings of the same script present instead.
+- [HOW-3] Everything Alice says is live: there are no recordings. If Higgs Realtime does not answer, she pauses on that talking point and tries again by herself every few seconds until it does.
 - [HOW-4] When someone interrupts, the facilitator stops, and its memory of what it said is cut to what the room actually heard.
 - [HOW-5] Questions are answered with lookup_evidence, a search over the meeting's documents with stable source ids; the cited passage is shown on screen.
 - [HOW-6] After the answer, the presentation resumes the interrupted talking point from what the room heard, not from the top.

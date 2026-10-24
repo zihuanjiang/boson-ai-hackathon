@@ -40,6 +40,9 @@ january february march april may june july august september october november dec
 jan feb mar apr jun jul aug sep sept oct nov dec
 """.split())
 _TOKEN_RE = re.compile(r"[a-z0-9]+(?:['’][a-z]+)*")
+# How the speech to text writes this project's names (live 2026-10-24 14:07: "How does X API and Cloud API
+# collaborate", for Higgs and Claude): searched as the names, so the question still finds their statements.
+ALIASES = {"cloud": "claude", "clod": "claude", "clause": "claude", "hicks": "higgs", "higs": "higgs", "hix": "higgs"}
 _DOUBLE_END_RE = re.compile(r"([bcdfghjkmnpqrtvwxz])\1$")  # "plann" → "plan"; not l/s (fall, pass)
 
 
@@ -104,7 +107,7 @@ def tokens(text: str) -> tuple[str, ...]:
         word = word.replace("'", "")
         if not word or word in STOP_WORDS:
             continue
-        out.append(stem(word))
+        out.append(stem(ALIASES.get(word, word)))
     return tuple(out)
 
 
