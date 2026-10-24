@@ -1,0 +1,32 @@
+# Guide case 14 with the brief's example: Alice describes Friday as the beta, Bob treats the same Friday as the
+# launch to everyone, Carol locks Friday in. On this corpus REQ-2 and DEC-2 also settle the question, so an
+# evidence conflict citing them is a correct reading too; hidden_disagreement (both views cited) is the primary
+# label. The pure case without a settling source is budget-hidden-disagreement.yaml.
+package: talks/rollout-review
+title: Hidden disagreement (Friday beta vs Friday launch to everyone)
+lines:
+  - speaker: Alice
+    text: "So Friday's release is the beta: the beta group gets it first and we watch the error rate over the weekend."
+    expect: silent
+  - speaker: Bob
+    text: "Right, Friday it is. I'll have the announcement ready for Friday's launch to everyone."
+    expect: [silent, suggest]
+    issue_types: [hidden_disagreement, evidence_conflict]
+    evidence_ids: [REQ-1, REQ-2, REQ-3, DEC-1, DEC-2]
+  - speaker: Carol
+    text: "Sounds good, let's lock Friday in."
+    # Apparent agreement on "Friday" with incompatible meanings: ask which release they mean, showing the utterances.
+    expect: clarify
+    issue_types: [hidden_disagreement, evidence_conflict]
+    cited_lines: [2, 3]
+    cited_speakers: [Bob]
+    evidence_ids: [REQ-1, REQ-2, REQ-3, DEC-1, DEC-2]
+  - speaker: Alice
+    text: "To be clear: Friday is the beta release only, and the announcement goes to the beta group. Everyone else hears on Wednesday."
+    # Alice disambiguates; Bob has not agreed yet, so no decision is required here.
+    expect: silent
+  - speaker: Bob
+    text: "Got it, beta group only on Friday. I'll fix the announcement."
+    expect: silent
+    decision: {contains: ["beta"], owner: Bob}
+    closed_contain: ["Friday"]

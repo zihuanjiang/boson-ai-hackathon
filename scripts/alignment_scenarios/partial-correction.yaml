@@ -1,0 +1,31 @@
+# Guide case 10: Bob's line carries two conflicts (the announcement audience against REQ-2/DEC-2, the rollback call
+# against REQ-6), Carol confirms both, Bob corrects only the audience. The rollback part stays open until Carol
+# settles it. At line 3 the facilitator may stay quiet (the rollback concern was already voiced or grouped at line
+# 2) or ask about the remaining part if it had not been voiced yet: both are correct, so every outcome is accepted
+# there and the labels that matter are retention and closure.
+package: talks/rollout-review
+title: Partial correction (two conflicts, one answered)
+lines:
+  - speaker: Bob
+    text: "I'll announce Friday's production launch to all customers, and I'll make the rollback call myself if Friday goes wrong."
+    expect: [silent, suggest]
+    issue_types: [evidence_conflict]
+    evidence_ids: [REQ-1, REQ-2, REQ-3, REQ-5, REQ-6, DEC-1, DEC-2, DEC-3]
+  - speaker: Carol
+    text: "Great, let's finalize that."
+    expect: clarify
+    issue_types: [evidence_conflict]
+    cited_lines: [1, 2]
+    cited_speakers: [Bob]
+    evidence_ids: [REQ-1, REQ-2, REQ-3, REQ-5, REQ-6, DEC-1, DEC-2, DEC-3]
+  - speaker: Bob
+    text: "Right, beta users only on Friday for the announcement."
+    expect: [silent, suggest, clarify]
+    issue_types: [evidence_conflict]
+    decision: {contains: ["beta"]}
+    open_questions_contain: ["rollback"]
+  - speaker: Carol
+    text: "And the rollback call stays with me, as planned."
+    expect: silent
+    decision: {contains: ["rollback"], owner: Carol}
+    closed_contain: ["rollback"]
