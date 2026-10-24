@@ -1,7 +1,11 @@
 """relay.controller: the presenter state machine (design §5), driven through recording ports and a manual clock.
 
 Every harness checks protocol invariants at teardown: tool outputs are JSON strings, one per call id, never
-followed by `response.create`; no audio payload reaches the log; no handler swallowed an internal error.
+followed by a `response.create` that would answer them (a narration request carries its own instructions); no
+audio payload reaches the log; no handler swallowed an internal error.
+
+The harness narrates from the renders (`narration="rendered"`, v1's behaviour) unless a test asks for live
+narration (D52): `make(narration="live")`; the live-narration tests are at the end of this file.
 """
 
 from __future__ import annotations
@@ -18,12 +22,14 @@ import pytest
 
 from relay.config import DEFAULT_TURN_DETECTION, ROOT, Settings
 from relay.controller import (
-    BANNER_OFFLINE, BANNER_OFFLINE_BACK, BANNER_OPENING, BANNER_PAUSED, BANNER_PAUSED_R, BANNER_QA, BANNER_RESUMING,
-    COUNTDOWN_S, CUT_CALL_OUTPUT, DOUBLE_SEND_S, DRAIN_GRACE_S, ERR_LINK_LOST, ERR_NO_REPLY, ERR_SILENCE,
-    ERR_TOO_LONG, ERR_TOO_LONG_HOLD, ERROR_GRACE_S, IDLE, LISTEN_MAX_S, LISTENING, NARRATING, PAUSED, REPLY_STALL_S,
-    REPLY_WAIT_S, REPLYING, SEND_NOW_MIN_FRAMES, SUMMARY_MAX_CHARS, SUMMARY_PREFIX, Controller, Cursor, summary_text,
+    BANNER_END, BANNER_OFFLINE, BANNER_OFFLINE_BACK, BANNER_OPENING, BANNER_PAUSED, BANNER_PAUSED_R, BANNER_QA,
+    BANNER_RESUMING, BANNER_STARTING, COUNTDOWN_S, CUT_CALL_OUTPUT, DOUBLE_SEND_S, DRAIN_GRACE_S, ERR_LINK_LOST,
+    ERR_NO_REPLY, ERR_SILENCE, ERR_TOO_LONG, ERR_TOO_LONG_HOLD, ERROR_GRACE_S, IDLE, LISTEN_MAX_S, LISTENING,
+    NARRATING, NARRATION_CALL_OUTPUT, NARRATION_WAIT_S, PAUSED, REPLY_STALL_S, REPLY_WAIT_S, REPLYING,
+    SEND_NOW_MIN_FRAMES, SUMMARY_MAX_CHARS, SUMMARY_PREFIX, Controller, Cursor, heard_text, summary_text,
 )
 from relay.ports import ManualClock
+from relay.prompts import base_prompt, narration_instructions
 from relay.talk import Slide, Talk, load_talk
 from relay.timeline import RenderedChunk, render_version, resume_offset_ms
 from relay.tools import tool_specs
@@ -43,10 +49,12 @@ class Recorder:
         self.channel = channel
         self.timeline = timeline
         self.items: list[dict] = []
+        self.history: list[dict] = []  # everything ever recorded: `clear` keeps it
 
     def record(self, item: dict) -> None:
         item = copy.deepcopy(item)
         self.items.append(item)
+        self.history.append(item)
         self.timeline.append((self.channel, item))
 
     def of(self, kind: str) -> list[dict]:
@@ -103,6 +111,11 @@ def _json_or_none(text: str) -> Any:
         return json.loads(text)
     except ValueError:
         return None
+
+
+def is_narration_request(event: dict) -> bool:
+    """A live narration's response.create: it brings its own instructions, so it never answers a tool output."""
+    return ((event.get("response") or {}).get("metadata") or {}).get("relay") == "narration"
 
 
 def call(name: str, args: Any = "{}", call_id: str | None = None) -> dict:
@@ -233,20 +246,26 @@ class Harness:
                       content_index=0, transcript=text)
 
     async def reply(self, *calls: dict, transcript: str = "Sure.", audio_ms: int = 600,
-                    response_id: str | None = None, done: bool = True, gap_s: float = 0.0) -> str:
-        """A whole server response: created, audio, transcript, function calls, done."""
+                    response_id: str | None = None, done: bool = True, gap_s: float = 0.0,
+                    metadata: dict | None = None) -> str:
+        """A whole server response: created (echoing `metadata`, if any), audio, transcript (none if empty),
+        function calls, done."""
         rid = response_id or f"resp_{next(self._responses)}"
         item_id = f"item_{rid}"
-        await self.ev("response.created", response={"id": rid, "object": "realtime.response",
-                                                     "status": "in_progress", "output": []})
+        response = {"id": rid, "object": "realtime.response", "status": "in_progress", "output": []}
+        if metadata is not None:
+            response["metadata"] = metadata
+        await self.ev("response.created", response=response)
         if gap_s:
             await self.clock.advance(gap_s)
         for _ in range(audio_ms // 100):
             await self.ev("response.output_audio.delta", response_id=rid, item_id=item_id, output_index=0,
                           content_index=0, delta=AUDIO_100MS)
-        await self.ev("response.output_audio_transcript.delta", response_id=rid, item_id=item_id, delta=transcript)
-        await self.ev("response.output_audio_transcript.done", response_id=rid, item_id=item_id,
-                      transcript=transcript)
+        if transcript:
+            await self.ev("response.output_audio_transcript.delta", response_id=rid, item_id=item_id,
+                          delta=transcript)
+            await self.ev("response.output_audio_transcript.done", response_id=rid, item_id=item_id,
+                          transcript=transcript)
         items = []
         for spec in calls:
             call_id = spec["call_id"] or f"call_{next(self._calls)}"
@@ -261,6 +280,16 @@ class Harness:
     async def done(self, response_id: str, *items: dict, status: str = "completed") -> None:
         output = [{"type": "message", "role": "assistant", "id": f"item_{response_id}"}, *items]
         await self.ev("response.done", response={"id": response_id, "status": status, "output": output})
+
+    def requests(self) -> list[dict]:
+        """The `response` objects of every live narration request sent (`reset` keeps them)."""
+        return [event["response"] for event in self.realtime.history
+                if event.get("type") == "response.create" and is_narration_request(event)]
+
+    async def narration(self, *calls: dict, echo: bool = True, **kwargs: Any) -> str:
+        """The server presents the latest narration request: a whole response whose response.created echoes the
+        request's metadata, like Higgs (`echo=False`: a server that doesn't). Takes `reply`'s other arguments."""
+        return await self.reply(*calls, metadata=self.requests()[-1]["metadata"] if echo else None, **kwargs)
 
     # shortcuts
     async def narrate(self, chunk: int = 0) -> None:
@@ -299,7 +328,7 @@ class Harness:
                 armed = text.startswith(SUMMARY_PREFIX)  # the reconnect summary is context only: never answered
             elif kind == "input_audio_buffer.commit":
                 armed = False  # a new user turn may ask for a response
-            elif kind == "response.create":
+            elif kind == "response.create" and not is_narration_request(event):
                 assert not armed, "response.create sent after a function_call_output or the summary"
         if not self.expect_errors:
             assert [data for kind, data in self.logs if kind == "controller_error"] == []
@@ -314,12 +343,19 @@ def with_end_slide(talk: Talk) -> Talk:
 
 
 @pytest.fixture
+def settings() -> Settings:
+    """conftest's defaults, but narrating from the renders: the tests before the live-narration section are v1's."""
+    return Settings(narration="rendered")
+
+
+@pytest.fixture
 def make(test_talk, test_chunks, settings):
     made: list[Harness] = []
 
     def factory(*, talk: Talk | None = None, settings_: Settings | None = None, ready: bool = True,
-                clock: ManualClock | None = None) -> Harness:
-        harness = Harness(talk or test_talk, test_chunks, settings_ or settings, ready=ready, clock=clock)
+                clock: ManualClock | None = None, narration: str = "rendered") -> Harness:
+        chosen = dataclasses.replace(settings_ or settings, narration=narration)
+        harness = Harness(talk or test_talk, test_chunks, chosen, ready=ready, clock=clock)
         made.append(harness)
         return harness
 
@@ -360,14 +396,14 @@ async def test_connect_sends_hello_bundle(h: Harness):
     await h.c.on_browser_connected()
     assert h.browser.types() == ["hello", "stop", "mic", "slide", "state", "connection"]
     hello = h.b("hello")[0]
-    assert hello["talk"] == "test" and hello["mic_mode"] == "tap"
+    assert hello["talk"] == "test" and hello["mic_mode"] == "tap" and hello["narration_mode"] == "rendered"
     assert hello["version"] == render_version(h.talk, h.chunks)  # the same value /api/talk serves
     assert hello["snapshot"] == h.c.snapshot()
     assert h.b("mic")[0] == {"type": "mic", "open": False}
     assert h.b("slide")[0] == {"type": "slide", "slide": "title", "fragment": None}
     assert h.b("state")[0] == {"type": "state", "state": IDLE, "phase": "opening", "slide": "title",
                                "banner": "Ken has the floor — tap Space to hand over", "thinking": False,
-                               "can_resume": False, "mic_mode": "tap"}
+                               "can_resume": False, "mic_mode": "tap", "narration": None}
     assert h.b("connection")[0] == {"type": "connection", "status": "ready", "detail": None}
 
 
@@ -383,10 +419,12 @@ async def test_hello_message_resends_bundle_and_arm_starts_link(h: Harness):
 async def test_snapshot(h: Harness):
     assert h.c.snapshot() == {"state": IDLE, "phase": "opening", "slide": "title",
                               "banner": "Ken has the floor — tap Space to hand over", "thinking": False,
-                              "can_resume": False, "mic_mode": "tap",
-                              "connection": {"status": "ready", "detail": None}, "talk": "test"}
+                              "can_resume": False, "mic_mode": "tap", "narration_mode": "rendered",
+                              "narration": None, "connection": {"status": "ready", "detail": None}, "talk": "test"}
     await h.c.on_realtime_status("reconnecting", "connection lost")
     assert h.c.snapshot()["connection"] == {"status": "reconnecting", "detail": "connection lost"}
+    await h.narrate()
+    assert (h.c.snapshot()["narration"], h.last("state")["narration"]) == ("rendered", "rendered")
 
 
 # --- the opening and narration --------------------------------------------------------------------------------
@@ -415,7 +453,7 @@ async def test_opening_handoff_starts_narration(h: Harness):
                                  "text": "So I built a co-presenter. Relay, take it away."}
 
     await h.reply(call("start_presentation"), transcript="Thanks, Ken. Hi everyone, I'm Relay.", gap_s=0.35)
-    assert h.b("reply_start") == [{"type": "reply_start", "reply": 1}]
+    assert h.b("reply_start") == [{"type": "reply_start", "reply": 1, "kind": "answer"}]
     assert h.b("metric") == [{"type": "metric", "name": "reply_latency_ms", "value": 350}]
     assert [msg["reply"] for msg in h.b("reply_audio")] == [1] * 6
     assert all(msg["pcm"] == AUDIO_100MS for msg in h.b("reply_audio"))
@@ -1308,7 +1346,7 @@ async def test_typed_while_a_response_is_active_cancels_then_creates_after_done(
     assert h.realtime.types() == ["conversation.item.create", "response.create"]
     assert h.r("conversation.item.create")[0]["item"]["content"][0]["text"] == "Actually, what's a chunk?"
     await h.reply(call("resume_script"))
-    assert h.b("reply_start")[-1] == {"type": "reply_start", "reply": 2}
+    assert h.b("reply_start")[-1] == {"type": "reply_start", "reply": 2, "kind": "answer"}
     await h.drained()
     assert h.c.state == NARRATING
 
@@ -2279,7 +2317,7 @@ async def test_a_response_id_reused_by_a_new_session_is_not_cancelled(h: Harness
     await h.speak()
     await h.reply(response_id="resp_1", audio_ms=300, done=False)
     assert "response.cancel" not in h.realtime.types()
-    assert h.b("reply_start") == [{"type": "reply_start", "reply": h.c.turn.reply}]
+    assert h.b("reply_start") == [{"type": "reply_start", "reply": h.c.turn.reply, "kind": "answer"}]
     assert len(h.b("reply_audio")) == 3 and h.c.state == REPLYING
 
 
@@ -2561,3 +2599,595 @@ async def test_time_to_spare_arrows_after_the_handoff_still_narrate(settings):
         await h.key("prev")
     assert [(msg["slide"], msg["chunk"]) for msg in h.b("play")] == [("qa", 0)]
     h.check_invariants()
+
+
+# --- the opening watchdog (D57): a greeting that calls no tool starts the presentation itself ---------------------
+
+
+@pytest.mark.parametrize("narration", ["rendered", "live"])
+async def test_a_greeting_that_calls_no_tool_starts_the_presentation_after_a_countdown(make, narration: str):
+    h = make(narration=narration)
+    await h.key("space")
+    await h.speak("So I built a co-presenter. Relay, take it away.")
+    await h.reply(transcript="Thanks, Ken! Hi everyone, I'm Relay.")  # heard, but no tool (live F5)
+    await h.drained()
+    assert (h.c.state, h.c.banner, h.c.phase) == (IDLE, BANNER_STARTING, "opening")
+    assert h.last("state")["banner"] == "Starting…"
+    assert h.b("countdown") == [{"type": "countdown", "seconds": COUNTDOWN_SHOWN}]
+    await h.clock.advance(COUNTDOWN_S - 0.1)
+    assert (h.c.state, h.b("tool")) == (IDLE, [])
+    await h.clock.advance(0.2)
+    assert h.b("tool") == [{"type": "tool", "call_id": "auto_1", "name": "start_presentation", "args": {},
+                            "status": "auto"}]
+    assert (h.c.state, h.c.phase, h.c.current_slide.id, h.c.narration) == (NARRATING, "presenting", "how", narration)
+    if narration == "live":
+        assert h.requests()[-1]["instructions"].splitlines()[4].endswith("and you just greeted them.")
+    else:
+        assert (h.last("play")["slide"], h.last("play")["chunk"]) == ("how", 0)
+
+
+@pytest.mark.parametrize("key", ["esc", "pause", "prev"])  # ← on the first slide: the deck edge
+async def test_esc_p_or_an_edge_arrow_cancel_the_starting_countdown(make, key: str):
+    h = make()
+    await h.key("space")
+    await h.speak()
+    await h.reply(transcript="Hi everyone, I'm Relay.")
+    await h.drained()
+    await h.key(key)
+    assert h.b("countdown")[-1] == {"type": "countdown", "seconds": 0}
+    assert (h.c.state, h.c.banner, h.c.phase) == (IDLE, BANNER_OPENING.format(presenter="Ken"), "opening")
+    await h.clock.advance(5)
+    assert (h.c.state, h.b("play"), h.b("tool")) == (IDLE, [], [])
+
+
+async def test_space_during_the_starting_countdown_opens_a_turn_from_idle(make):
+    h = make()
+    await h.key("space")
+    await h.speak()
+    await h.reply(transcript="Hi everyone, I'm Relay.")
+    await h.drained()
+    await h.key("space")
+    assert (h.c.state, h.c.turn.origin) == (LISTENING, "idle")  # nothing to resume: not origin narration
+    await h.speak("Wait, one more thing.")
+    await h.reply(audio_ms=0, transcript="")  # nothing heard this time: no countdown either
+    await h.drained()
+    assert (h.c.state, h.c.banner, h.b("countdown")[-1]) == (IDLE, BANNER_OPENING.format(presenter="Ken"),
+                                                            {"type": "countdown", "seconds": 0})
+    await h.clock.advance(5)
+    assert h.b("play") == [] and h.c.state == IDLE
+
+
+async def test_a_greeting_that_was_not_heard_does_not_start_anything(make):
+    h = make()
+    await h.key("space")
+    await h.speak()
+    await h.reply(audio_ms=0, transcript="")
+    await h.drained()
+    assert (h.c.state, h.c.banner, h.b("countdown")) == (IDLE, BANNER_OPENING.format(presenter="Ken"), [])
+
+
+# --- live narration (D52, D53): Higgs Realtime presents every slide; the renders are the offline backup -------------
+
+
+TEN_WORDS = "Here is how it works: every word is made live."  # with 1000 ms of audio: 100 ms a word
+
+
+def narration_tag(reply: int, slide: str = "how") -> dict:
+    """The metadata of narration request `reply` (Higgs echoes it on response.created)."""
+    return {"relay": "narration", "reply": str(reply), "slide": slide}
+
+
+def test_heard_text_reveals_the_words_played_whole():
+    words = "one two three four"
+    assert heard_text(words, 500, 1000) == "one two"
+    assert heard_text(words, 499, 1000) == "one"  # a word half played isn't heard yet
+    assert heard_text(words, 5000, 1000) == words
+    assert heard_text(words, 0, 1000) == heard_text(words, 500, 0) == heard_text("", 500, 1000) == ""
+
+
+def test_live_mode_sessions_use_the_live_base_prompt(make):
+    instructions = make(narration="live").c.session_config()["instructions"]
+    assert instructions.startswith(base_prompt(make().talk, live=True) + "\n\nPhase: opening\nTalk: Relay test talk")
+
+
+async def test_a_slide_start_asks_realtime_to_present_the_slide(make):
+    h = make(narration="live")
+    await h.c.on_browser_connected()
+    assert h.b("hello")[0]["narration_mode"] == "live" and h.c.snapshot()["narration_mode"] == "live"
+    h.reset()
+    await h.key("relay")  # nothing to resume on the title: R starts `how`
+    assert h.browser.types() == ["slide", "state"]
+    assert h.b("slide") == [{"type": "slide", "slide": "how", "fragment": None}]  # the whole slide at once
+    assert (h.last("state")["state"], h.last("state")["narration"]) == (NARRATING, "live")
+    assert h.realtime.types() == ["response.create"]  # never a user message first (it made Higgs say "Hello.")
+    how_s = sum(h.chunks[("how", n)].duration_ms for n in range(3)) / 1000
+    assert round(how_s) == 24  # the backup's length
+    assert h.r("response.create")[0] == {"type": "response.create", "response": {
+        "instructions": narration_instructions(h.talk, h.talk.slide("how"), seconds=24, first=True),
+        "metadata": narration_tag(1), "tool_choice": "none"}}
+    assert (h.c.cursor, h.c.fragment, h.c.started, h.c.phase) == (Cursor("how", 0), None, True, "presenting")
+    assert h.b("play") == [] and h.c.snapshot()["narration"] == "live"
+
+
+async def test_the_narration_streams_to_the_deck_as_a_reply(make):
+    h = make(narration="live")
+    await h.key("relay")
+    h.reset()
+    rid = await h.narration(transcript=TEN_WORDS, audio_ms=300, done=False)
+    assert h.b("reply_start") == [{"type": "reply_start", "reply": 1, "kind": "narration"}]
+    assert [msg["reply"] for msg in h.b("reply_audio")] == [1, 1, 1]
+    assert all(msg["pcm"] == AUDIO_100MS for msg in h.b("reply_audio"))
+    assert h.b("caption") == [
+        {"type": "caption", "role": "assistant", "text": TEN_WORDS, "final": False, "reply": 1},
+        {"type": "caption", "role": "assistant", "text": TEN_WORDS, "final": True, "reply": 1}]
+    assert (h.c.live.response_id, h.c.live.audio_item_id, h.c._presented) == (rid, f"item_{rid}", True)
+    assert h.realtime.items == [] and not h.b("metric") and not h.b("reply_end")
+    await h.clock.advance(NARRATION_WAIT_S + 1)  # it spoke: no retry, however long it streams
+    await h.drained(reply=1)  # not done yet: ignored
+    assert (h.c.state, h.c.live.slide, h.b("reply_flush")) == (NARRATING, "how", [])
+    await h.done(rid)
+    assert h.b("reply_end") == [{"type": "reply_end", "reply": 1}]
+    assert h.c.state == NARRATING  # until the deck has played it all
+
+
+async def test_a_server_that_does_not_echo_metadata_still_has_its_narration_bound(make):
+    h = make(narration="live")
+    await h.key("relay")
+    await h.narration(echo=False, audio_ms=200, done=False)
+    assert h.b("reply_start") == [{"type": "reply_start", "reply": 1, "kind": "narration"}]
+    assert "response.cancel" not in h.realtime.types() and len(h.b("reply_audio")) == 2
+
+
+@pytest.mark.parametrize("metadata, cancelled", [
+    (narration_tag(1), False),  # an older request's: its cancel went out when it was dropped
+    ({"relay": "something else"}, True),
+    (None, True),  # Higgs echoes metadata: a response without any is someone else's (e.g. turn detection's)
+])
+async def test_a_response_that_does_not_answer_the_request_is_ignored(make, metadata, cancelled: bool):
+    h = make(narration="live")
+    await h.key("relay")
+    await h.narration(audio_ms=200)  # echoed: this server echoes metadata
+    await h.drained()
+    assert h.requests()[-1]["metadata"] == narration_tag(2, "qa")
+    h.reset()
+    response = {"id": "resp_x", "status": "in_progress", "output": []}
+    if metadata is not None:
+        response["metadata"] = metadata
+    await h.ev("response.created", response=response)
+    await h.ev("response.output_audio.delta", response_id="resp_x", item_id="item_x", delta=AUDIO_100MS)
+    assert h.realtime.types() == (["response.cancel"] if cancelled else [])
+    assert h.browser.items == []
+    await h.done("resp_x", status="cancelled")
+    await h.narration(audio_ms=200, done=False)  # the request's own response is still bound
+    assert h.b("reply_start") == [{"type": "reply_start", "reply": 2, "kind": "narration"}]
+
+
+async def test_a_cut_narrations_late_response_never_answers_the_question(make):
+    h = make(narration="live")
+    await h.key("relay")  # asked for, but its response isn't created yet
+    await h.key("space")  # cut at once: a blind cancel, nothing was heard
+    assert h.realtime.types() == ["response.create", "response.cancel", "session.update",
+                                  "input_audio_buffer.clear"]
+    assert (h.c.state, h.c.cursor, h.b("reply_flush")) == (LISTENING, Cursor("how", 0),
+                                                           [{"type": "reply_flush", "reply": 1}])
+    await h.speak()
+    h.reset()
+    await h.ev("response.created", response={"id": "resp_n", "metadata": narration_tag(1)})  # late, then cancelled
+    await h.done("resp_n", status="cancelled")
+    assert h.realtime.items == [] and not h.b("reply_start")  # neither the answer nor cancelled a second time
+    await h.reply(call("resume_script"))
+    assert h.b("reply_start") == [{"type": "reply_start", "reply": 2, "kind": "answer"}]
+    await h.drained()
+    request = h.requests()[-1]  # nothing was heard of `how`: it starts over, live
+    assert request["metadata"] == narration_tag(3) and "You were interrupted" not in request["instructions"]
+
+
+async def test_tool_calls_of_a_narration_are_rejected_and_never_run(make):
+    h = make(narration="live")
+    await h.key("relay")
+    h.reset()
+    rid = await h.narration(call("handoff_to_human"), audio_ms=300)
+    assert h.realtime.items == [cut_output("call_1", NARRATION_CALL_OUTPUT)]  # after its call item, no create
+    assert NARRATION_CALL_OUTPUT == '{"error": "not now: you are presenting; the deck moves on by itself"}'
+    assert h.tool_statuses() == [("call_1", "handoff_to_human", "rejected")]
+    assert h.b("reply_end") == [{"type": "reply_end", "reply": 1}]
+    await h.ev("response.function_call_arguments.done", response_id=rid, item_id="fc_late", output_index=1,
+               call_id="late", name="next_slide", arguments="{}")  # a straggler: answered at once
+    assert h.realtime.items[-1] == cut_output("late", NARRATION_CALL_OUTPUT)
+    assert h.tool_statuses()[-1] == ("late", "next_slide", "rejected")
+    await h.drained(reply=1)
+    assert (h.c.state, h.c.floor_human, h.c.live.slide) == (NARRATING, False, "qa")  # the deck moved on by itself
+    assert not any(status == "applied" for *_, status in h.tool_statuses())
+
+
+async def test_a_drained_narration_moves_on_by_itself_and_waits_on_the_qa_slide(make):
+    h = make(narration="live")
+    await h.key("relay")
+    await h.narration(audio_ms=1000)
+    await h.drained(reply=99)  # another reply's: ignored
+    await h.chunk_ended()  # a chunk_ended means nothing to a live narration
+    assert (h.c.state, h.c.live.slide) == (NARRATING, "how")
+    h.reset()
+    await h.drained(reply=1)
+    assert h.browser.types() == ["slide", "state"]
+    assert h.b("slide") == [{"type": "slide", "slide": "qa", "fragment": None}]
+    assert h.realtime.types() == ["response.create"]
+    # qa's backup lasts 5.2 s: the floor of 6; it presented already, so it carries on instead of greeting
+    assert h.requests()[-1] == {"instructions": narration_instructions(h.talk, h.talk.slide("qa"), seconds=6),
+                                "metadata": narration_tag(2, "qa"), "tool_choice": "none"}
+    await h.narration(audio_ms=500)
+    await h.drained()
+    assert (h.c.state, h.c.banner, h.c.cursor, h.c.phase, h.c.narration) == (IDLE, BANNER_QA, None, "qa", None)
+    assert h.last("state")["narration"] is None
+
+
+async def test_the_drain_fallback_moves_on_when_the_deck_never_reports_the_narration_drained(make):
+    h = make(narration="live")
+    await h.key("relay")
+    rid = await h.narration(audio_ms=1000, done=False)
+    await h.clock.advance(0.4)
+    await h.done(rid)  # 0.6 s of it still to play
+    await h.clock.advance(0.6 + DRAIN_GRACE_S - 0.1)
+    assert h.c.live.slide == "how"
+    await h.clock.advance(0.2)
+    assert (h.c.state, h.c.live.slide, h.requests()[-1]["metadata"]) == (NARRATING, "qa", narration_tag(2, "qa"))
+    assert [data["reason"] for kind, data in h.logs if kind == "narration_drained"] == ["fallback"]
+
+
+@pytest.mark.parametrize("end_slide, banner", [(True, "Ken has the floor"), (False, BANNER_END)])
+async def test_after_the_last_live_slide_the_presenter_has_the_floor(make, test_talk, end_slide: bool, banner: str):
+    qa = dataclasses.replace(test_talk.slides[2], mode=None)  # not a Q&A slide: the narration just ends there
+    talk = dataclasses.replace(test_talk, slides=[*test_talk.slides[:2], qa])
+    h = make(talk=with_end_slide(talk) if end_slide else talk, narration="live")
+    await h.key("next")
+    await h.key("next")  # → how → qa, each presented live (how's request is dropped unanswered)
+    assert h.requests()[-1]["metadata"] == narration_tag(2, "qa")
+    await h.narration(audio_ms=300)
+    await h.drained()
+    assert (h.c.state, h.c.banner, h.c.cursor, h.c.current_slide.id) == (IDLE, banner, None, "qa")
+
+
+async def test_space_cuts_the_narration_where_the_room_is_and_the_slide_continues_live(make):
+    h = make(narration="live")
+    await h.key("relay")
+    rid = await h.narration(transcript=TEN_WORDS, audio_ms=1000)  # all in: the deck plays it in real time
+    h.reset()
+    await h.key("space", reply=1, played=600)
+    assert h.realtime.types() == ["conversation.item.truncate", "session.update", "input_audio_buffer.clear"]
+    assert h.r("conversation.item.truncate") == [{"type": "conversation.item.truncate", "item_id": f"item_{rid}",
+                                                  "content_index": 0, "audio_end_ms": 600}]
+    assert h.browser.types() == ["reply_flush", "mic", "state"]  # no `stop`/`cut`: those are the backup's
+    heard = "Here is how it works: every"
+    assert h.c.cursor == Cursor("how", 0, live=True, heard=heard, heard_ms=600)
+    assert (h.c.state, h.c.turn.origin, h.c.can_resume) == (LISTENING, "narration", True)
+    instructions = h.instructions()
+    assert instructions.startswith(base_prompt(h.talk, live=True))
+    assert f'You were cut off at «every» in: "{heard}"' in instructions
+    assert '\nCurrent slide notes: "' in instructions
+    await h.speak("Quick comment: that was my last demo day.")
+    await h.reply(call("resume_script"), transcript="Then you know. As I was saying…")
+    assert h.outputs() == {"call_1": '{"ok": true, "slide": "how"}'}
+    h.reset()
+    await h.drained()
+    assert h.realtime.types() == ["response.create"] and h.browser.types() == ["tool", "state"]  # same slide
+    assert h.requests()[-1] == {  # 24 s of backup, 0.6 s of it heard
+        "instructions": narration_instructions(h.talk, h.talk.slide("how"), seconds=23, continuing=True, heard=heard),
+        "metadata": narration_tag(3), "tool_choice": "none"}
+    # cut again: the cursor keeps everything the room heard of the slide
+    await h.narration(transcript="As I was saying, each one is made right here.", audio_ms=900)
+    await h.key("pause", reply=3, played=400)
+    assert h.c.cursor == Cursor("how", 0, live=True, heard=f"{heard} As I was saying,", heard_ms=1000)
+
+
+async def test_the_countdown_resume_continues_the_slide_live(make):
+    h = make(narration="live")
+    await h.key("relay")
+    await h.narration(transcript=TEN_WORDS, audio_ms=1000)
+    await h.key("space", reply=1, played=500)
+    await h.speak()
+    await h.reply(transcript="Good point.")  # no tool: the usual case (live F5)
+    await h.drained()
+    assert (h.c.state, h.c.banner) == (IDLE, BANNER_RESUMING)
+    assert h.b("countdown")[-1] == {"type": "countdown", "seconds": COUNTDOWN_SHOWN}
+    await h.clock.advance(COUNTDOWN_S + 0.05)
+    assert (h.c.state, h.c.narration) == (NARRATING, "live")
+    assert h.last("tool") == {"type": "tool", "call_id": "auto_1", "name": "resume_script", "args": {},
+                              "status": "auto"}
+    assert h.requests()[-1]["metadata"] == narration_tag(3)
+    assert 'the room last heard you say: "Here is how it works:"' in h.requests()[-1]["instructions"]
+
+
+async def test_p_cuts_the_narration_and_p_again_continues_it_live(make):
+    h = make(narration="live")
+    await h.key("relay")
+    rid = await h.narration(transcript=TEN_WORDS, audio_ms=1000, done=False)  # still generating
+    h.reset()
+    await h.key("pause", reply=1, played=300)
+    assert h.realtime.types() == ["response.cancel", "conversation.item.truncate"]
+    assert h.r("conversation.item.truncate")[0]["audio_end_ms"] == 300
+    assert h.browser.types() == ["reply_flush", "state"]  # no `stop`: the narration player isn't playing
+    assert (h.c.state, h.c.banner) == (PAUSED, BANNER_PAUSED)
+    assert h.c.cursor == Cursor("how", 0, live=True, heard="Here is how", heard_ms=300)
+    assert (h.last("state")["narration"], h.last("state")["can_resume"]) == (None, True)
+    await h.ev("response.output_audio.delta", response_id=rid, item_id=f"item_{rid}", delta=AUDIO_100MS)
+    assert not h.b("reply_audio")  # the cut narration's late audio is ignored
+    await h.done(rid, status="cancelled")
+    h.reset()
+    await h.key("pause")
+    assert (h.c.state, h.c.narration, h.realtime.types()) == (NARRATING, "live", ["response.create"])
+    assert 'the room last heard you say: "Here is how"' in h.requests()[-1]["instructions"]
+
+
+async def test_h_cuts_the_narration_and_r_continues_it_live(make):
+    h = make(narration="live")
+    await h.key("relay")
+    await h.narration(transcript=TEN_WORDS, audio_ms=1000)
+    await h.key("human", reply=1, played=700)
+    assert (h.c.state, h.c.banner, h.c.phase) == (IDLE, "Ken has the floor", "human")
+    await h.key("relay")
+    assert (h.c.state, h.c.floor_human, h.c.narration) == (NARRATING, False, "live")
+    assert 'the room last heard you say: "Here is how it works: every word"' in h.requests()[-1]["instructions"]
+
+
+async def test_esc_and_r_while_narrating_live_change_nothing(make):
+    h = make(narration="live")
+    await h.key("relay")
+    await h.narration(audio_ms=300, done=False)
+    h.reset()
+    await h.key("esc", reply=1, played=100)
+    await h.key("relay", reply=1, played=150)
+    assert h.browser.items == [] and h.realtime.items == []
+    assert (h.c.state, h.c.live.slide) == (NARRATING, "how")
+
+
+async def test_arrows_cut_the_narration_and_present_the_neighbouring_slide_live(make):
+    h = make(narration="live")
+    await h.key("relay")
+    rid = await h.narration(transcript=TEN_WORDS, audio_ms=1000, done=False)
+    h.reset()
+    await h.key("next", reply=1, played=400)
+    assert h.realtime.types() == ["response.cancel", "conversation.item.truncate"]  # qa's request waits for it
+    assert h.browser.types()[:2] == ["reply_flush", "slide"]
+    assert h.b("slide") == [{"type": "slide", "slide": "qa", "fragment": None}]
+    assert (h.c.live.slide, bool(h.c.live.pending), h.c.cursor) == ("qa", True, Cursor("qa", 0))
+    await h.done(rid, status="cancelled")
+    assert h.requests()[-1]["metadata"] == narration_tag(2, "qa")
+    assert "You were interrupted" not in h.requests()[-1]["instructions"]  # a fresh slide
+    qa = await h.narration(audio_ms=300, done=False)
+    h.reset()
+    await h.key("prev", reply=2, played=100)
+    assert h.b("slide") == [{"type": "slide", "slide": "how", "fragment": None}]
+    assert (h.c.live.slide, h.c.cursor) == ("how", Cursor("how", 0))
+    await h.done(qa, status="cancelled")
+    assert h.requests()[-1]["metadata"] == narration_tag(3)
+
+
+async def test_an_arrow_at_the_deck_edge_continues_the_narration_live(make):
+    h = make(narration="live")
+    await h.key("next")
+    await h.key("next")  # → how → qa
+    await h.narration(transcript=TEN_WORDS, audio_ms=1000)
+    h.reset()
+    await h.key("next", reply=2, played=200)  # no slide after qa, but the deck flushed the narration already
+    assert h.realtime.types() == ["conversation.item.truncate", "response.create"]
+    assert h.r("conversation.item.truncate")[0]["audio_end_ms"] == 200
+    assert h.browser.types() == ["reply_flush"]
+    assert h.requests()[-1]["metadata"] == narration_tag(3, "qa")
+    assert 'the room last heard you say: "Here is"' in h.requests()[-1]["instructions"]
+
+
+async def test_the_continuing_request_waits_for_a_cut_reply_to_end(make):
+    h = make(narration="live")
+    await h.key("relay")
+    await h.narration(transcript=TEN_WORDS, audio_ms=1000)
+    await h.key("space", reply=1, played=500)
+    await h.speak()
+    rid = await h.reply(call("resume_script"), audio_ms=800, done=False)  # the answer, still streaming
+    h.reset()
+    await h.key("esc", reply=2, played=200)  # back to the narration at once
+    assert h.realtime.types() == ["response.cancel", "conversation.item.truncate"]  # no create while it is active
+    assert (h.c.state, h.c.narration, h.c.live.pending != []) == (NARRATING, "live", True)
+    assert h.b("reply_flush") == [{"type": "reply_flush", "reply": 2}]
+    h.reset()
+    await h.done(rid, {"type": "function_call", "id": "fc_call_1", "call_id": "call_1", "name": "resume_script",
+                       "arguments": "{}"}, status="cancelled")
+    assert h.realtime.types() == ["conversation.item.create", "response.create"]
+    assert h.realtime.items[0] == cut_output("call_1")  # the cut call is answered before the request
+    assert h.requests()[-1]["metadata"] == narration_tag(3)
+    await h.narration(audio_ms=300, done=False)
+    assert h.b("reply_start") == [{"type": "reply_start", "reply": 3, "kind": "narration"}]
+
+
+async def test_a_typed_question_mid_narration_waits_for_the_cut_narration_to_end(make):
+    h = make(narration="live")
+    await h.key("relay")
+    rid = await h.narration(transcript=TEN_WORDS, audio_ms=1000, done=False)
+    h.reset()
+    await h.typed("What is a timestamp?", reply=1, played=450)
+    assert h.realtime.types() == ["response.cancel", "conversation.item.truncate", "session.update"]
+    assert h.r("conversation.item.truncate")[0]["audio_end_ms"] == 450
+    assert (h.c.state, h.c.turn.origin) == (REPLYING, "narration")
+    assert 'You were cut off at «it» in: "Here is how it"' in h.instructions()
+    h.reset()
+    await h.done(rid, status="cancelled")
+    assert h.realtime.items == [user_message("What is a timestamp?"), {"type": "response.create"}]
+
+
+async def test_a_narration_that_never_speaks_is_asked_for_again_then_the_backup_presents_the_slide(make):
+    """Live finding: a request on an empty conversation got only a start_presentation call, and no audio."""
+    h = make(narration="live")
+    await h.key("relay")
+    h.reset()
+    await h.narration(call("start_presentation"), audio_ms=0, transcript="")
+    assert h.tool_statuses() == [("call_1", "start_presentation", "rejected")]
+    assert h.b("reply_flush") == [{"type": "reply_flush", "reply": 1}] and not h.b("reply_end")
+    assert h.realtime.types() == ["conversation.item.create", "response.create"]
+    assert h.requests()[-1] == {
+        "instructions": narration_instructions(h.talk, h.talk.slide("how"), seconds=24, first=True),
+        "metadata": narration_tag(2), "tool_choice": "none"}
+    h.reset()
+    await h.narration(audio_ms=0, transcript="")
+    assert h.b("reply_flush") == [{"type": "reply_flush", "reply": 2}] and h.realtime.items == []  # no 3rd ask
+    assert h.last("play") == {"type": "play", "play_id": 1, "slide": "how", "chunk": 0, "offset_ms": 0,
+                              "fragment": 1, "resume_word": None}
+    assert (h.c.state, h.c.narration, h.c.live, h.last("state")["narration"]) == (NARRATING, "backup", None,
+                                                                                 "backup")
+    for _ in range(3):  # the backup runs through `how`; `qa` starts live again
+        await h.chunk_ended()
+    assert (h.c.narration, h.requests()[-1]["metadata"]) == ("live", narration_tag(3, "qa"))
+    assert [data["why"] for kind, data in h.logs if kind == "narration_failed"] == ["no audio", "no audio"]
+
+
+async def test_no_audio_within_the_wait_asks_again_then_the_backup_presents_the_slide(make):
+    h = make(narration="live")
+    await h.key("relay")
+    await h.clock.advance(NARRATION_WAIT_S - 0.1)
+    assert (len(h.requests()), h.c.narration) == (1, "live")
+    h.reset()
+    await h.clock.advance(0.2)
+    assert h.realtime.types() == ["response.cancel", "response.create"]  # the first may still turn up: cancelled
+    assert (h.b("reply_flush"), h.requests()[-1]["metadata"]) == ([{"type": "reply_flush", "reply": 1}],
+                                                                  narration_tag(2))
+    await h.ev("response.created", response={"id": "resp_late", "metadata": narration_tag(1)})  # it does
+    assert h.realtime.types() == ["response.cancel", "response.create"] and not h.b("reply_start")
+    await h.clock.advance(NARRATION_WAIT_S + 0.1)
+    assert (h.last("play")["slide"], h.c.narration) == ("how", "backup")
+    assert [data["why"] for kind, data in h.logs if kind == "narration_failed"] == ["timeout", "timeout"]
+
+
+async def test_a_narration_that_stalls_after_speaking_plays_out_then_the_backup_presents_the_slide(make):
+    h = make(narration="live")
+    await h.key("relay")
+    rid = await h.narration(call("next_slide"), audio_ms=500, done=False)  # then the server hangs
+    await h.clock.advance(REPLY_STALL_S - 0.1)
+    assert not h.b("reply_end") and h.c.live.response_id == rid
+    h.reset()
+    await h.clock.advance(0.2)
+    assert h.realtime.types() == ["response.cancel"]  # its call's output waits for its response.done
+    assert h.b("reply_end") == [{"type": "reply_end", "reply": 1}]
+    assert h.tool_statuses() == [("call_1", "next_slide", "rejected")]
+    assert (h.c.state, h.errors()) == (NARRATING, [])
+    await h.drained(reply=1)  # what arrived has played: the backup presents the slide from its start
+    assert (h.last("play")["slide"], h.last("play")["chunk"], h.c.narration) == ("how", 0, "backup")
+    h.reset()
+    await h.ev("response.output_audio.delta", response_id=rid, item_id=f"item_{rid}", delta=AUDIO_100MS)
+    await h.done(rid, status="cancelled")
+    assert h.browser.items == []
+    assert h.realtime.items == [cut_output("call_1", NARRATION_CALL_OUTPUT)]
+
+
+async def test_an_error_then_silence_before_any_narration_audio_asks_again_at_once(make):
+    h = make(narration="live")
+    await h.key("relay")
+    await h.ev("response.created", response={"id": "resp_s", "status": "in_progress", "output": [],
+                                             "metadata": narration_tag(1)})
+    await h.ev("error", error=SERVER_ERROR)
+    h.reset()
+    await h.clock.advance(ERROR_GRACE_S + 0.1)
+    assert h.realtime.types() == ["response.cancel", "response.create"]  # the dead response doesn't hold it back
+    assert h.requests()[-1]["metadata"] == narration_tag(2)
+    assert [data["why"] for kind, data in h.logs if kind == "narration_failed"] == ["stalled"]
+
+
+async def test_the_link_lost_before_the_narration_speaks_puts_the_backup_on_at_once(make):
+    h = make(narration="live")
+    await h.key("relay")
+    h.realtime.ready = False
+    h.reset()
+    await h.c.on_realtime_status("reconnecting", "connection lost")
+    assert h.b("reply_flush") == [{"type": "reply_flush", "reply": 1}]
+    assert (h.last("play")["slide"], h.last("play")["chunk"], h.c.narration) == ("how", 0, "backup")
+    assert h.realtime.items == [] and h.errors() == []
+
+
+async def test_the_link_lost_mid_narration_lets_what_arrived_play_then_the_backup_presents_the_slide(make):
+    h = make(narration="live")
+    await h.key("relay")
+    await h.narration(audio_ms=700, done=False)
+    h.realtime.ready = False
+    h.reset()
+    await h.c.on_realtime_status("reconnecting", "connection lost")
+    assert (h.b("reply_end"), h.b("play"), h.c.state) == ([{"type": "reply_end", "reply": 1}], [], NARRATING)
+    h.realtime.ready = True
+    await h.c.on_realtime_status("ready")  # back while the deck still plays it
+    await h.drained(reply=1)
+    assert (h.last("play")["slide"], h.last("play")["chunk"], h.c.narration) == ("how", 0, "backup")
+
+
+async def test_a_narration_cut_after_a_reconnect_truncates_nothing_in_the_new_session(make):
+    h = make(narration="live")
+    await h.c.on_realtime_status("ready")
+    await h.key("relay")
+    await h.narration(transcript=TEN_WORDS, audio_ms=1000)  # all in, still playing
+    await h.c.on_realtime_status("reconnecting", "idle timeout (5 min without speech)")
+    await h.c.on_realtime_status("ready")
+    h.reset()
+    await h.key("space", reply=1, played=500)
+    assert "conversation.item.truncate" not in h.realtime.types()
+    assert h.c.cursor == Cursor("how", 0, live=True, heard="Here is how it works:", heard_ms=500)
+
+
+async def test_without_the_link_a_slide_starts_from_the_backup_and_the_next_one_live(make):
+    h = make(narration="live", ready=False)
+    await h.key("relay")
+    assert h.realtime.items == []
+    assert h.last("play") == {"type": "play", "play_id": 1, "slide": "how", "chunk": 0, "offset_ms": 0,
+                              "fragment": 1, "resume_word": None}
+    assert (h.c.narration, h.last("state")["narration"]) == ("backup", "backup")
+    h.realtime.ready = True  # back mid-slide: the backup carries on through `how`
+    await h.chunk_ended()
+    assert (h.last("play")["chunk"], h.requests()) == (1, [])
+    await h.chunk_ended()
+    await h.chunk_ended()
+    assert (h.c.narration, h.requests()[-1]["metadata"]) == ("live", narration_tag(1, "qa"))
+
+
+async def test_a_cut_backup_narration_continues_from_the_renders_even_once_the_link_is_back(make):
+    h = make(narration="live", ready=False)
+    await h.key("relay")  # the link is down as `how` starts: the backup presents it
+    h.realtime.ready = True
+    await h.c.on_realtime_status("ready")
+    await h.key("space", at=h.at(h.word_t("how", 0, 7)))
+    assert h.b("cut")[-1] == {"type": "cut", "slide": "how", "chunk": 0, "cut_word": 7, "resume_word": 5}
+    await h.speak()
+    await h.reply(call("resume_script"))
+    await h.drained()
+    assert (h.last("play")["resume_word"], h.c.narration, h.requests()) == (5, "backup", [])
+    for _ in range(3):
+        await h.chunk_ended()
+    assert (h.c.narration, h.requests()[-1]["metadata"]["slide"]) == ("live", "qa")
+
+
+@pytest.mark.parametrize("event", ["connected", "disconnected"])
+async def test_a_deck_coming_or_going_mid_narration_cuts_it_by_the_wall_clock(make, event: str):
+    h = make(narration="live")
+    await h.key("relay")
+    rid = await h.narration(transcript=TEN_WORDS, audio_ms=1000)
+    await h.clock.advance(0.4)  # no deck count of what was played: the wall clock since the first audio
+    h.reset()
+    if event == "connected":
+        await h.c.on_browser_connected()
+        assert h.browser.types() == ["reply_flush", "hello", "stop", "mic", "slide", "state", "connection"]
+        assert h.b("slide") == [{"type": "slide", "slide": "how", "fragment": None}]
+    else:
+        await h.c.on_browser_disconnected()
+    assert h.r("conversation.item.truncate") == [{"type": "conversation.item.truncate", "item_id": f"item_{rid}",
+                                                  "content_index": 0, "audio_end_ms": 400}]
+    assert (h.c.state, h.c.banner) == (IDLE, BANNER_PAUSED_R)
+    assert h.c.cursor == Cursor("how", 0, live=True, heard="Here is how it", heard_ms=400)
+    await h.key("relay")
+    assert (h.c.state, h.c.narration) == (NARRATING, "live")
+    assert 'the room last heard you say: "Here is how it"' in h.requests()[-1]["instructions"]
+
+
+async def test_back_on_the_title_the_first_narration_follows_a_greeting_again(make):
+    h = make(narration="live")
+    await h.key("relay")
+    await h.narration(audio_ms=300)
+    await h.drained()
+    assert h.requests()[-1]["instructions"].splitlines()[4].endswith("carry on naturally from the previous slide.")
+    await h.key("prev")
+    await h.key("prev")  # → how → title: the opening is armed again
+    assert h.c.phase == "opening"
+    await h.key("relay")
+    assert h.requests()[-1]["instructions"].splitlines()[4].endswith("and you just greeted them.")

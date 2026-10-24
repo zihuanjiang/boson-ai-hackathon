@@ -2,7 +2,9 @@
 
 The deck below plays the browser's side of the protocol (design §4) over a real WebSocket: it answers `mic open`
 with ~1.6 s of audio frames like a person talking, and `reply_end` with `reply_drained` like the reply player.
-Chunk playback is driven by the test (it sends `chunk_ended` when it wants narration to move on).
+Narration is driven by the test: it sends `chunk_ended` when it wants rendered narration to move on, and, with
+`hold_narration`, drains a live narration reply (D52) itself, so it can cut in while one plays. The runs narrate
+from the renders unless they ask for `narration="live"`.
 Browser code itself is covered by scripts/e2e_chrome.py (Chrome can't run inside the Claude Code sandbox).
 """
 
@@ -57,7 +59,9 @@ class Deck:
         self.ws = ws
         self.log: list[dict] = []
         self.auto_speak = True
+        self.hold_narration = False  # the test drains live narration replies itself (`drain`)
         self.reply_audio_ms: dict[int, int] = {}
+        self.kinds: dict[int, str] = {}  # reply → its reply_start kind
         self._new = asyncio.Event()
         self._reader = asyncio.create_task(self._read())
 
@@ -67,12 +71,13 @@ class Deck:
             self.log.append(msg)
             self._new.set()
             kind = msg.get("type")
-            if kind == "reply_audio":
+            if kind == "reply_start":
+                self.kinds[msg["reply"]] = msg.get("kind")
+            elif kind == "reply_audio":
                 pcm = base64.b64decode(msg["pcm"])
                 self.reply_audio_ms[msg["reply"]] = self.reply_audio_ms.get(msg["reply"], 0) + len(pcm) // 48
-            elif kind == "reply_end":
-                await self.send({"type": "reply_drained", "reply": msg["reply"],
-                                 "played_ms": self.reply_audio_ms.get(msg["reply"], 0)})
+            elif kind == "reply_end" and not (self.hold_narration and self.kinds.get(msg["reply"]) == "narration"):
+                await self.drain(msg["reply"])
             elif kind == "mic" and msg.get("open") and self.auto_speak:
                 for _ in range(16):
                     await self.send({"type": "mic", "pcm": FRAME})
@@ -80,8 +85,13 @@ class Deck:
     async def send(self, msg: dict) -> None:
         await self.ws.send(json.dumps(msg))
 
-    async def key(self, key: str, at: dict | None = None) -> None:
-        await self.send({"type": "key", "key": key, "at": at, "reply": None, "reply_played_ms": None})
+    async def drain(self, reply: int) -> None:
+        """The reply player ran empty after `reply_end`: all of the reply was heard."""
+        await self.send({"type": "reply_drained", "reply": reply, "played_ms": self.reply_audio_ms.get(reply, 0)})
+
+    async def key(self, key: str, at: dict | None = None, *, reply: int | None = None,
+                  played: int | None = None) -> None:
+        await self.send({"type": "key", "key": key, "at": at, "reply": reply, "reply_played_ms": played})
 
     def mark(self) -> int:
         return len(self.log)
@@ -109,7 +119,7 @@ class Deck:
         await self.ws.close()
 
 
-def is_type(kind: str, **fields):
+def is_type(kind: str, /, **fields):
     return lambda m: m.get("type") == kind and all(m.get(k) == v for k, v in fields.items())
 
 
@@ -118,12 +128,13 @@ def tool_applied(name: str):
 
 
 @asynccontextmanager
-async def running_app(tmp_path, connector: FakeConnector, *, talk_dir: Path = TALK_DIR, rendered: bool = False):
+async def running_app(tmp_path, connector: FakeConnector, *, talk_dir: Path = TALK_DIR, rendered: bool = False,
+                      narration: str = "rendered"):
     """Real uvicorn on an ephemeral port. Narration: synthetic timings without audio, or (`rendered`) the renders in
-    `tmp_path/talks/<id>/`, loaded like `relay serve` loads them."""
+    `tmp_path/talks/<id>/`, loaded like `relay serve` loads them; presented live with `narration="live"`."""
     talk = load_talk(talk_dir)
-    app = create_app(talk_dir, Settings(fake_realtime=True), out_root=tmp_path, connect=connector,
-                     chunks=None if rendered else synthetic_chunks(talk))
+    app = create_app(talk_dir, Settings(fake_realtime=True, narration=narration), out_root=tmp_path,
+                     connect=connector, chunks=None if rendered else synthetic_chunks(talk))
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="on"))
     task = asyncio.create_task(server.serve())
     for _ in range(200):
@@ -194,10 +205,15 @@ def log_entries(tmp_path: Path) -> list[dict]:
     return [json.loads(line) for path in logs for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def is_narration_request(event: dict) -> bool:
+    return ((event.get("response") or {}).get("metadata") or {}).get("relay") == "narration"
+
+
 def check_tool_outputs(connector: FakeConnector) -> None:
     """Design §5.2 / D6, per Realtime session: every function_call the server announced got exactly one
     function_call_output (a JSON string), and an output is never followed by response.create unless a new user item
-    (a question or a commit, not the reconnect summary) came in between."""
+    (a question or a commit, not the reconnect summary) came in between, or it is a live narration request (it
+    carries its own instructions)."""
     for number, conn in enumerate(connector.connections, 1):
         announced = sorted(item["call_id"] for item in conn._items.values() if item.get("type") == "function_call")
         outputs = [event["item"] for event in conn.received if event["type"] == "conversation.item.create"
@@ -213,7 +229,7 @@ def check_tool_outputs(connector: FakeConnector) -> None:
                 armed = item["content"][0]["text"].startswith(SUMMARY_PREFIX)
             elif event["type"] == "input_audio_buffer.commit":
                 armed = False
-            elif event["type"] == "response.create":
+            elif event["type"] == "response.create" and not is_narration_request(event):
                 assert not armed, f"session {number}: response.create right after a function_call_output"
 
 
@@ -578,3 +594,67 @@ async def test_a_slow_reply_that_keeps_streaming_is_not_cut_by_the_stall_watchdo
         assert [m["message"] for m in deck.log if m.get("type") == "error"] == []
         check_tool_outputs(connector)
     assert not any(e["kind"] == "reply_stalled" for e in log_entries(tmp_path))
+
+
+async def test_live_narration_end_to_end(tmp_path):
+    """D52 over the real stack: the fake Realtime presents every relay slide (a narration request each, streamed as a
+    `reply_start` kind narration). A Space mid-narration truncates it at what the deck played; the answer's
+    resume_script continues the same slide live, quoting what the room heard; the narrations then run on to the Q&A
+    slide, and a question there ends with the hand-back. Nothing of the backup (`play`, `cut`) is used."""
+    connector = FakeConnector(think_s=0.05, speed=50.0)
+    async with running_app(tmp_path, connector, narration="live") as (app, port), armed_deck(port) as deck:
+        deck.hold_narration = True
+        assert next(m for m in deck.log if m.get("type") == "hello")["narration_mode"] == "live"
+        link = connector.connections[-1]
+
+        mark = deck.mark()
+        await deck.key("space")  # the opening: "take it away" → start_presentation
+        await deck.until(tool_applied("start_presentation"), "start_presentation applied", mark)
+        shown = await deck.until(is_type("slide", slide="how"), "the first relay slide", mark)
+        assert shown["fragment"] is None  # a live narration shows the whole slide
+        first = await deck.until(is_type("reply_start", kind="narration"), "the narration of 'how'", mark)
+        await deck.until(lambda m: m.get("type") == "state" and m.get("narration") == "live", "state: live", mark)
+        await deck.until(is_type("reply_end", reply=first["reply"]), "its audio is all in", mark)
+        assert deck.reply_audio_ms[first["reply"]] == 2400  # the fake's narration_s
+
+        sent_from = len(link.received)
+        mark = deck.mark()
+        await deck.key("space", reply=first["reply"], played=1000)  # Ken cuts in a second into it
+        await deck.until(is_type("reply_flush", reply=first["reply"]), "the narration is cut", mark)
+        await deck.until(is_type("mic", open=True), "mic opened for the cut-in", mark)
+        answer = await deck.until(is_type("reply_start", kind="answer"), "the answer", mark)
+        await deck.until(tool_applied("resume_script"), "resume_script applied", mark)
+        again = await deck.until(is_type("reply_start", kind="narration"), "the slide continues live", mark)
+        assert first["reply"] < answer["reply"] < again["reply"]
+        truncates = [e for e in link.received[sent_from:] if e["type"] == "conversation.item.truncate"]
+        assert [e["audio_end_ms"] for e in truncates] == [1000]
+        request = [e for e in link.received if is_narration_request(e)][-1]["response"]
+        assert request["metadata"] == {"relay": "narration", "reply": str(again["reply"]), "slide": "how"}
+        assert request["tool_choice"] == "none"
+        # 1000 of 2400 ms of "(fake) Live narration of slide how.": the first two of its six words
+        assert 'the room last heard you say: "(fake) Live"' in request["instructions"]
+        assert 'Start with a short bridge like "As I was saying"' in request["instructions"]
+
+        await deck.until(is_type("reply_end", reply=again["reply"]), "the rest of 'how' is in", mark)
+        mark = deck.mark()
+        await deck.drain(again["reply"])
+        await deck.until(is_type("slide", slide="qa"), "on to the Q&A slide", mark)
+        qa = await deck.until(is_type("reply_start", kind="narration"), "the Q&A slide's narration", mark)
+        await deck.until(is_type("reply_end", reply=qa["reply"]), "its audio is all in", mark)
+        mark = deck.mark()
+        await deck.drain(qa["reply"])
+        await deck.until(lambda m: m.get("type") == "state" and m.get("state") == "IDLE" and m.get("phase") == "qa",
+                         "waiting for a question", mark)
+
+        mark = deck.mark()
+        await deck.key("space")
+        await deck.until(tool_applied("handoff_to_human"), "handoff_to_human applied", mark)
+        assert not any(m.get("type") in ("play", "cut", "chunk_ended") for m in deck.log)
+        assert [e["response"]["metadata"]["slide"] for e in link.received if is_narration_request(e)] == \
+            ["how", "how", "qa"]
+        check_tool_outputs(connector)
+
+    entries = log_entries(tmp_path)
+    assert [e["slide"] for e in entries if e["kind"] == "narration_start"] == ["how", "how", "qa"]
+    assert [e["played_ms"] for e in entries if e["kind"] == "narration_cut"] == [1000]
+    assert not any(e["kind"] == "narration_failed" for e in entries)

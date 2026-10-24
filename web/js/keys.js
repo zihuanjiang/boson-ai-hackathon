@@ -2,8 +2,9 @@
 /**
  * Presenter keys (doc/design.md §4, brief Appendix C). Space (keydown) = space; in hold mode its keyup = space_up;
  * Esc; → / ← and the clicker's PageDown / PageUp = next / prev; P pause; H human; R relay; T focuses the typed box.
- * Auto-repeat is ignored. While the typed box has focus nothing is a presenter key except Esc, which leaves it.
- * Before Arm nothing is handled, so Space/Enter on the focused Arm button keep their native meaning.
+ * Auto-repeat is ignored. While a text box (the typed question, the chat) has focus nothing is a presenter key except
+ * Esc, which leaves it. Before Arm (the join) nothing is handled, so Space/Enter on the focused Join button keep their
+ * native meaning. I toggles the meeting info panel: a view key, not a presenter key, so it works before joining too.
  */
 import { presenterKey } from "./util.js";
 
@@ -16,7 +17,13 @@ import { presenterKey } from "./util.js";
  * @property {(action: Exclude<KeyAction, "type">, event: KeyboardEvent|null) => void} onAction
  * @property {() => void} onFocusTyped
  * @property {(action: KeyAction) => void} [onNotArmed]
+ * @property {() => void} [onInfo]  the I key
  */
+
+/** @param {KeyboardEvent} e */
+function isInfoKey(e) {
+  return !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "i" || e.key === "I");
+}
 
 /** @param {EventTarget|null} target */
 function isEditable(target) {
@@ -43,7 +50,13 @@ export function installKeys(opts) {
       return;
     }
     const action = presenterKey(e, opts.micMode());
-    if (!action) return;
+    if (!action) {
+      if (opts.onInfo && isInfoKey(e)) {
+        e.preventDefault();
+        if (!e.repeat) opts.onInfo();
+      }
+      return;
+    }
     if (!opts.armed()) {
       if (!e.repeat) opts.onNotArmed?.(action);
       return;

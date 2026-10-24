@@ -1,12 +1,22 @@
-"""relay.prompts: BASE (brief Appendix E, verbatim) + STATE (design §7)."""
+"""relay.prompts: BASE (brief Appendix E, verbatim) + STATE (design §7), and the live narration's per-response
+instructions (D52)."""
 
 from __future__ import annotations
+
+import dataclasses
+import re
 
 import pytest
 
 from relay.config import ROOT
-from relay.prompts import BASE_TEMPLATE, PHASES, TurnContext, base_prompt, build_instructions, state_block
-from relay.talk import Talk
+from relay.prompts import (BASE_TEMPLATE, LIVE_BASE_TEMPLATE, PHASES, SCREEN_MAX_CHARS, TALK_MAX_CHARS,
+                           TurnContext, base_prompt, build_instructions, narration_instructions, screen_text,
+                           state_block, talk_summary)
+from relay.talk import Talk, check_talk, load_talk
+
+TEST_TALK_LINE = "Talk: Relay test talk / A three-slide check of the whole pipeline"
+HOW_SCREEN = ("How it works / - Narration is rendered ahead of time / - Every word carries a timestamp / "
+              "- Interruptions are answered live")  # list bullets are not among the markers stripped
 
 BRIEF = ROOT / "doc" / "brief.md"
 
@@ -35,6 +45,7 @@ def test_state_block_presenting_with_cut(test_talk: Talk):
     lines = state_block(test_talk, ctx).splitlines()
     assert lines == [
         "Phase: presenting",
+        TEST_TALK_LINE,
         'Slides: how "How it works", qa "Questions?" (current: how)',
         'Current slide narration: "' + test_talk.slide("how").narration + '"',
         'You were cut off at «hear» in: "Everything you hear from me right now."',
@@ -69,7 +80,8 @@ def test_cut_word_without_sentence(test_talk: Talk):
 def test_opening_phase_line_and_human_slide(test_talk: Talk):
     lines = state_block(test_talk, TurnContext("opening", "title")).splitlines()
     assert lines[0] == "Phase: opening"
-    assert lines[1].endswith("(current: title)")
+    assert lines[1] == TEST_TALK_LINE  # live finding: without it the model invented the talk's topic
+    assert lines[2].endswith("(current: title)")
     assert not any(line.startswith("Current slide narration") for line in lines)  # human slides have none
     assert not any(line.startswith("Plain-language seed") for line in lines)
     assert lines[-1] == "Ken is about to hand you the stage: greet the room in one line, then call start_presentation."
@@ -133,4 +145,148 @@ def test_instructions_stay_short_outside_qa(test_talk: Talk, phase: str):
 
 def test_turn_context_defaults():
     ctx = TurnContext("presenting", "how")
-    assert ctx.cut_word is None and ctx.cut_sentence is None
+    assert ctx.cut_word is None and ctx.cut_sentence is None and ctx.live is False
+
+
+# --- live narration (D52) ---------------------------------------------------------------------------------------
+
+
+def with_slides_md(talk: Talk, slides_md: str) -> Talk:
+    return dataclasses.replace(talk, slides_md=slides_md)
+
+
+def test_live_base_fills_presenter_and_stays_short(test_talk: Talk):
+    assert LIVE_BASE_TEMPLATE.count("{presenter}") == 2
+    base = base_prompt(test_talk, live=True)
+    assert base.startswith("You are Relay, a voice co-presenter for Ken's talk. You present the slides yourself, "
+                           "live, in your own words, from the notes given for each slide.")
+    assert "give Ken the floor" in base and "resume_script to continue the slide" in base
+    assert "never read the script" not in base  # BASE's rendered-narration sentence
+    assert len(base.split()) <= 120
+    assert base_prompt(test_talk) == BASE_TEMPLATE.format(presenter="Ken")  # rendered mode keeps Appendix E
+
+
+def test_live_instructions_use_live_base_and_the_slide_notes(test_talk: Talk):
+    ctx = TurnContext("presenting", "how", cut_word="hear", cut_sentence="Everything you hear.", live=True)
+    instructions = build_instructions(test_talk, ctx)
+    assert instructions == base_prompt(test_talk, live=True) + "\n\n" + state_block(test_talk, ctx)
+    lines = state_block(test_talk, ctx).splitlines()
+    assert lines[:2] == ["Phase: presenting", TEST_TALK_LINE]
+    assert 'Current slide notes: "' + test_talk.slide("how").narration + '"' in lines
+    assert not any(line.startswith("Current slide narration") for line in lines)
+    assert 'You were cut off at «hear» in: "Everything you hear."' in lines
+    rendered = state_block(test_talk, dataclasses.replace(ctx, live=False))
+    assert "Current slide narration: " in rendered and "Current slide notes" not in rendered
+
+
+def test_screen_text_strips_comments_tags_and_markdown(test_talk: Talk):
+    assert screen_text(test_talk, test_talk.slide("how")) == HOW_SCREEN
+    assert screen_text(test_talk, test_talk.slide("title")) == "Relay test talk / A three-slide check of the whole " \
+                                                                "pipeline"
+    md = ('<!-- .slide: id="title" -->\n# Relay\n\n### A voice co-presenter you can interrupt\n\n'
+          "<small>Ken Jiang · Higgs Audio Hackathon · Toronto 2026</small>\n\n---\n\n"
+          '<!-- .slide: id="how" data-x="1" -->\n## How it `works`\n\n> **Every** word, _timed_   twice\n'
+          "- a <b>bullet</b> <!-- .element: class=\"fragment\" -->\n\n---\n\n"
+          '<!-- .slide: id="qa" -->\n## Questions?\n')
+    talk = with_slides_md(test_talk, md)
+    assert screen_text(talk, talk.slide("title")) == ("Relay / A voice co-presenter you can interrupt / Ken Jiang · "
+                                                      "Higgs Audio Hackathon · Toronto 2026")
+    assert screen_text(talk, talk.slide("how")) == "How it works / Every word, timed twice / - a bullet"
+
+
+def test_screen_text_finds_the_section_by_id_else_by_index(test_talk: Talk):
+    swapped = ('<!-- .slide: id="how" -->\n## How it works\n---\n<!-- .slide: id="title" -->\n# Hi\n'
+               '---\n<!-- .slide: id="qa" -->\n## Questions?\n')
+    talk = with_slides_md(test_talk, swapped)
+    assert screen_text(talk, talk.slide("how")) == "How it works"  # by id: section 1 (its index) is the title's
+    assert screen_text(talk, talk.slide("title")) == "Hi"
+    unnamed = "# Zero\n---\n# One\n---\n# Two\n"
+    talk = with_slides_md(test_talk, unnamed)
+    assert screen_text(talk, talk.slide("how")) == "One"  # no `.slide:` id matches: the slide's index
+    talk = with_slides_md(test_talk, "# Only one section\n")
+    assert screen_text(talk, talk.slide("qa")) == ""  # no section at all
+
+
+def test_screen_text_and_the_talk_line_are_clipped(test_talk: Talk):
+    long_line = " ".join(["word"] * 120)
+    talk = with_slides_md(test_talk, f"# {long_line}\n---\n## {long_line}\n---\n## Q\n")
+    text = screen_text(talk, talk.slide("how"))
+    assert len(text) == SCREEN_MAX_CHARS and text.endswith("…") and text.startswith("word word")
+    summary = talk_summary(talk)
+    assert len(summary) <= TALK_MAX_CHARS and summary.endswith("…")
+    assert state_block(talk, TurnContext("opening", "title")).splitlines()[1] == f"Talk: {summary}"
+    empty = with_slides_md(test_talk, '<!-- .slide: id="title" -->\n---\n## How\n---\n## Q\n')
+    assert talk_summary(empty) == "test"  # nothing on the title slide: the talk id
+
+
+def test_narration_instructions_first_slide(test_talk: Talk):
+    how = test_talk.slide("how")
+    lines = narration_instructions(test_talk, how, seconds=12, first=True).splitlines()
+    assert lines == [
+        "You are Relay, a voice co-presenter, presenting Ken's talk live to a room.",
+        f'Now present slide 1 of 2, "How it works". On screen: {HOW_SCREEN}',
+        f"Your notes for this slide: {how.narration}",
+        "Say it now in your own words, as a confident speaker, in about 12 seconds, covering the notes' points in "
+        "order. Don't read the notes word for word.",
+        "Don't greet or introduce yourself: the room already knows you, and you just greeted them.",
+        "Speak only the presentation. No lists, markdown, URLs or stage directions. Don't call any tool.",
+    ]
+    assert "<|" not in lines[2]  # the notes are tag-free
+
+
+def test_narration_instructions_on_the_qa_slide_forbid_a_greeting(test_talk: Talk):
+    lines = narration_instructions(test_talk, test_talk.slide("qa"), seconds=6).splitlines()
+    assert lines[1].startswith('Now present slide 2 of 2, "Questions?". On screen: Questions? / Tap Space')
+    assert lines[4] == "Don't greet or introduce yourself: the room already knows you; carry on naturally from the " \
+                       "previous slide."
+    assert lines[5] == ('This is the Q&A slide: invite a question in one or two sentences, without any greeting such '
+                        'as "Hello", then stop.')
+    assert lines[6].endswith("Don't call any tool.")
+
+
+def test_narration_instructions_continuing_quote_what_was_heard(test_talk: Talk):
+    how = test_talk.slide("how")
+    lines = narration_instructions(test_talk, how, seconds=7, continuing=True,
+                                   heard="Here is how  this works.").splitlines()
+    assert lines[3] == ('You were interrupted partway through this slide; the room last heard you say: "Here is how '
+                        'this works.". Start with a short bridge like "As I was saying", don\'t repeat what the room '
+                        "already heard, and finish the remaining points in about 7 seconds.")
+    for heard in (None, "", "   "):
+        line = narration_instructions(test_talk, how, seconds=5, continuing=True, heard=heard).splitlines()[3]
+        assert line.startswith("You were interrupted partway through this slide. Start with a short bridge")
+
+
+def test_narration_instructions_fall_back_to_the_slide_id(test_talk: Talk):
+    how = dataclasses.replace(test_talk.slide("how"), title="")
+    talk = dataclasses.replace(test_talk, slides=[test_talk.slides[0], how, test_talk.slides[2]])
+    assert narration_instructions(talk, how, seconds=9).splitlines()[1].startswith('Now present slide 1 of 2, "how".')
+
+
+# --- the demo talk (talks/relay-intro): its notes and screens as the live narration sees them ---------------------
+
+# Claims of v1's architecture that are false once Relay presents live (word timestamps, the exact cut word, resuming
+# from the start of the sentence), and v1's voice (D54).
+STALE_CLAIM = re.compile(r"timestamp|exact word|first word|cut word|start of (?:the|my|that) sentence|"
+                         r"stop(?:ped|s)? on the word|chloe", re.I)
+
+
+def test_the_demo_talk_is_clean_and_true_for_live_narration():
+    """talks/relay-intro: valid with no warnings, voice default (D54), the shape the run of show and the e2e rely
+    on; every say line is a note fit for Realtime and a backup line fit for TTS (no parentheses, no stale claims);
+    every relay slide's screen fits its "On screen:" line unclipped."""
+    root = ROOT / "talks" / "relay-intro"
+    assert check_talk(root) == []
+    talk = load_talk(root)
+    assert talk.voice == "default"
+    assert [slide.id for slide in talk.slides][0] == "title" and talk.slides[-1].id == "thanks"
+    assert [slide.id for slide in talk.relay_slides] == ["problem", "idea", "how", "details", "demo", "qa"]
+    assert sum(len(slide.chunks) for slide in talk.relay_slides) == 16
+    for slide in talk.relay_slides:
+        for chunk in slide.chunks:
+            assert "(" not in chunk.say and ")" not in chunk.say, (slide.id, chunk.index)
+            assert not STALE_CLAIM.search(chunk.say), (slide.id, chunk.index, STALE_CLAIM.search(chunk.say))
+        assert not (slide.plain and STALE_CLAIM.search(slide.plain)), slide.id
+        on_screen = screen_text(talk, slide)
+        assert on_screen and not on_screen.endswith("…"), (slide.id, on_screen)
+    assert not STALE_CLAIM.search(talk.kb)
+    assert talk_summary(talk).startswith("Relay / A voice co-presenter you can interrupt")

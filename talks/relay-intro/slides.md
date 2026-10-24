@@ -21,7 +21,7 @@ Agents can write the talk. Who gives it? <!-- .element: class="fragment" -->
 <!-- .slide: id="idea" -->
 ## The idea
 
-Hand Relay the slides and the script <!-- .element: class="fragment" -->
+Hand Relay the slides and a few notes <!-- .element: class="fragment" -->
 
 Interrupt it · ask for plain words · ask anything <!-- .element: class="fragment" -->
 
@@ -32,11 +32,13 @@ One tap, and the human has the floor <!-- .element: class="fragment" -->
 <!-- .slide: id="how" -->
 ## How it works
 
-Narration: pre-rendered by Higgs TTS 3, a timestamp on every word <!-- .element: class="fragment" -->
+Live: Higgs Realtime presents every slide from notes <!-- .element: class="fragment" -->
 
-Tap → stop on the cut word → mic opens → Higgs Realtime replies live <!-- .element: class="fragment" -->
+Tap → audio stops → the browser counts what you heard → memory trimmed to match <!-- .element: class="fragment" -->
 
-Tool call → resume at the first word of the cut sentence <!-- .element: class="fragment" -->
+Mic → turn detection → answer → a tool drives the deck → back to the slide <!-- .element: class="fragment" -->
+
+<small>Backup: every slide pre-rendered by Higgs TTS 3</small>
 
 ---
 
@@ -45,9 +47,11 @@ Tool call → resume at the first word of the cut sentence <!-- .element: class=
 
 IDLE · NARRATING · PAUSED · LISTENING · REPLYING
 
-semantic VAD ends the turn · replies truncated to the samples played
+one live response per slide · notes as instructions · tools off
 
-tools wait for drain · 3 s resume watchdog · reconnect ≤ 2 s
+semantic VAD ends the turn · memory truncated to the samples heard
+
+tools wait for drain · 1.5 s watchdog · retry, then backup · reconnect ≤ 2 s
 
 ---
 
@@ -56,11 +60,11 @@ tools wait for drain · 3 s resume watchdog · reconnect ≤ 2 s
 
 You've been watching it.
 
-Cut on the word, back to the sentence <!-- .element: class="fragment" -->
+Stopped at once, picked up where you left off <!-- .element: class="fragment" -->
 
-A plain answer, made live, in the same voice <!-- .element: class="fragment" -->
+A plain answer, made live, in the same conversation <!-- .element: class="fragment" -->
 
-Every jump: a real tool call, in the ticker <!-- .element: class="fragment" -->
+Every jump: a real tool call, on screen <!-- .element: class="fragment" -->
 
 ---
 
@@ -74,24 +78,24 @@ Ask Relay anything about Relay
 <!-- .slide: id="higgs" -->
 ## Built on Higgs
 
-**Higgs TTS 3** · the script, verbatim, with delivery tags and a timestamp on every word
+**Higgs Realtime** · everything Relay says live: one warm session presents every slide from notes, listens, answers and drives the deck with tools
 
-**Higgs Realtime** · everything live, in the same voice: listens, answers, drives the deck with tools
+**Higgs TTS 3** · the backup: every slide pre-rendered from the same notes, in the same voice, with emotion and pause tags
 
 **higgs-stt-3.1** · live captions of what the room says
 
-<small>Hard parts: one voice across two models · stopping on the exact word · acting only once the audio has drained</small>
+<small>Hard parts: presenting from notes without greeting or reading them out · trimming memory to what the room heard · acting only once the audio has drained</small>
 
 ---
 
 <!-- .slide: id="limits" -->
 ## Known limitations
 
-- English only
+- English only, no speaker identification
 - Tap-to-talk: Ken passes the floor, like a mic
-- No speaker identification
-- Narration must be rendered ahead of time
-- In the room only, not on video calls
+- Needs the network for live narration (backup audio otherwise)
+- Live wording and timing change from run to run
+- In the room only: it looks like a call, but isn't one
 - Live answers know only the slides and one page of facts
 
 ---

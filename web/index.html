@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Relay</title>
-    <meta name="description" content="Relay, a live voice co-presenter: the deck" />
+    <meta name="description" content="Relay, a live voice co-presenter: the meeting window" />
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/web/vendor/reveal/reset.css" />
     <link rel="stylesheet" href="/web/vendor/reveal/reveal.css" />
@@ -12,62 +12,248 @@
     <link rel="stylesheet" href="/web/css/relay.css" />
   </head>
   <body>
-    <div class="app">
-      <header class="strip" aria-label="Relay status">
-        <div class="strip-group strip-left">
-          <span class="state-badge" data-state="IDLE" title="Relay's state">
-            <i class="dot" aria-hidden="true"></i><span class="state-text">Idle</span>
-          </span>
-          <span class="phase" title="Phase of the talk">Opening</span>
-          <span class="where" title="Slide and narration chunk">—</span>
+    <div class="meeting" data-state="IDLE" data-narration="">
+      <header class="topbar">
+        <div class="topbar-left">
+          <span class="brand"
+            ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10.5v3" /></svg
+            >Relay</span
+          >
+          <span class="talk-name"></span>
         </div>
-        <ol class="ticker" aria-label="Tool calls"></ol>
-        <div class="strip-group strip-right">
-          <span class="latency" title="Reply latency: end of speech to first reply audio">
-            <span class="latency-label">reply</span> <span class="latency-value">—</span>
-          </span>
-          <span class="meter" title="Microphone level (closed)" aria-hidden="true"><span class="meter-fill"></span></span>
-          <span class="rt" data-status="offline" title="Higgs Realtime: offline">
-            <i class="dot" aria-hidden="true"></i><span class="rt-text">Realtime offline</span>
-          </span>
-          <span class="micmode" title="MIC_MODE">Tap</span>
+        <div class="topbar-center">
+          <span class="live-badge" data-status="offline" title="Higgs Realtime: offline"
+            ><i class="dot" aria-hidden="true"></i><span class="live-text">Higgs Realtime offline</span></span
+          >
+          <span class="pill backup-badge" title="Higgs Realtime is not ready: Relay plays the pre-rendered TTS 3 narration" hidden
+            >Backup audio</span
+          >
+          <span class="pill fake-pill" title="The backup narration was rendered with --fake: placeholder tones, not TTS" hidden
+            >Fake</span
+          >
+          <span class="pill server-pill" title="This page lost the Relay server: reconnecting" hidden>Server offline</span>
+          <span class="viewing"
+            ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="4.5" width="18" height="12" rx="2" />
+              <path d="M8.5 20h7M12 16.5V20" /></svg
+            >You are viewing Relay's screen</span
+          >
+        </div>
+        <div class="topbar-right">
+          <span class="clock" title="Time since you joined">00:00</span>
+          <button type="button" class="info-button" aria-expanded="false" aria-label="Meeting info (I)" title="Meeting info (I)">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5.5M12 7.6v.2" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <section class="strip" aria-label="Meeting info" title="Click for the audio and connection check" hidden>
+        <h2 class="strip-title">Meeting info</h2>
+        <dl class="strip-rows">
+          <div>
+            <dt>Relay</dt>
+            <dd>
+              <span class="state-badge" data-state="IDLE" title="Relay's state"
+                ><i class="dot" aria-hidden="true"></i><span class="state-text">Idle</span></span
+              >
+            </dd>
+          </div>
+          <div><dt>Phase</dt><dd class="phase" title="Phase of the talk">Opening</dd></div>
+          <div><dt>Slide</dt><dd class="where" title="Slide and narration chunk">—</dd></div>
+          <div>
+            <dt>Reply latency</dt>
+            <dd class="latency" title="End of speech to the first reply audio"><span class="latency-value">—</span></dd>
+          </div>
+          <div>
+            <dt>Microphone</dt>
+            <dd><span class="meter" title="Microphone level (closed)" aria-hidden="true"><span class="meter-fill"></span></span></dd>
+          </div>
+          <div>
+            <dt>Higgs Realtime</dt>
+            <dd>
+              <span class="rt" data-status="offline" title="Higgs Realtime: offline"
+                ><i class="dot" aria-hidden="true"></i><span class="rt-text">Realtime offline</span></span
+              >
+            </dd>
+          </div>
+          <div><dt>Mic mode</dt><dd><span class="micmode" title="MIC_MODE">Tap</span></dd></div>
+        </dl>
+        <p class="strip-badges">
           <span class="badge fake-badge" title="Narration was rendered with --fake: placeholder tones, not TTS" hidden
             >Fake audio</span
           >
           <span class="badge server-badge" hidden>Server offline</span>
-        </div>
-      </header>
+        </p>
+        <p class="strip-hint">Click for the audio and connection check</p>
+      </section>
 
-      <main class="stage">
-        <div class="reveal">
-          <div class="slides">
-            <section data-markdown="/api/slides.md" data-separator="^---[ \t]*$" data-charset="utf-8"></section>
+      <main class="share" aria-label="Relay's shared screen">
+        <div class="screen">
+          <div class="reveal">
+            <div class="slides">
+              <section data-markdown="/api/slides.md" data-separator="^---[ \t]*$" data-charset="utf-8"></section>
+            </div>
           </div>
         </div>
         <div class="banner" role="status" hidden>
           <span class="banner-text"></span><span class="banner-count" aria-hidden="true" hidden></span>
         </div>
+        <section class="captions" data-mode="idle" aria-label="Captions">
+          <div class="cap-meta">
+            <span class="cap-tag" hidden></span>
+            <span class="cap-hint" hidden></span>
+            <span class="cap-user" hidden><span class="cap-speaker">You</span><span class="cap-user-text"></span></span>
+          </div>
+          <div class="cap-main">
+            <p class="cap-narration"><span class="cap-speaker">Relay</span><span class="cap-words"></span></p>
+            <p class="cap-live empty"><span class="cap-speaker">Relay</span><span class="cap-live-text"></span></p>
+          </div>
+        </section>
+        <div class="left-card" role="dialog" aria-labelledby="relay-left-title" hidden>
+          <div class="left-panel">
+            <h2 id="relay-left-title">You left the meeting</h2>
+            <p>Relay stopped. <span class="presenter-name">The presenter</span> has the floor; R hands it back to Relay.</p>
+            <button type="button" class="rejoin-button">Rejoin</button>
+          </div>
+        </div>
       </main>
 
-      <section class="captions" data-mode="idle" aria-label="Captions">
-        <div class="cap-meta">
-          <span class="cap-tag" hidden></span>
-          <span class="cap-hint" hidden></span>
-          <span class="cap-user" hidden>
-            <svg class="ico-mic" viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                fill="currentColor"
-                d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"
-              />
+      <aside class="side" aria-label="Participants and chat">
+        <div class="people" aria-label="Participants">
+          <article class="tile tile-relay" data-speaking="false">
+            <ol class="ticker" aria-label="Tool calls"></ol>
+            <div class="avatar">
+              <span class="ring" aria-hidden="true"></span
+              ><span class="avatar-face"
+                ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10.5v3" /></svg
+              ></span>
+            </div>
+            <span class="tile-status">Waiting</span>
+            <div class="nameplate">
+              <span class="mic-ico" data-muted="false"
+                ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="9" y="3" width="6" height="11" rx="3" />
+                  <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" />
+                  <path class="slash" d="M4.5 3.5l15 17" /></svg
+              ></span>
+              <span class="name">Relay</span><span class="role">AI co-presenter</span>
+            </div>
+          </article>
+          <article class="tile tile-you" data-speaking="false">
+            <div class="avatar">
+              <span class="ring" aria-hidden="true"></span><span class="avatar-face"><span class="avatar-text">Y</span></span>
+            </div>
+            <span class="tile-status"></span>
+            <p class="tile-hint" role="status" hidden>You're muted. Press Space or click Unmute to talk to Relay.</p>
+            <div class="nameplate">
+              <span class="mic-ico" data-muted="true"
+                ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="9" y="3" width="6" height="11" rx="3" />
+                  <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" />
+                  <path class="slash" d="M4.5 3.5l15 17" /></svg
+              ></span>
+              <span class="name">You</span><span class="role">host</span>
+            </div>
+          </article>
+        </div>
+        <section class="chat" aria-label="Meeting chat" hidden>
+          <header class="chat-head">
+            <h2 class="chat-title">Meeting chat</h2>
+            <button type="button" class="chat-close" aria-label="Close the chat" title="Close">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            </button>
+          </header>
+          <ol class="chat-log" aria-live="polite"></ol>
+          <form class="chat-compose" autocomplete="off">
+            <label class="sr-only" for="relay-chat-input">Ask Relay</label>
+            <input
+              id="relay-chat-input"
+              class="chat-input"
+              type="text"
+              maxlength="500"
+              spellcheck="false"
+              enterkeyhint="send"
+              placeholder="Ask Relay a question…"
+            />
+            <button type="submit" class="chat-send" aria-label="Send to Relay" title="Send to Relay (Enter)">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 11.5l15-7-6 15-2.5-6zM11 13.5l8.5-9" /></svg>
+            </button>
+          </form>
+        </section>
+      </aside>
+
+      <footer class="toolbar" aria-label="Meeting controls">
+        <div class="toolbar-left">
+          <button type="button" class="tb mic-button" data-muted="true" aria-pressed="false" title="Interrupt Relay and speak (Space)">
+            <svg class="ico ico-mic-on" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
             </svg>
-            <span class="cap-user-text"></span>
-          </span>
+            <svg class="ico ico-mic-off" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
+              <path class="slash" d="M4.5 3.5l15 17" />
+            </svg>
+            <span class="tb-label">Unmute</span>
+          </button>
         </div>
-        <div class="cap-main">
-          <p class="cap-narration"><span class="cap-words"></span></p>
-          <p class="cap-live empty"><span class="cap-live-text"></span></p>
+        <div class="toolbar-center">
+          <button type="button" class="tb people-button" aria-pressed="true" title="Show or hide the participants">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="9" cy="8.5" r="3.2" />
+              <path d="M3.5 19.5c.5-3.4 2.7-5.5 5.5-5.5s5 2.1 5.5 5.5M15.5 5.6a3 3 0 0 1 0 5.8M17.5 14.4c1.7.6 2.7 2.4 3 5.1" />
+            </svg>
+            <span class="tb-label">Participants</span>
+          </button>
+          <button type="button" class="tb chat-button" aria-pressed="false" title="Meeting chat">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16V16H10l-4.5 3.5V16H4z" /></svg>
+            <span class="tb-label">Chat</span><span class="tb-badge" hidden>0</span>
+          </button>
+          <button type="button" class="tb cc-button" aria-pressed="true" title="Show or hide the captions">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="14" rx="2.5" />
+              <path d="M10.6 10a2.3 2.3 0 1 0 0 4M16.6 10a2.3 2.3 0 1 0 0 4" />
+            </svg>
+            <span class="tb-label">Captions</span>
+          </button>
+          <button type="button" class="tb prev-button" title="Previous slide (←)">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6l-6 6 6 6" /></svg>
+            <span class="tb-label">Previous</span>
+          </button>
+          <button type="button" class="tb next-button" title="Next slide (→)">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6" /></svg>
+            <span class="tb-label">Next</span>
+          </button>
+          <div class="more">
+            <button type="button" class="tb more-button" aria-haspopup="menu" aria-expanded="false" title="More">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                <circle class="fill" cx="6" cy="12" r="1.3" />
+                <circle class="fill" cx="12" cy="12" r="1.3" />
+                <circle class="fill" cx="18" cy="12" r="1.3" />
+              </svg>
+              <span class="tb-label">More</span>
+            </button>
+            <div class="more-menu" role="menu" aria-label="More" hidden>
+              <button type="button" role="menuitem" data-action="pause"><span>Pause or resume Relay</span><kbd>P</kbd></button>
+              <button type="button" role="menuitem" data-action="human">
+                <span>Give the floor to <span class="presenter-name">the presenter</span></span><kbd>H</kbd>
+              </button>
+              <button type="button" role="menuitem" data-action="relay"><span>Back to Relay</span><kbd>R</kbd></button>
+              <button type="button" role="menuitem" data-action="prev"><span>Previous slide</span><kbd>←</kbd></button>
+              <button type="button" role="menuitem" data-action="next"><span>Next slide</span><kbd>→</kbd></button>
+              <button type="button" role="menuitem" data-action="type"><span>Type a question</span><kbd>T</kbd></button>
+              <button type="button" role="menuitem" data-action="checklist"><span>Audio and connection check</span></button>
+              <button type="button" role="menuitem" data-action="info"><span>Meeting info</span><kbd>I</kbd></button>
+            </div>
+          </div>
         </div>
-      </section>
+        <div class="toolbar-right">
+          <button type="button" class="leave-button" title="Stop Relay: the presenter has the floor (H)">Leave</button>
+        </div>
+      </footer>
     </div>
 
     <form class="typed" autocomplete="off" hidden>
@@ -88,12 +274,13 @@
     <div class="overlay" role="dialog" aria-modal="true" aria-labelledby="relay-overlay-title">
       <div class="panel">
         <header class="panel-head">
-          <h1 id="relay-overlay-title">Relay</h1>
-          <p class="panel-sub">Pre-show check</p>
+          <p class="panel-kicker">Join the meeting</p>
+          <h1 id="relay-overlay-title" class="panel-title">Relay</h1>
+          <p class="panel-sub">Relay presents · the presenter hosts</p>
         </header>
         <ul class="checklist">
           <li data-item="server" data-status="working">
-            <span class="ic" aria-hidden="true"></span><span class="label">Server connected</span
+            <span class="ic" aria-hidden="true"></span><span class="label">Connected to Relay</span
             ><span class="detail">connecting…</span>
           </li>
           <li data-item="talk" data-status="working">
@@ -101,35 +288,38 @@
             ><span class="detail">loading…</span>
           </li>
           <li data-item="audio" data-status="pending">
-            <span class="ic" aria-hidden="true"></span><span class="label">Audio unlocked</span
-            ><span class="detail">on Arm</span>
+            <span class="ic" aria-hidden="true"></span><span class="label">Speaker</span
+            ><span class="detail">when you join</span>
           </li>
           <li data-item="mic" data-status="pending">
             <span class="ic" aria-hidden="true"></span><span class="label">Microphone</span
-            ><span class="detail">on Arm</span><span class="meter" aria-hidden="true"><span class="meter-fill"></span></span>
+            ><span class="detail">when you join</span><span class="meter" aria-hidden="true"><span class="meter-fill"></span></span>
           </li>
           <li data-item="narration" data-status="pending">
-            <span class="ic" aria-hidden="true"></span><span class="label">Narration preloaded</span
-            ><span class="detail">on Arm</span>
+            <span class="ic" aria-hidden="true"></span><span class="label">Backup narration</span
+            ><span class="detail">when you join</span>
           </li>
           <li data-item="realtime" data-status="pending">
-            <span class="ic" aria-hidden="true"></span><span class="label">Realtime ready</span
+            <span class="ic" aria-hidden="true"></span><span class="label">Higgs Realtime</span
             ><span class="detail">waiting for the server</span>
           </li>
         </ul>
         <div class="panel-actions">
-          <button type="button" class="arm-button" autofocus>Arm</button>
-          <button type="button" class="done-button" hidden>Hide checklist</button>
-          <p class="panel-hint">Arm unlocks audio, asks for the mic, loads the narration and checks Realtime.</p>
+          <button type="button" class="arm-button" autofocus>Join with Computer Audio</button>
+          <button type="button" class="done-button" hidden>Close</button>
+          <p class="panel-hint">
+            Joining turns on the speaker, asks for the microphone, loads the backup narration and checks Higgs Realtime.
+          </p>
         </div>
         <dl class="keys" aria-label="Presenter keys">
-          <div><dt><kbd>Space</kbd></dt><dd>talk / cut in, again to send</dd></div>
+          <div><dt><kbd>Space</kbd></dt><dd>talk to Relay, again to send</dd></div>
           <div><dt><kbd>Esc</kbd></dt><dd>cancel the turn</dd></div>
           <div><dt><kbd>→</kbd> <kbd>←</kbd></dt><dd>next / previous slide</dd></div>
           <div><dt><kbd>P</kbd></dt><dd>pause</dd></div>
-          <div><dt><kbd>H</kbd></dt><dd>human has the floor</dd></div>
+          <div><dt><kbd>H</kbd></dt><dd>presenter has the floor</dd></div>
           <div><dt><kbd>R</kbd></dt><dd>back to Relay</dd></div>
           <div><dt><kbd>T</kbd></dt><dd>type a question</dd></div>
+          <div><dt><kbd>I</kbd></dt><dd>meeting info</dd></div>
         </dl>
       </div>
     </div>

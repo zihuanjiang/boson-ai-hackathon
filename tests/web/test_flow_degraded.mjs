@@ -88,6 +88,11 @@ try {
   eq("narration: one chunk failed", $('[data-item="narration"]').dataset.status, "fail");
   check("failures reported to the server log", sent("log").length >= 3, JSON.stringify(sent("log")));
   check("log levels are warnings", sent("log").every((m) => m.level === "warning"));
+  advance(1000);
+  check("with a failing check the join dialog stays up", !$(".overlay").hidden);
+  eq("…and its second button says Join anyway", [$(".done-button").hidden, $(".done-button").textContent], [false, "Join anyway"]);
+  $(".done-button").fire("click");
+  eq("Join anyway closes it (and is Close from then on)", [$(".overlay").hidden, $(".done-button").textContent], [true, "Close"]);
 
   // keys still work
   space();

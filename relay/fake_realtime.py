@@ -11,6 +11,11 @@ transcript and one function call chosen from the session instructions:
     Phase: opening → start_presentation · Phase: qa → handoff_to_human ·
     user text naming a relay slide id → goto_slide · otherwise → resume_script
 
+A live narration request (`response.create` whose `response.metadata.relay` is "narration", D52) gets ~2.4 s of tone
+(`narration_s`), the transcript "(fake) Live narration of slide <metadata.slide>." and no function call. Like Higgs,
+`response.created` echoes the request's `metadata` (`response.done` carries null); the other `response` fields
+(`instructions`, `tool_choice`, `tools`) are accepted silently.
+
 Mic (turn detection on): ≥ 0.3 s of appended audio since the last `clear` → `speech_started`; ≥ 1.5 s →
 `speech_stopped`, `committed`, transcript "(fake) I heard you.", then the reply (one turn per `clear`). With
 `turn_detection: null`, `commit` + `response.create` replies; so does `conversation.item.create` + `response.create`.
@@ -52,6 +57,7 @@ DELTA_SAMPLES = RATE * DELTA_MS // 1000  # 480 samples per response.output_audio
 MAX_APPEND_B64 = 1 << 20  # Higgs: ≤ 1 MiB of base64 per input_audio_buffer.append
 MIN_COMMIT_MS = 100
 FAKE_TRANSCRIPT = "(fake) I heard you."
+NARRATION_TEXT = "(fake) Live narration of slide {slide}."
 INVALID_SESSION_CLOSE = 1008
 VAD_TYPES = ("server_vad", "semantic_vad")
 PCM_RATES = (8000, 16000, 24000, 48000)
@@ -80,6 +86,7 @@ def _new_id(prefix: str) -> str:
 class FakeOptions:
     speed: float = 6.0  # reply audio arrives this many times faster than real time (Higgs: ~6×)
     reply_s: float = 1.2  # audio length of every reply
+    narration_s: float = 2.4  # audio length of a live narration (a response.create tagged "narration")
     think_s: float = 0.35  # end of the user turn → response.created
     speech_start_s: float = 0.3  # appended audio before speech_started
     speech_stop_s: float = 1.5  # appended audio before speech_stopped (end of turn)
@@ -248,6 +255,8 @@ class _Reply:
     item_id: str
     call_id: str | None
     call_item_id: str | None
+    audio_s: float  # how much audio it streams
+    metadata: dict | None = None  # the request's, echoed on response.created
     text_mode: bool = False
     created: bool = False  # response.created went out
     said: str = ""  # transcript sent so far
@@ -583,7 +592,11 @@ class FakeRealtimeConn:
                         event)
             return
         overrides = event.get("response") if isinstance(event.get("response"), dict) else {}
-        self._start_response(overrides.get("instructions"))
+        metadata = overrides.get("metadata") if isinstance(overrides.get("metadata"), dict) else None
+        if metadata is not None and metadata.get("relay") == "narration":
+            self._start_narration(metadata)
+        else:
+            self._start_response(overrides.get("instructions"), metadata)
 
     def _on_response_cancel(self, event: dict) -> None:
         if self._response is None:  # Higgs's documented code (api-realtime-client-events.md, response.cancel)
@@ -593,25 +606,35 @@ class FakeRealtimeConn:
 
     # --- generating a reply -----------------------------------------------------------------------------------
 
-    def _start_response(self, instructions: str | None = None) -> None:
+    def _start_response(self, instructions: str | None = None, metadata: dict | None = None) -> None:
         session = self.session or {}
         tool, args, text = choose_reply(instructions or session.get("instructions") or "", self._user_text,
                                         session.get("tools") or [])
-        reply = _Reply(id=self._new_id("resp"), tool=tool, args=args, text=text, item_id=self._new_id("item"),
-                       call_id=self._new_id("call") if tool else None,
-                       call_item_id=self._new_id("item") if tool else None,
-                       text_mode=session.get("output_modalities") == ["text"])
+        self._begin(_Reply(id=self._new_id("resp"), tool=tool, args=args, text=text, item_id=self._new_id("item"),
+                           call_id=self._new_id("call") if tool else None,
+                           call_item_id=self._new_id("item") if tool else None, audio_s=self.options.reply_s,
+                           metadata=metadata))
+
+    def _start_narration(self, metadata: dict) -> None:
+        """A live narration request: the slide "presented" as tone, never a tool call."""
+        self._begin(_Reply(id=self._new_id("resp"), tool=None, args={},
+                           text=NARRATION_TEXT.format(slide=metadata.get("slide")), item_id=self._new_id("item"),
+                           call_id=None, call_item_id=None, audio_s=self.options.narration_s, metadata=metadata))
+
+    def _begin(self, reply: _Reply) -> None:
+        reply.text_mode = (self.session or {}).get("output_modalities") == ["text"]
         self._response = reply
         reply.task = self._spawn(self._play(reply))
 
     def _response_obj(self, reply: _Reply, status: str, output: list[dict]) -> dict:
+        """The response object; only response.created (status in_progress) echoes the request's metadata."""
         session = self.session or {}
         return {"object": "realtime.response", "id": reply.id, "status": status, "status_details": None,
                 "output": output, "conversation_id": self._conversation_id,
                 "output_modalities": session.get("output_modalities", ["audio"]),
                 "max_output_tokens": session.get("max_output_tokens", "inf"),
                 "audio": {"output": copy.deepcopy(session.get("audio", {}).get("output", {}))},
-                "usage": None, "metadata": None}
+                "usage": None, "metadata": copy.deepcopy(reply.metadata) if status == "in_progress" else None}
 
     async def _play(self, reply: _Reply) -> None:
         options = self.options
@@ -628,7 +651,7 @@ class FakeRealtimeConn:
         part = "text" if reply.text_mode else "audio"
         self._emit("response.content_part.added", **where, part={"type": part, "transcript": ""})
         words = reply.text.split()
-        count = max(1, round(options.reply_s * 1000 / DELTA_MS))
+        count = max(1, round(reply.audio_s * 1000 / DELTA_MS))
         text_delta = "response.output_text.delta" if reply.text_mode else "response.output_audio_transcript.delta"
         sent = 0
         for index in range(count):

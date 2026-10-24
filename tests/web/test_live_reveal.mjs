@@ -2,7 +2,9 @@
 // browser) is wired to the REAL pcm-player worklet processor and run one 128-sample render quantum at a time, while
 // the server side replays Higgs-like delivery: 20 ms audio deltas sent ahead of real time (or stalling), and the
 // accumulated transcript arriving word by word, a sentence at a time before its audio, all at once, or after its
-// audio. The caption must never run ahead of the voice, and a cut must freeze on the words heard.
+// audio. The caption must never run ahead of the voice, and a cut must freeze on the words heard. The caption shows
+// one page at a time (util.livePage: the current sentence, and the one before when both fit), so every word here
+// carries its index ("7:actor") and the test reads the newest word on screen, not the number of words.
 //   jsc -m tests/web/test_live_reveal.mjs [-- -v]   (from the repo root; tests/web/run.sh runs everything)
 import { advance, clock, env, install, settle } from "./fake_browser.mjs";
 
@@ -64,7 +66,12 @@ const pumpToMain = () => {
   while (toMain < proc.port.posted.length) node.emit(proc.port.posted[toMain++]);
 };
 const liveText = () => doc.querySelector(".cap-live-text").textContent;
-const countWords = (s) => s.replace(/ —$/, "").split(/\s+/).filter(Boolean).length;
+/** Words revealed so far = 1 + the index of the newest word on screen (0 for an empty caption). */
+const revealed = (s) => {
+  const last = s.replace(/ —$/, "").split(/\s+/).filter(Boolean).at(-1);
+  return last ? Number(last.split(":")[0]) + 1 : 0;
+};
+const PAGE_CHARS = 120; // Captions.liveChars() in the fake browser: 1100 px wide, 31 px text, 1.7 lines
 
 // ---- the reply: the brief's plain-language answer, ~3.75 words/s
 const SENTENCES = [
@@ -72,7 +79,7 @@ const SENTENCES = [
   "Think of me as an actor with a script and an earpiece: the script is rehearsed, the earpiece lets Ken cut in anytime, and I always know which line I stopped on.",
   "As I was saying.",
 ];
-const ALL = SENTENCES.join(" ").split(" ");
+const ALL = SENTENCES.join(" ").split(" ").map((word, i) => `${i}:${word}`);
 const N = ALL.length;
 const DELTA = 480; // samples per audio delta (20 ms)
 const TOTAL = Math.round(((N / 3.75) * 24000) / DELTA) * DELTA;
@@ -129,8 +136,8 @@ function textAfter(i, text) {
 
 let replyId = 0;
 /**
- * Replay one reply; returns the worst lead (words shown − words heard), the worst lag (known words heard 150 ms ago
- * but not shown) and, with `cutAt` (ms), what the cut froze.
+ * Replay one reply; returns the worst lead (words revealed − words heard), the worst lag (known words heard 150 ms
+ * ago but not revealed), the longest page shown and, with `cutAt` (ms), what the cut froze.
  */
 function scenario({ audio, text, cutAt = null }) {
   const reply = ++replyId;
@@ -154,6 +161,7 @@ function scenario({ audio, text, cutAt = null }) {
   let played = 0;
   let lead = 0;
   let lag = 0;
+  let page = 0;
   /** @type {{heard: number, frozen: string, keyMs: number}|null} */
   let cut = null;
   const endAt = TOTAL / 24 + 800;
@@ -182,7 +190,8 @@ function scenario({ audio, text, cutAt = null }) {
     proc.process([], [[new Float32Array(128)]]);
     if (proc.reply === reply) played = proc.played;
     pumpToMain();
-    const shown = countWords(liveText());
+    const shown = revealed(liveText());
+    page = Math.max(page, liveText().length);
     const heard = Math.max(0, played - LATENCY);
     lead = Math.max(lead, shown - idealWords(heard));
     const heardLate = Math.max(0, played - LATENCY - 0.15 * 24000);
@@ -196,7 +205,7 @@ function scenario({ audio, text, cutAt = null }) {
     pumpToMain();
     advance(QMS);
   }
-  return { lead, lag, cut, final: liveText() };
+  return { lead, lag, page, cut, final: liveText() };
 }
 
 // ---- no cut: the caption never runs ahead of the voice, and doesn't fall far behind what is known
@@ -212,10 +221,11 @@ for (const [audio, text] of [
   ["slowstart", "late"],
 ]) {
   const r = scenario({ audio, text });
-  if (VERBOSE) print(`${audio}/${text}: lead ${r.lead}, lag ${r.lag}`);
+  if (VERBOSE) print(`${audio}/${text}: lead ${r.lead}, lag ${r.lag}, longest page ${r.page} chars`);
   check(`${audio} audio, ${text} text: never ahead of the voice (≤ the word being said)`, r.lead <= 1, `${r.lead} words ahead`);
   check(`${audio} audio, ${text} text: keeps up with what is known`, r.lag <= 2, `${r.lag} words behind`);
-  check(`${audio} audio, ${text} text: the whole reply once it played`, countWords(r.final) === N, r.final);
+  check(`${audio} audio, ${text} text: up to the last word once it played`, revealed(r.final) === N, r.final);
+  check(`${audio} audio, ${text} text: one page at a time (≤ ${PAGE_CHARS} chars)`, r.page <= PAGE_CHARS, `${r.page} chars`);
 }
 
 // ---- a tap cuts the reply: the frozen caption holds the words heard (what conversation.item.truncate keeps)
@@ -228,9 +238,9 @@ for (const [audio, text, cutAt] of [
   const r = scenario({ audio, text, cutAt });
   const c = /** @type {{heard: number, frozen: string, keyMs: number}} */ (r.cut);
   const ideal = idealWords(c.heard);
-  if (VERBOSE) print(`cut ${audio}/${text} @${cutAt}: froze ${countWords(c.frozen)}, heard ${ideal}, key ${c.keyMs} ms vs ${Math.round(c.heard / 24)} ms`);
+  if (VERBOSE) print(`cut ${audio}/${text} @${cutAt}: froze at ${revealed(c.frozen)}, heard ${ideal}, key ${c.keyMs} ms vs ${Math.round(c.heard / 24)} ms`);
   check(`cut at ${cutAt} ms (${audio}, ${text}): ends in a dash`, / —$/.test(c.frozen), JSON.stringify(c.frozen));
-  check(`cut at ${cutAt} ms (${audio}, ${text}): frozen on the words heard`, countWords(c.frozen) <= ideal + 1 && countWords(c.frozen) >= Math.min(1, ideal), `froze ${countWords(c.frozen)} words, ${ideal} heard: ${JSON.stringify(c.frozen)}`);
+  check(`cut at ${cutAt} ms (${audio}, ${text}): frozen on the words heard`, revealed(c.frozen) <= ideal + 1 && revealed(c.frozen) >= Math.min(1, ideal), `froze at word ${revealed(c.frozen)}, ${ideal} heard: ${JSON.stringify(c.frozen)}`);
   check(`cut at ${cutAt} ms (${audio}, ${text}): reply_played_ms matches what was heard`, Math.abs(c.keyMs - c.heard / 24) <= 12, `${c.keyMs} ms vs ${Math.round(c.heard / 24)} ms`);
 }
 

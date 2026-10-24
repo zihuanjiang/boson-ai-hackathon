@@ -77,8 +77,14 @@ start of its sentence for the resume. Details: `doc/design.md`.
 | D49 | No server-side web search (Ken): Q&A stays grounded in `kb.md`; server-executed calls (`executor: "server"`, reserved `web_search`) are never run, shown or answered | brief scope; predictable on stage; a stray server call must not be rejected and answered |
 | D50 | The Realtime model is a setting: `BOSON_REALTIME_MODEL` (default `higgs-realtime`) | the tutorial's `realtime-1.5-preview` branch uses `higgs-realtime-1.5-preview`, which our key can't use yet ("not available on this endpoint"); switching must be one line |
 | D51 | `render_version` also covers each chunk's word timings | a forced re-render of the same text can keep every length but not its timings, and the deck must reload then |
+| D52 | **Relay presents live** (Ken, 2026-10-23 evening: "Relay should be always real-time"): every Relay slide is presented through the warm Realtime session, in Relay's own words, from that slide's notes (the `say` lines), by a `response.create` with per-response instructions; interruptions are turns of the same conversation; `RELAY_NARRATION=rendered` keeps the old behaviour | one model and one voice for everything Relay says; live probes: per-response instructions work, first audio 0.3–0.5 s, a slide in its own words (`doc/gotchas.md`) |
+| D53 | The TTS 3 renders stay as the **offline backup** (Ken), chosen when a slide starts: live if the link is ready, else that slide's pre-rendered narration; a live narration that breaks before any audio (or twice in a row) falls back to it | the talk never goes silent on bad Wi-Fi; the backup reuses the whole rendered path (word timings, exact resume) |
+| D54 | Voice `default` for Realtime and the backup render (Ken; supersedes D48) | never voice-validated (no 429 bursts on reconnects), lowest latency measured (307 ms) |
+| D55 | The deck is a **video-meeting page** (Ken): slides as the shared screen, Relay and You tiles, meeting captions, a toolbar, chat, a join dialog; the status strip is a hidden "Meeting info" panel (I key) | it must look like a Zoom call, not a control panel |
+| D56 | The audience is a real person at the mic (Ken): no synthesized voices; floor control stays tap-to-talk (Space or the toolbar's Unmute) | real voice input; hands-free barge-in would need echo-free audio |
+| D57 | Opening watchdog: an opening reply that was heard but called no tool counts down 1.5 s and starts the presentation itself (ticker `auto`) | extends D46; the probe's opening greeting skipped `start_presentation` in 1 of 4 runs |
 
-## Decided (Ken): the Relay voice is chloe
+## Decided earlier (Ken): the Relay voice was chloe (superseded by D54: `default`)
 
 F1 clips of all four candidates are in `out/verify/voices/`. From the 17:35 live run (`doc/gotchas.md`):
 

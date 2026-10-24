@@ -1,8 +1,9 @@
 // @ts-check
 /**
- * What the room and the presenter see besides the slides (doc/design.md §8): the status strip (state, phase,
- * slide/chunk, mic meter, Realtime dot, reply latency, tool ticker, MIC_MODE, fake-audio badge), the banner with
- * the resume countdown, error toasts, and the Arm overlay's pre-show checklist.
+ * The presenter's readouts besides the meeting window itself (doc/design.md §8): the status strip, now the hidden
+ * "Meeting info" panel (state, phase, slide/chunk, mic meter, Realtime dot, reply latency, MIC_MODE, fake-audio and
+ * server badges), the tool ticker under the Relay tile, the banner with the countdown, error toasts, and the join
+ * dialog's checklist (the pre-show check behind "Join with Computer Audio").
  */
 import { formatMs, toolLabel } from "./util.js";
 
@@ -16,8 +17,8 @@ const STATE_LABELS = {
 };
 /** @type {Record<string, string>} */
 const PHASE_LABELS = { opening: "Opening", presenting: "Presenting", qa: "Q&A", human: "Human" };
-/** @type {Record<string, string>} */
-const RT_LABELS = {
+/** @type {Record<string, string>} Higgs Realtime link statuses, as words */
+export const RT_LABELS = {
   offline: "offline",
   connecting: "connecting…",
   ready: "ready",
@@ -38,14 +39,17 @@ function part(root, selector) {
 }
 
 export class StatusStrip {
-  /** @param {HTMLElement} root  the strip */
-  constructor(root) {
+  /**
+   * @param {HTMLElement} root  the strip (the meeting info panel)
+   * @param {HTMLElement} ticker  the tool ticker (under the Relay tile)
+   */
+  constructor(root, ticker) {
     this.root = root;
     this.badge = part(root, ".state-badge");
     this.badgeText = part(root, ".state-text");
     this.phaseEl = part(root, ".phase");
     this.whereEl = part(root, ".where");
-    this.ticker = part(root, ".ticker");
+    this.ticker = ticker;
     this.latencyEl = part(root, ".latency-value");
     this.meter = part(root, ".meter");
     this.rt = part(root, ".rt");
@@ -159,7 +163,7 @@ export class StatusStrip {
   }
 }
 
-const BANNER_HOLD_MS = 8000; // a banner announces a change, then fades: the strip keeps the state
+const BANNER_HOLD_MS = 8000; // a banner announces a change, then fades: the Relay tile keeps the state
 
 export class Banner {
   /** @param {HTMLElement} el */
@@ -248,10 +252,37 @@ export class Toasts {
 /** @typedef {"pending"|"working"|"ok"|"warn"|"fail"} CheckStatus */
 
 export class Checklist {
-  /** @param {HTMLElement} root  the Arm overlay */
+  /** @param {HTMLElement} root  the join dialog (the Arm overlay) */
   constructor(root) {
     this.root = root;
+    this.titleEl = part(root, ".panel-title");
+    this.subEl = part(root, ".panel-sub");
     this.meterEl = root.querySelector(".checklist .meter");
+  }
+
+  /**
+   * The dialog's heading: the talk, and who presents and hosts it.
+   * @param {string} title
+   * @param {string} sub
+   */
+  heading(title, sub) {
+    this.titleEl.textContent = title;
+    this.subEl.textContent = sub;
+  }
+
+  /**
+   * Rename a row (the narration row says whether it is the narration or the backup).
+   * @param {string} item
+   * @param {string} text
+   */
+  label(item, text) {
+    const el = this.root.querySelector(`[data-item="${item}"] .label`);
+    if (el) el.textContent = text;
+  }
+
+  /** Is any row failing? (Then the dialog stays up after joining, and says "Join anyway".) */
+  failing() {
+    return this.root.querySelector('.checklist [data-status="fail"]') !== null;
   }
 
   /**

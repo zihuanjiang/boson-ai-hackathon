@@ -14,6 +14,8 @@ from websockets.exceptions import ConnectionClosed, ConnectionClosedError, Conne
 from relay.config import Settings
 from relay.fake_realtime import (FAKE_TRANSCRIPT, FakeConnector, FakeOptions, FakeRealtimeConn, choose_reply,
                                  fake_connect)
+
+NARRATION = {"relay": "narration", "reply": "4", "slide": "how"}
 from relay.realtime import RealtimeLink
 
 URL = "wss://api.boson.ai/v1/realtime?model=higgs-realtime"
@@ -320,6 +322,53 @@ async def test_reuse_ids_numbers_ids_per_connection_like_a_per_session_server(re
         assert sessions[0][0][0] == "resp_fake000001" and sessions[0][0][2] == "call_fake000001"
     else:  # the default: no id ever repeats in this process
         assert not {*sessions[0][0], *sessions[0][1]} & {*sessions[1][0], *sessions[1][1]}
+
+
+async def test_a_narration_request_gets_tone_and_a_transcript_never_a_tool_call() -> None:
+    """D52: a response.create tagged as a narration presents the slide; created echoes the metadata, done doesn't."""
+    conn = await open_session("opening")  # the phase that would otherwise call start_presentation
+    await send(conn, {"type": "response.create", "response": {
+        "instructions": "Now present slide 1 of 2.", "metadata": NARRATION, "tool_choice": "none", "tools": []}})
+    events = await read_until(conn, "response.done")
+    assert "error" not in types(events)  # every `response` field is accepted silently
+    created = events[types(events).index("response.created")]
+    assert created["response"]["metadata"] == NARRATION
+    deltas = [event for event in events if event["type"] == "response.output_audio.delta"]
+    assert len(deltas) == 120  # 2.4 s in 20 ms deltas
+    said = "".join(event["delta"] for event in events if event["type"] == "response.output_audio_transcript.delta")
+    assert said == "(fake) Live narration of slide how."
+    assert "response.function_call_arguments.done" not in types(events)
+    done = events[-1]["response"]
+    assert done["metadata"] is None and done["status"] == "completed"
+    assert [item["type"] for item in done["output"]] == ["message"]
+    assert done["output"][0]["content"] == [{"type": "output_audio", "transcript": said}]
+
+
+async def test_a_narration_is_cancellable_and_its_length_is_a_knob() -> None:
+    steps = Steps(free=4)  # think + 3 deltas, then the stream freezes
+    conn = await open_session("presenting", options=FakeOptions(sleep=steps, drop_after=0))
+    await send(conn, {"type": "response.create", "response": {"metadata": NARRATION}})
+    events = await read_until(conn, "response.created")
+    while len([event for event in events if event["type"] == "response.output_audio.delta"]) < 4:
+        events.append(json.loads(await conn.recv()))
+    await send(conn, {"type": "response.cancel"})
+    done = (await read_until(conn, "response.done"))[-1]["response"]
+    assert done["status"] == "cancelled" and done["metadata"] is None
+    short = await open_session("presenting", options=FakeOptions(sleep=instant, drop_after=0, narration_s=0.1))
+    await send(short, {"type": "response.create", "response": {"metadata": NARRATION}})
+    events = await read_until(short, "response.done")
+    assert sum(event["type"] == "response.output_audio.delta" for event in events) == 5
+
+
+async def test_metadata_of_any_request_is_echoed_and_an_untagged_one_still_replies() -> None:
+    conn = await open_session("presenting")
+    await send(conn, {"type": "response.create", "response": {"metadata": {"purpose": "probe"}}})
+    events = await read_until(conn, "response.done")
+    assert events[types(events).index("response.created")]["response"]["metadata"] == {"purpose": "probe"}
+    assert events[-1]["response"]["output"][-1]["name"] == "resume_script"  # an ordinary reply, with its tool
+    await send(conn, {"type": "response.create"})
+    events = await read_until(conn, "response.done")
+    assert events[types(events).index("response.created")]["response"]["metadata"] is None
 
 
 async def test_response_create_while_one_is_active_is_an_error() -> None:

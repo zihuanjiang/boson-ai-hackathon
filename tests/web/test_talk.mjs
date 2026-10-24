@@ -85,6 +85,15 @@ eq("chunk by index", T.chunkOf(talk.slides[1], 2)?.text, "E f.");
 eq("chunk missing", [T.chunkOf(talk.slides[1], 7), T.chunkOf(null, 0)], [null, null]);
 eq("chunk key", T.chunkKey("how", 2), "how/2");
 
+// narration mode (contract §2: /api/talk `narration_mode`): an older server never says, and only rendered
+eq("narration mode", [T.normalizeTalk({ narration_mode: "live" }).narration_mode, T.normalizeTalk({ narration_mode: "rendered" }).narration_mode], ["live", "rendered"]);
+eq("narration mode missing or odd → rendered", [talk.narration_mode, T.normalizeTalk({ narration_mode: "LIVE" }).narration_mode], ["rendered", "rendered"]);
+
+// the meeting's talk name: the first slide's title, else the id
+eq("talk title", T.talkTitle(talk), "Relay test talk");
+eq("talk title falls back to the id", T.talkTitle(T.normalizeTalk({ id: "x", slides: [{ id: "a" }] })), "x");
+eq("no talk, no title", T.talkTitle(null), "");
+
 // render version (design §3: /api/talk `version`, the same value as hello.version)
 eq("version kept", T.normalizeTalk({ ...server, version: "3f1c0a9b2d4e" }).version, "3f1c0a9b2d4e");
 eq("no version → empty", [talk.version, T.normalizeTalk({ version: 7 }).version], ["", ""]);

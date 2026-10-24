@@ -466,6 +466,63 @@ export function liveWords(text) {
   return String(text ?? "").split(/\s+/).filter(Boolean);
 }
 
+/**
+ * The page of a live caption to show, words [from, to): the sentence of the newest word heard, plus the sentence
+ * before it when both fit in `maxChars`. The current sentence counts to its end as far as the transcript goes (it
+ * usually runs ahead of the voice), so the earlier sentence doesn't vanish halfway through. A sentence longer than
+ * `maxChars` is split into pages greedily from its start, breaking after a comma once a page is more than half full
+ * (like captionPages); those pages never move as words are added, so a page only grows until the next one replaces
+ * it. This is what keeps a 30-second live narration from filling the caption box.
+ * @param {string[]} words  the transcript so far
+ * @param {number} shown  words heard so far: the page ends with word `shown − 1`
+ * @param {number} maxChars
+ * @returns {{from: number, to: number}}
+ */
+export function livePage(words, shown, maxChars) {
+  const to = Number.isFinite(shown) ? clamp(Math.floor(shown), 0, words.length) : 0;
+  if (to === 0) return { from: 0, to: 0 };
+  /** @param {number} i */
+  const endsSentence = (i) => SENTENCE_END_RE.test(words[i] ?? "");
+  /** @param {number} a @param {number} b */
+  const width = (a, b) => words.slice(a, b).join(" ").length;
+  let start = to - 1;
+  while (start > 0 && !endsSentence(start - 1)) start--;
+  let end = to;
+  while (end < words.length && !endsSentence(end - 1)) end++;
+  if (width(start, end) <= maxChars) {
+    let prev = start;
+    if (prev > 0) {
+      prev--;
+      while (prev > 0 && !endsSentence(prev - 1)) prev--;
+    }
+    return { from: prev < start && width(prev, end) <= maxChars ? prev : start, to };
+  }
+  let from = start;
+  let chars = 0;
+  for (let i = start; i < to; i++) {
+    const w = words[i].length;
+    const softBreak = chars >= maxChars * 0.55 && /[,;:—–]$/.test(words[i - 1] ?? "");
+    if (i > from && (chars + 1 + w > maxChars || softBreak)) {
+      from = i;
+      chars = w;
+    } else {
+      chars += (i > from ? 1 : 0) + w;
+    }
+  }
+  return { from, to };
+}
+
+/** The meeting clock: "04:07", or "1:02:03" past an hour. @param {number} ms */
+export function clockText(ms) {
+  const total = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  /** @param {number} n */
+  const two = (n) => String(n).padStart(2, "0");
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h ? `${h}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
+}
+
 /** Relay never speaks faster than this: the live caption's reveal is capped at it until all the audio is in. */
 export const MAX_WORDS_PER_S = 4;
 

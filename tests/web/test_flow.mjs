@@ -142,6 +142,7 @@ async function run() {
   sock().open();
   eq("hello on open", sock().sent[0], { type: "hello", client: "deck" });
   eq("reveal options", env.revealOptions && {
+    embedded: env.revealOptions.embedded,
     hash: env.revealOptions.hash,
     keyboard: env.revealOptions.keyboard,
     controls: env.revealOptions.controls,
@@ -154,13 +155,18 @@ async function run() {
     width: env.revealOptions.width,
     height: env.revealOptions.height,
     plugins: env.revealOptions.plugins.length,
-  }, { hash: false, keyboard: false, controls: false, progress: true, help: false, overview: false, touch: false,
-    center: true, transition: "slide", width: 1280, height: 720, plugins: 1 });
+  }, { embedded: true, hash: false, keyboard: false, controls: false, progress: true, help: false, overview: false,
+    touch: false, center: true, transition: "slide", width: 1280, height: 720, plugins: 1 });
   check("fake audio badge shown", !$(".fake-badge").hidden);
   eq("talk checklist", $('[data-item="talk"]').dataset.status, "warn");
   eq("server checklist", $('[data-item="server"]').dataset.status, "ok");
-  const armButtons = doc.querySelectorAll("button").filter((b) => !b.hidden && /arm/i.test(b.textContent));
-  eq("exactly one button named like Arm", armButtons.map((b) => b.textContent.trim()), ["Arm"]);
+  // scripts/e2e_chrome.py clicks it by role and name (Playwright: visible buttons whose name contains it)
+  const shown = (el) => {
+    for (let e = el; e && e.tagName; e = e.parentNode) if (e.hidden) return false;
+    return true;
+  };
+  const joinButtons = doc.querySelectorAll("button").filter((b) => shown(b) && /join with computer audio/i.test(b.textContent));
+  eq("exactly one visible Join with Computer Audio button", joinButtons.map((b) => b.textContent.trim()), ["Join with Computer Audio"]);
 
   server({
     type: "hello",

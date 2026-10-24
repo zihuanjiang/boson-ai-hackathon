@@ -1,14 +1,16 @@
 // @ts-check
 /**
- * Relay deck client (doc/design.md §4, §8): boot, the Arm flow (the pre-show checklist), presenter keys, and the
- * dispatch of deck-socket messages to the deck, audio, captions and status strip. The browser never decides what
- * plays next: it plays what the backend sends, does only the local, immediate things on a key (silence now), and
- * reports positions back.
+ * Relay deck client (doc/design.md §4, §8): boot, the join flow (Arm: the pre-show checklist behind "Join with
+ * Computer Audio"), presenter keys and the meeting's controls, and the dispatch of deck-socket messages to the deck,
+ * audio, captions, the meeting window and the info panel. The browser never decides what plays next: it plays what
+ * the backend sends (Relay presenting live and answering arrive as replies; the rendered backup as `play`), does only
+ * the local, immediate things on a key (silence now), and reports positions back.
  */
 import { AudioEngine, Microphone, NarrationPlayer, ReplyPlayer, STOP_FADE_S } from "./audio.js";
 import { Captions } from "./captions.js";
 import { Deck } from "./deck.js";
 import { installKeys } from "./keys.js";
+import { Meeting } from "./meeting.js";
 import { DeckSocket, deckSocketUrl } from "./socket.js";
 import { Banner, Checklist, StatusStrip, Toasts } from "./status.js";
 import {
@@ -20,6 +22,7 @@ import {
   normalizeTalk,
   slideOf as findSlide,
   staleTalk,
+  talkTitle,
 } from "./talk.js";
 import { RATE, backoffMs, int16ToBase64, isNewerReply, meterLevel, toInt } from "./util.js";
 
@@ -29,12 +32,16 @@ import { RATE, backoffMs, int16ToBase64, isNewerReply, meterLevel, toInt } from 
 /** @typedef {import("./talk.js").Talk} Talk */
 /** @typedef {import("./talk.js").TalkSlide} TalkSlide */
 /** @typedef {import("./captions.js").LiveAudio} LiveAudio */
+/** @typedef {import("./meeting.js").ControlAction} ControlAction */
 
 const HOLD_TAIL_MS = 120; // hold mode: send space_up this late, so the last 100 ms mic frame still goes out
 const RENDER_QUANTUM_MS = (128 / RATE) * 1000;
 const RELOAD_DELAY_MS = 1500; // a stale page shows why it reloads for this long first
 const RELOAD_KEY = "relay.staleReload"; // sessionStorage: the mismatch the last automatic reload was for
 const LISTEN_HINTS = { tap: "Space to send · Esc to cancel", hold: "Release Space to send · Esc to cancel" };
+const JOIN_CLOSE_MS = 600; // a join with every check passed closes the dialog by itself, this long after
+const AUDIBLE_LEVEL = 0.1; // without an analyser, Relay's level while narration or a reply is playing
+const JOIN_FIRST = "Click Join with Computer Audio first: it turns on the speaker and the microphone";
 
 const S = {
   /** @type {Talk|null} */
@@ -46,13 +53,19 @@ const S = {
   micOpen: false, // the backend has the mic open: stream frames
   state: "IDLE",
   phase: "opening",
+  /** @type {string|null} live | backup | rendered while NARRATING (null from a server that doesn't say) */
+  narration: null,
   /** @type {string|null} */
   banner: null,
   thinking: false,
   /** @type {unknown} slide from the last state/slide message (id or deck index) */
   slideRef: null,
-  /** @type {{slide: string, chunk: number}|null} the chunk last played (for the status strip) */
+  /** @type {string|number|null} the slide last shown by a `slide` or `play` message */
+  shownSlide: null,
+  /** @type {{slide: string, chunk: number}|null} the chunk last played (for the info panel) */
   lastPlay: null,
+  /** @type {{reply: number, kind: "narration"|"answer"}|null} the last reply_start (an older server sends no kind) */
+  replyKind: null,
   serverUp: false,
 };
 
@@ -67,13 +80,17 @@ const S = {
 /** @type {Banner} */ let banner;
 /** @type {Toasts} */ let toasts;
 /** @type {Checklist} */ let checklist;
+/** @type {Meeting} */ let meeting;
 /** @type {{overlay: HTMLElement, arm: HTMLButtonElement, done: HTMLButtonElement, typedForm: HTMLFormElement, typed: HTMLInputElement}} */
 let ui;
 /** @type {Promise<Talk>} */
 let talkReady;
 /** @type {ReturnType<typeof setTimeout>|undefined} */
 let pendingSpaceUp;
+/** @type {ReturnType<typeof setTimeout>|undefined} */
+let joinClose;
 let raf = 0;
+let levelRaf = 0;
 
 // ---------------------------------------------------------------- helpers
 
@@ -140,7 +157,10 @@ async function loadTalk() {
 function onTalk(talk) {
   S.talk = talk;
   setMicMode(talk.mic_mode);
+  setNarrationMode(talk.narration_mode);
   status.fake(talk.fake_audio);
+  meeting.talk(talk);
+  checklist.heading(talkTitle(talk) || "Relay", `Relay presents · ${talk.presenter} hosts`);
   const chunks = narrationItems(talk).length;
   const relaySlides = talk.slides.filter((s) => s.speaker === "relay").length;
   checklist.set(
@@ -149,7 +169,7 @@ function onTalk(talk) {
     `${talk.id || "?"} · ${talk.slides.length} slides (${relaySlides} Relay) · ${chunks} chunks` +
       (talk.fake_audio ? " · FAKE AUDIO: placeholder tones, not TTS" : ""),
   );
-  if (!S.armed && !S.arming) checklist.set("narration", "pending", `${chunks} chunks, loaded on Arm`);
+  if (!S.armed && !S.arming) checklist.set("narration", "pending", `${chunks} chunks, loaded when you join`);
   updateWhere();
   socket.connect();
 }
@@ -164,6 +184,15 @@ function setMicMode(mode) {
   if (mode !== "tap" && mode !== "hold") return;
   S.micMode = mode;
   status.micMode(mode);
+  meeting.setMicMode(mode);
+}
+
+/**
+ * Live mode: Higgs Realtime presents and the renders are the backup; rendered mode: the renders are the narration.
+ * @param {string} mode
+ */
+function setNarrationMode(mode) {
+  checklist.label("narration", mode === "live" ? "Backup narration" : "Narration");
 }
 
 function updateWhere() {
@@ -178,7 +207,7 @@ function updateWhere() {
   status.where(last && last.slide === slide.id && n ? `${label} · ${last.chunk + 1}/${n}` : label);
 }
 
-// ---------------------------------------------------------------- Arm (pre-show checklist)
+// ---------------------------------------------------------------- joining (Arm: the pre-show checklist)
 
 function onArmClick() {
   if (S.arming || S.armed) return;
@@ -206,7 +235,8 @@ function onArmClick() {
 
 /**
  * Worklets, then the mic (it needs the capture worklet); the narration preloads meanwhile. `arm` goes out once all
- * of it has settled, whatever failed: the checklist says what, and the show can go on with what works.
+ * of it has settled, whatever failed: the checklist says what, and the show can go on with what works. With every
+ * check passed the dialog closes by itself; with a failure it stays, and its second button says "Join anyway".
  * @param {Promise<void>|null} resumed
  * @param {Promise<MediaStream>} micRequest
  */
@@ -241,6 +271,10 @@ async function armFlow(resumed, micRequest) {
   ui.done.hidden = false;
   ui.overlay.classList.add("armed");
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  meeting.join(performance.now());
+  startLevelLoop();
+  if (checklist.failing()) ui.done.textContent = "Join anyway";
+  else joinClose = setTimeout(hideOverlay, JOIN_CLOSE_MS);
 }
 
 /** Fetch + decode every narration chunk, with progress in the checklist. @param {Talk} talk */
@@ -280,7 +314,7 @@ function audioDetail() {
 /** @param {unknown} err */
 function micErrorText(err) {
   const name = err instanceof Error ? err.name : "";
-  if (name === "NotAllowedError") return "blocked: allow the microphone for this page (address bar), reload, Arm again";
+  if (name === "NotAllowedError") return "blocked: allow the microphone for this page (address bar), reload, join again";
   if (name === "NotFoundError") return "no microphone found";
   if (name === "NotReadableError") return "the microphone is busy (another app?)";
   return errText(err);
@@ -294,19 +328,28 @@ function onAudioState(state) {
 }
 
 function hideOverlay() {
+  clearTimeout(joinClose);
   if (!S.armed || ui.overlay.hidden) return;
   ui.overlay.hidden = true;
+  ui.done.textContent = "Close"; // "Join anyway" was for the join itself
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 }
 
 /**
- * A click on the status strip brings the checklist back (mic meter, Realtime, preload), but only while Relay is
- * IDLE with no resume countdown running: a stray click must never cover a running narration, the mic or a reply.
- * (Before Arm the checklist is up anyway.)
+ * The join dialog again, as the audio and connection check (mic meter, Realtime, preload): a click on the info
+ * panel or More → check. Only while Relay is IDLE with no countdown running: a stray click must never cover Relay
+ * presenting, the mic or a reply. (Before joining the dialog is up anyway.) Returns whether it is shown.
  */
 function showOverlay() {
-  if (S.armed && (S.state !== "IDLE" || banner.counting)) return;
+  clearTimeout(joinClose);
+  if (S.armed && (S.state !== "IDLE" || banner.counting)) return false;
   ui.overlay.hidden = false;
+  return true;
+}
+
+/** More → the audio and connection check; says why when it can't open now. */
+function openChecklist() {
+  if (!showOverlay()) toasts.show("The audio and connection check opens while Relay is waiting", "info");
 }
 
 // ---------------------------------------------------------------- presenter keys and the typed box
@@ -355,7 +398,8 @@ function logSilence(action, t0) {
 }
 
 /**
- * A presenter key: do the local, immediate part (design §4), then tell the backend.
+ * A presenter key (or the meeting control that stands for one): do the local, immediate part (design §4), then
+ * tell the backend. Relay presenting live is a reply, so the keys that silence Relay flush the reply player too.
  * @param {Exclude<KeyAction, "type">} action
  * @param {KeyboardEvent|null} event
  */
@@ -368,7 +412,10 @@ function onKeyAction(action, event) {
     hideOverlay(); // Esc over the checklist only closes it: it must not also cut a reply or cancel a countdown
     return;
   }
+  if (action === "esc" && meeting.closeMenus()) return; // likewise over the open More menu
   hideOverlay();
+  meeting.closeMenus();
+  meeting.showLeft(false);
   engine.ensureRunning();
   if (action === "space_up") {
     clearTimeout(pendingSpaceUp);
@@ -394,22 +441,30 @@ function onKeyAction(action, event) {
     case "human":
       silenced = silence();
       break;
-    case "pause":
-      if (narration.stop() !== null) {
+    case "pause": {
+      // Rendered narration stops; Relay presenting live (NARRATING with a reply playing) is flushed.
+      const narrated = narration.stop() !== null;
+      const presented = S.state === "NARRATING" && cutReply();
+      if (narrated || presented) {
         silenced = true;
         stopCaptionLoop();
         captions.freeze();
       }
       break;
+    }
     case "esc":
-      silenced = cutReply();
+      // Esc cancels a turn: it cuts an answer (REPLYING), never Relay presenting (live or rendered).
+      if (S.state === "REPLYING") silenced = cutReply();
       if (S.micOpen) setMicOpen(false);
       break;
     default: // relay: the backend decides
       break;
   }
   if (silenced) logSilence(action, t0);
-  if (action !== "pause") banner.countdown(0); // the backend cancels its countdown on these keys
+  if (action !== "pause") {
+    banner.countdown(0); // the backend cancels its countdown on these keys
+    syncMeeting();
+  }
   sendKey(action, at, reply);
 }
 
@@ -433,6 +488,7 @@ function flushSpaceUp() {
 
 function focusTyped() {
   hideOverlay();
+  meeting.closeMenus();
   ui.typedForm.hidden = false;
   ui.typed.focus();
 }
@@ -443,20 +499,93 @@ function onTypedSubmit(e) {
   const text = ui.typed.value.trim();
   ui.typed.value = "";
   ui.typed.blur();
-  if (!text) return;
+  if (text) sendTyped(text);
+}
+
+/**
+ * A typed question (the T box or the chat box): silence Relay like a tap, then send it.
+ * @param {string} text
+ */
+function sendTyped(text) {
   if (!S.armed || S.reloading) {
-    toasts.show(S.reloading ? "Reloading this page: ask again in a moment" : "Click Arm first", "info");
+    toasts.show(S.reloading ? "Reloading this page: ask again in a moment" : JOIN_FIRST, "info");
     return;
   }
   engine.ensureRunning();
   flushSpaceUp();
+  meeting.showLeft(false);
   const at = narration.position();
   const reply = replies.snapshot();
   silence();
   banner.countdown(0);
+  syncMeeting();
   captions.user(text);
   const sent = send({ type: "typed", text, at, reply: reply?.reply ?? null, reply_played_ms: reply?.played_ms ?? null });
-  if (!sent) toasts.show("Not connected to the Relay server: question not sent");
+  if (sent) meeting.typed(text);
+  else toasts.show("Not connected to the Relay server: question not sent");
+}
+
+// ---------------------------------------------------------------- meeting controls
+
+/**
+ * The toolbar's mic button. Tap mode: a click = Space (interrupt and talk; again = send now). Hold mode: press and
+ * release = Space down and up. Before joining it brings up the join dialog.
+ * @param {"tap"|"down"|"up"} phase
+ */
+function onMicButton(phase) {
+  if (!S.armed) {
+    showOverlay();
+    return;
+  }
+  onKeyAction(phase === "up" ? "space_up" : "space", null);
+}
+
+/** ◀ / ▶ and the More menu's presenter actions. @param {ControlAction} action */
+function onControl(action) {
+  if (!S.armed) {
+    showOverlay();
+    return;
+  }
+  if (action === "type") focusTyped();
+  else onKeyAction(action, null);
+}
+
+/** Leave: Relay stops and the presenter has the floor (the H key), behind a "you left" card. */
+function onLeave() {
+  if (!S.armed) {
+    showOverlay();
+    return;
+  }
+  onKeyAction("human", null);
+  if (!S.reloading) meeting.showLeft(true);
+}
+
+/** The Relay tile follows the backend's state (and a countdown, which comes as its own message). */
+function syncMeeting() {
+  meeting.state({
+    state: S.state,
+    phase: S.phase,
+    narration: S.narration,
+    thinking: S.thinking,
+    banner: S.banner,
+    countdown: banner.counting,
+  });
+}
+
+/** Relay is audible: narration or a reply is playing (the speaking ring's fallback without an analyser). */
+function relayAudible() {
+  return narration.active || (replies.active && replies.received > 0);
+}
+
+/** Every animation frame once joined: Relay's speaking ring and the meeting clock. */
+function levelFrame() {
+  levelRaf = requestAnimationFrame(levelFrame);
+  meeting.outputLevel(engine.analyser ? engine.outputLevel() : relayAudible() ? AUDIBLE_LEVEL : 0);
+  meeting.tick(performance.now());
+}
+
+function startLevelLoop() {
+  if (!levelRaf) levelRaf = requestAnimationFrame(levelFrame);
 }
 
 // ---------------------------------------------------------------- audio callbacks
@@ -467,6 +596,7 @@ function onMicFrame(pcm, rms) {
   status.micLevel(level);
   checklist.meter(level);
   captions.level(level);
+  meeting.micLevel(rms);
   if (S.micOpen && S.armed) socket.sendDroppable({ type: "mic", pcm: int16ToBase64(pcm) });
 }
 
@@ -542,6 +672,7 @@ function stopCaptionLoop() {
 function setMicOpen(open) {
   S.micOpen = open;
   status.micOpen(open);
+  meeting.micOpen(open);
   if (open) captions.listening(S.micMode === "hold" ? LISTEN_HINTS.hold : LISTEN_HINTS.tap);
   else captions.listeningDone();
 }
@@ -551,6 +682,7 @@ function setMicOpen(open) {
 function onSocketOpen() {
   S.serverUp = true;
   status.server(true);
+  meeting.server(true);
   checklist.set("server", "ok", location.host);
   if (S.armed) send({ type: "arm" }); // a restarted server needs to hear it again
 }
@@ -567,10 +699,12 @@ function onSocketClose(info) {
   pendingSpaceUp = undefined;
   if (S.micOpen) setMicOpen(false);
   banner.countdown(0);
+  syncMeeting();
   const detail = info.replaced
     ? "another deck window took over: reload this page to take it back"
     : `disconnected (code ${info.code}), retrying${info.retryMs !== null ? ` in ${info.retryMs} ms` : ""}…`;
   status.server(false, detail);
+  meeting.server(false);
   checklist.set("server", "fail", detail);
   if (info.replaced) toasts.show("Another deck window took over. Reload this page to take it back.");
   else if (wasUp) toasts.show("Lost the Relay server: reconnecting…");
@@ -590,8 +724,8 @@ const HANDLERS = new Map([
   ["reply_end", (m) => replies.end(toInt(m.reply, null))],
   ["reply_flush", onReplyFlush],
   ["caption", onCaption],
-  ["tool", (m) => status.tool(m)],
-  ["countdown", (m) => banner.countdown(/** @type {number} */ (toInt(m.seconds, 0)))],
+  ["tool", onTool],
+  ["countdown", onCountdown],
   ["connection", onConnection],
   ["metric", onMetric],
   ["error", (m) => toasts.show(String(m.message ?? "Something went wrong"))],
@@ -622,7 +756,7 @@ function tryStorage(fn) {
 /**
  * The server presents another talk, or the same talk with other slides or narration (re-rendered or edited, then
  * restarted): this page's slides, word timings and decoded audio are stale. Silence everything, say why, and reload
- * (the Arm checklist then asks for Arm again). A mismatch that survives a reload is the server disagreeing with
+ * (the join dialog then asks to join again). A mismatch that survives a reload is the server disagreeing with
  * itself, not a stale page: warn and carry on rather than reload in a loop.
  * @param {"talk"|"version"} why
  * @param {string} serverKey  "<talk>@<version>" from the hello
@@ -636,7 +770,7 @@ function onStaleTalk(why, serverKey) {
     if (!again) sessionStorage.setItem(RELOAD_KEY, mismatch);
   });
   if (!stored || again) {
-    const detail = `the server's ${why === "talk" ? "talk" : "talk version"} (${serverKey}) differs from this page's (${talk.id}@${talk.version}): restart the server, then reload this page (⌘R) and click Arm`;
+    const detail = `the server's ${why === "talk" ? "talk" : "talk version"} (${serverKey}) differs from this page's (${talk.id}@${talk.version}): restart the server, then reload this page (⌘R) and join again`;
     checklist.set("talk", "warn", detail);
     report("warning", `stale talk not reloaded (${stored ? "already reloaded once" : "no sessionStorage"}): ${mismatch}`);
     toasts.show(`Talk mismatch: ${detail}`);
@@ -658,6 +792,18 @@ function onStaleTalk(why, serverKey) {
 }
 
 /** @param {Msg} m */
+function onTool(m) {
+  status.tool(m);
+  meeting.tool(m);
+}
+
+/** @param {Msg} m */
+function onCountdown(m) {
+  banner.countdown(/** @type {number} */ (toInt(m.seconds, 0)));
+  syncMeeting();
+}
+
+/** @param {Msg} m */
 function onHello(m) {
   const talkId = typeof m.talk === "string" ? m.talk : m.talk && typeof m.talk === "object" ? m.talk.id : null;
   const version = typeof m.version === "string" ? m.version : null;
@@ -669,6 +815,7 @@ function onHello(m) {
     tryStorage(() => sessionStorage.removeItem(RELOAD_KEY)); // in sync again: a future mismatch may reload
   }
   if (typeof m.mic_mode === "string") setMicMode(m.mic_mode);
+  if (typeof m.narration_mode === "string") setNarrationMode(m.narration_mode);
   const snap = m.snapshot;
   if (snap && typeof snap === "object") {
     onState(snap);
@@ -682,17 +829,19 @@ function onHello(m) {
 function onState(m) {
   if (typeof m.state === "string") S.state = m.state;
   if (typeof m.phase === "string") S.phase = m.phase;
+  S.narration = typeof m.narration === "string" ? m.narration : null; // an older server never says
   if ("banner" in m) S.banner = typeof m.banner === "string" ? m.banner : null;
   if ("thinking" in m) S.thinking = Boolean(m.thinking);
   if (typeof m.mic_mode === "string") setMicMode(m.mic_mode);
   if (m.slide !== undefined && m.slide !== null) S.slideRef = m.slide;
-  // The checklist never covers a running narration, the open mic or a live reply.
+  // The checklist never covers Relay presenting, the open mic or a live reply.
   if (S.state === "NARRATING" || S.state === "LISTENING" || S.state === "REPLYING") hideOverlay();
   status.state(S.state, S.phase, S.thinking);
   banner.text(S.banner);
   if (S.state !== "IDLE") banner.countdown(0);
   captions.setFlag("thinking", S.state === "REPLYING" && S.thinking);
   captions.setFlag("paused", S.state === "PAUSED");
+  syncMeeting();
   updateWhere();
 }
 
@@ -702,12 +851,12 @@ function onSlide(m) {
   const ref = slide ? slide.id : typeof m.slide === "number" || typeof m.slide === "string" ? m.slide : null;
   if (ref === null) return;
   deck.show(ref, "fragment" in m ? /** @type {number|null} */ (toInt(m.fragment, null)) : null, slide ? slide.index : null);
+  // Another slide with nothing playing (→ to a human slide; the next slide Relay presents live, before its voice):
+  // start the captions clean.
+  if (ref !== S.shownSlide && !narration.active && !replies.active) captions.clear();
+  S.shownSlide = ref;
   S.slideRef = ref;
-  // A different slide with nothing narrating (e.g. → to a human slide): start the captions clean.
-  if (slide && !narration.active && S.lastPlay && S.lastPlay.slide !== slide.id) {
-    S.lastPlay = null;
-    captions.clear();
-  }
+  meeting.slide(slide);
   updateWhere();
 }
 
@@ -726,7 +875,9 @@ function onPlay(m) {
   cutReply(); // nothing else may sound over narration
   deck.show(slideId, slide && slide.speaker === "human" ? null : fragment, slide ? slide.index : null);
   S.slideRef = slideId;
+  S.shownSlide = slideId;
   S.lastPlay = { slide: slideId, chunk: k };
+  meeting.slide(slide);
   const key = chunkKey(slideId, k);
   captions.playChunk(key, chunk ? chunk.words : [], chunk ? chunk.text : "", offset, resumeWord);
   narration.play({
@@ -770,15 +921,22 @@ function setMicOpenFromServer(open) {
   setMicOpen(open);
 }
 
-/** @param {Msg} m */
+/**
+ * A reply begins: Relay answering (kind "answer"), or Relay presenting the slide live (kind "narration"; it plays
+ * and drains like an answer, and the keys cut it the same way). An older server sends no kind: an answer.
+ * @param {Msg} m
+ */
 function onReplyStart(m) {
   const reply = /** @type {number|null} */ (toInt(m.reply, null));
   if (reply === null) return;
+  const kind = m.kind === "narration" ? "narration" : "answer";
+  S.replyKind = { reply, kind };
   if (narration.stop() !== null) {
     stopCaptionLoop();
     captions.freeze();
   }
   replies.start(reply); // → captions.replyStart via onStart
+  if (kind === "narration") captions.narrationReply();
 }
 
 /** @param {Msg} m */
@@ -791,12 +949,14 @@ function onCaption(m) {
   const text = typeof m.text === "string" ? m.text : "";
   if (m.role === "user") {
     captions.user(text);
+    meeting.caption(m, null);
     return;
   }
   if (m.role !== "assistant") return;
   const reply = /** @type {number|null} */ (toInt(m.reply, null));
   if (reply !== null && replies.reply !== null && reply !== replies.reply && !isNewerReply(reply, replies.reply)) return;
   captions.assistant(text, reply, reply === null || reply === replies.reply ? liveAudio() : undefined);
+  meeting.caption(m, S.replyKind && S.replyKind.reply === reply ? S.replyKind.kind : "answer");
 }
 
 /** @param {Msg} m */
@@ -804,6 +964,7 @@ function onConnection(m) {
   const st = typeof m.status === "string" ? m.status : "offline";
   const detail = m.detail === null || m.detail === undefined ? "" : String(m.detail);
   status.connection(st, detail);
+  meeting.connection(st, detail);
   /** @type {import("./status.js").CheckStatus} */
   const check = st === "ready" ? "ok" : st === "error" ? "fail" : st === "offline" ? "pending" : "working";
   checklist.set("realtime", check, detail ? `${st}: ${detail}` : st);
@@ -832,7 +993,15 @@ function boot() {
     typedForm: el(".typed"),
     typed: el(".typed-input"),
   };
-  status = new StatusStrip(el(".strip"));
+  meeting = new Meeting(el(".meeting"), {
+    onMic: onMicButton,
+    onAction: onControl,
+    onChecklist: openChecklist,
+    onTyped: sendTyped,
+    onLeave,
+    onLayout: () => deck.layout(),
+  });
+  status = new StatusStrip(el(".strip"), el(".ticker"));
   banner = new Banner(el(".banner"));
   toasts = new Toasts(el(".toasts"));
   checklist = new Checklist(ui.overlay);
@@ -862,13 +1031,14 @@ function boot() {
     onAction: onKeyAction,
     onFocusTyped: focusTyped,
     onNotArmed: () => {
-      if (document.activeElement !== ui.arm) toasts.show("Click Arm first: it unlocks audio and the mic", "info");
+      if (document.activeElement !== ui.arm) toasts.show(JOIN_FIRST, "info");
     },
+    onInfo: () => meeting.toggleInfo(),
   });
   ui.arm.addEventListener("click", onArmClick);
   ui.done.addEventListener("click", hideOverlay);
   ui.overlay.addEventListener("click", (e) => {
-    if (e.target === ui.overlay) hideOverlay(); // a click outside the panel (once armed)
+    if (e.target === ui.overlay) hideOverlay(); // a click outside the panel (once joined)
   });
   el(".strip").addEventListener("click", showOverlay);
   ui.typedForm.addEventListener("submit", onTypedSubmit);
@@ -876,11 +1046,15 @@ function boot() {
     ui.typedForm.hidden = true;
   });
   document.addEventListener("pointerdown", () => engine.ensureRunning());
+  // The shared screen is sized by the layout (window, panels): re-fit the slides whenever it changes size.
+  if (typeof ResizeObserver === "function") new ResizeObserver(() => deck.layout()).observe(el(".share"));
 
   status.micMode(S.micMode);
   status.state(S.state, S.phase, false);
   status.connection("offline", "");
   status.server(false, "connecting…");
+  meeting.connection("offline", "");
+  meeting.server(false);
   checklist.set("server", "working", "connecting…");
   checklist.set("talk", "working", "loading…");
 

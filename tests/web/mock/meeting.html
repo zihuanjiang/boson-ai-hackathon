@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Relay layout mock: the meeting window</title>
+    <!-- A copy of web/index.html's meeting window with sample content, the real relay.css and the real vendored
+         reveal.js (embedded, inline sample slides instead of /api/slides.md). Open it in Chrome at 1280×720 and at
+         1920×1080 (window size, or the DevTools device toolbar): it walks through the meeting's states (panels open
+         and closed, both caption modes, the join dialog) and measures each one. The verdict in the corner must say
+         PASS. tests/web/test_static.mjs checks that this copy still has every class of the real window. -->
+    <link rel="stylesheet" href="../../../web/vendor/reveal/reset.css" />
+    <link rel="stylesheet" href="../../../web/vendor/reveal/reveal.css" />
+    <link rel="stylesheet" href="../../../web/vendor/reveal/theme/black.css" />
+    <link rel="stylesheet" href="../../../web/css/relay.css" />
+    <style>
+      #mock-panel {
+        position: fixed;
+        right: 8px;
+        bottom: calc(var(--bar-h) + 8px);
+        z-index: 200;
+        max-width: 46vw;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font: 600 13px/1.35 var(--mono);
+        background: rgba(0, 0, 0, 0.88);
+      }
+      #verdict {
+        margin: 0 0 6px;
+        white-space: pre-wrap;
+      }
+      #verdict.pass {
+        color: var(--c-ok);
+      }
+      #verdict.fail {
+        color: var(--c-fail);
+      }
+      #mock-panel:has(.fail) {
+        outline: 2px solid var(--c-fail);
+      }
+      #mock-panel select {
+        font: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="meeting" data-state="NARRATING" data-narration="live">
+      <header class="topbar">
+        <div class="topbar-left">
+          <span class="brand"
+            ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10.5v3" /></svg
+            >Relay</span
+          >
+          <span class="talk-name">How Relay knows exactly where it stopped, and picks up again</span>
+        </div>
+        <div class="topbar-center">
+          <span class="live-badge" data-status="ready"
+            ><i class="dot" aria-hidden="true"></i><span class="live-text">Higgs Realtime</span></span
+          >
+          <span class="pill backup-badge">Backup audio</span>
+          <span class="pill fake-pill">Fake</span>
+          <span class="pill server-pill">Server offline</span>
+          <span class="viewing"
+            ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="4.5" width="18" height="12" rx="2" />
+              <path d="M8.5 20h7M12 16.5V20" /></svg
+            >You are viewing Relay's screen</span
+          >
+        </div>
+        <div class="topbar-right">
+          <span class="clock">12:34</span>
+          <button type="button" class="info-button" aria-expanded="false" aria-label="Meeting info (I)">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5.5M12 7.6v.2" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <section class="strip offline" aria-label="Meeting info" hidden>
+        <h2 class="strip-title">Meeting info</h2>
+        <dl class="strip-rows">
+          <div>
+            <dt>Relay</dt>
+            <dd><span class="state-badge thinking" data-state="REPLYING"><i class="dot"></i><span class="state-text">Thinking</span></span></dd>
+          </div>
+          <div><dt>Phase</dt><dd class="phase">Presenting</dd></div>
+          <div><dt>Slide</dt><dd class="where">How Relay knows exactly where it stopped and picks up again · 3/3</dd></div>
+          <div><dt>Reply latency</dt><dd class="latency"><span class="latency-value">12.40 s</span></dd></div>
+          <div><dt>Microphone</dt><dd><span class="meter open" style="--level: 0.8"><span class="meter-fill"></span></span></dd></div>
+          <div>
+            <dt>Higgs Realtime</dt>
+            <dd><span class="rt" data-status="reconnecting"><i class="dot"></i><span class="rt-text">Realtime reconnecting…</span></span></dd>
+          </div>
+          <div><dt>Mic mode</dt><dd><span class="micmode">Hold</span></dd></div>
+        </dl>
+        <p class="strip-badges"><span class="badge fake-badge">Fake audio</span><span class="badge server-badge">Server offline</span></p>
+        <p class="strip-hint">Click for the audio and connection check</p>
+      </section>
+
+      <main class="share" aria-label="Relay's shared screen">
+        <div class="screen">
+          <div class="reveal">
+            <div class="slides">
+              <section id="how">
+                <h2>How it works</h2>
+                <p>Relay presents every slide live, through one warm Higgs Realtime session</p>
+                <p>One tap stops its audio at once; the browser counts what the room heard</p>
+                <p>Relay trims its memory to that, answers, and picks up where it left off</p>
+              </section>
+              <section id="limits">
+                <h2>Known limitations</h2>
+                <ul>
+                  <li>English only</li>
+                  <li>Tap-to-talk: Ken passes the floor, like a mic</li>
+                  <li>No speaker identification</li>
+                  <li>Needs the network for live narration (backup audio otherwise)</li>
+                  <li>In the room only, not on video calls</li>
+                  <li>Live answers know only the slides and one page of facts</li>
+                </ul>
+              </section>
+            </div>
+          </div>
+        </div>
+        <div class="banner counting" role="status">
+          <span class="banner-text">Resuming…</span><span class="banner-count" aria-hidden="true">2</span>
+        </div>
+        <section class="captions" data-mode="live" aria-label="Captions">
+          <div class="cap-meta">
+            <span class="cap-tag" hidden></span>
+            <span class="cap-hint" hidden></span>
+            <span class="cap-user"
+              ><span class="cap-speaker">You</span
+              ><span class="cap-user-text">Sorry, can you explain that like I'm not an engineer, in one sentence?</span></span
+            >
+          </div>
+          <div class="cap-main">
+            <p class="cap-narration">
+              <span class="cap-speaker">Relay</span
+              ><span class="cap-words"
+                ><span class="w past resume">Every</span> <span class="w past">single</span> <span class="w past">word</span>
+                <span class="w now">comes</span> <span class="w cut">with</span> <span class="w">a</span> <span class="w">timestamp,</span>
+                <span class="w">so</span> <span class="w">I</span> <span class="w">always</span> <span class="w">know</span>
+                <span class="w">exactly</span> <span class="w">where</span> <span class="w">I</span> <span class="w">am</span>
+                <span class="w">in</span> <span class="w">the</span> <span class="w">script.</span></span
+              >
+            </p>
+            <p class="cap-live speaking">
+              <span class="cap-speaker">Relay</span
+              ><span class="cap-live-text"
+                >So the browser counts the audio samples the room heard, and Relay trims its memory of what it said to
+                exactly that,</span
+              >
+            </p>
+          </div>
+        </section>
+        <div class="left-card" role="dialog" aria-labelledby="relay-left-title" hidden>
+          <div class="left-panel">
+            <h2 id="relay-left-title">You left the meeting</h2>
+            <p>Relay stopped. <span class="presenter-name">Ken</span> has the floor; R hands it back to Relay.</p>
+            <button type="button" class="rejoin-button">Rejoin</button>
+          </div>
+        </div>
+      </main>
+
+      <aside class="side" aria-label="Participants and chat">
+        <div class="people" aria-label="Participants">
+          <article class="tile tile-relay" data-speaking="true">
+            <ol class="ticker" aria-label="Tool calls">
+              <li class="tool" data-status="applied"><i class="tool-dot"></i><span class="tool-name">handoff_to_human()</span><span class="tool-status">applied</span></li>
+              <li class="tool" data-status="auto"><i class="tool-dot"></i><span class="tool-name">resume_script()</span><span class="tool-status">auto</span></li>
+              <li class="tool" data-status="rejected"><i class="tool-dot"></i><span class="tool-name">goto_slide("demo")</span><span class="tool-status">rejected</span></li>
+            </ol>
+            <div class="avatar">
+              <span class="ring" style="--level: 0.6"></span
+              ><span class="avatar-face"
+                ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10.5v3" /></svg
+              ></span>
+            </div>
+            <span class="tile-status">Presenting · backup audio</span>
+            <div class="nameplate">
+              <span class="mic-ico" data-muted="false"
+                ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="9" y="3" width="6" height="11" rx="3" />
+                  <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" />
+                  <path class="slash" d="M4.5 3.5l15 17" /></svg
+              ></span>
+              <span class="name">Relay</span><span class="role">AI co-presenter</span>
+            </div>
+          </article>
+          <article class="tile tile-you" data-speaking="false">
+            <div class="avatar">
+              <span class="ring"></span><span class="avatar-face"><span class="avatar-text">K</span></span>
+            </div>
+            <span class="tile-status"></span>
+            <p class="tile-hint" role="status">You're muted. Press Space or click Unmute to talk to Relay.</p>
+            <div class="nameplate">
+              <span class="mic-ico" data-muted="true"
+                ><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="9" y="3" width="6" height="11" rx="3" />
+                  <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" />
+                  <path class="slash" d="M4.5 3.5l15 17" /></svg
+              ></span>
+              <span class="name">You</span><span class="role">Ken · host</span>
+            </div>
+          </article>
+        </div>
+        <section class="chat" aria-label="Meeting chat" hidden>
+          <header class="chat-head">
+            <h2 class="chat-title">Meeting chat</h2>
+            <button type="button" class="chat-close" aria-label="Close the chat">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            </button>
+          </header>
+          <ol class="chat-log">
+            <li class="chat-line" data-kind="slide"><p class="chat-text">Slide: Relay</p></li>
+            <li class="chat-line" data-kind="you">
+              <div class="chat-meta"><span class="chat-who">You</span><span class="chat-time">00:12</span></div>
+              <p class="chat-text">Hi Relay, take it away.</p>
+            </li>
+            <li class="chat-line" data-kind="tool">
+              <div class="chat-meta"><span class="chat-who">Relay</span><span class="chat-time">00:14</span></div>
+              <p class="chat-text"><code class="chat-tool">start_presentation()</code> <span class="chat-status" data-status="applied">applied</span></p>
+            </li>
+            <li class="chat-line" data-kind="slide"><p class="chat-text">Slide: The problem</p></li>
+            <li class="chat-line" data-kind="presented"><p class="chat-text">Relay presented "The problem"</p></li>
+            <li class="chat-line" data-kind="you">
+              <div class="chat-meta"><span class="chat-who">You</span><span class="chat-time">01:02</span></div>
+              <p class="chat-text">How do you know where to pick up after someone cuts in, without a script to follow?</p>
+            </li>
+            <li class="chat-line" data-kind="relay">
+              <div class="chat-meta"><span class="chat-who">Relay</span><span class="chat-time">01:04</span></div>
+              <p class="chat-text">The browser counts the audio the room heard, and I trim my memory to exactly that.</p>
+            </li>
+          </ol>
+          <form class="chat-compose" autocomplete="off">
+            <label class="sr-only" for="relay-chat-input">Ask Relay</label>
+            <input id="relay-chat-input" class="chat-input" type="text" placeholder="Ask Relay a question…" />
+            <button type="submit" class="chat-send" aria-label="Send to Relay">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 11.5l15-7-6 15-2.5-6zM11 13.5l8.5-9" /></svg>
+            </button>
+          </form>
+        </section>
+      </aside>
+
+      <footer class="toolbar" aria-label="Meeting controls">
+        <div class="toolbar-left">
+          <button type="button" class="tb mic-button" data-muted="true" aria-pressed="false">
+            <svg class="ico ico-mic-on" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
+            </svg>
+            <svg class="ico ico-mic-off" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
+              <path class="slash" d="M4.5 3.5l15 17" />
+            </svg>
+            <span class="tb-label">Hold to talk</span>
+          </button>
+        </div>
+        <div class="toolbar-center">
+          <button type="button" class="tb people-button" aria-pressed="true">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="9" cy="8.5" r="3.2" />
+              <path d="M3.5 19.5c.5-3.4 2.7-5.5 5.5-5.5s5 2.1 5.5 5.5M15.5 5.6a3 3 0 0 1 0 5.8M17.5 14.4c1.7.6 2.7 2.4 3 5.1" />
+            </svg>
+            <span class="tb-label">Participants</span>
+          </button>
+          <button type="button" class="tb chat-button" aria-pressed="false">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16V16H10l-4.5 3.5V16H4z" /></svg>
+            <span class="tb-label">Chat</span><span class="tb-badge">9+</span>
+          </button>
+          <button type="button" class="tb cc-button" aria-pressed="true">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="14" rx="2.5" />
+              <path d="M10.6 10a2.3 2.3 0 1 0 0 4M16.6 10a2.3 2.3 0 1 0 0 4" />
+            </svg>
+            <span class="tb-label">Captions</span>
+          </button>
+          <button type="button" class="tb prev-button">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6l-6 6 6 6" /></svg>
+            <span class="tb-label">Previous</span>
+          </button>
+          <button type="button" class="tb next-button">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6l6 6-6 6" /></svg>
+            <span class="tb-label">Next</span>
+          </button>
+          <div class="more">
+            <button type="button" class="tb more-button" aria-haspopup="menu" aria-expanded="false">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                <circle class="fill" cx="6" cy="12" r="1.3" />
+                <circle class="fill" cx="12" cy="12" r="1.3" />
+                <circle class="fill" cx="18" cy="12" r="1.3" />
+              </svg>
+              <span class="tb-label">More</span>
+            </button>
+            <div class="more-menu" role="menu" aria-label="More" hidden>
+              <button type="button" role="menuitem" data-action="pause"><span>Pause or resume Relay</span><kbd>P</kbd></button>
+              <button type="button" role="menuitem" data-action="human">
+                <span>Give the floor to <span class="presenter-name">Ken</span></span><kbd>H</kbd>
+              </button>
+              <button type="button" role="menuitem" data-action="relay"><span>Back to Relay</span><kbd>R</kbd></button>
+              <button type="button" role="menuitem" data-action="prev"><span>Previous slide</span><kbd>←</kbd></button>
+              <button type="button" role="menuitem" data-action="next"><span>Next slide</span><kbd>→</kbd></button>
+              <button type="button" role="menuitem" data-action="type"><span>Type a question</span><kbd>T</kbd></button>
+              <button type="button" role="menuitem" data-action="checklist"><span>Audio and connection check</span></button>
+              <button type="button" role="menuitem" data-action="info"><span>Meeting info</span><kbd>I</kbd></button>
+            </div>
+          </div>
+        </div>
+        <div class="toolbar-right">
+          <button type="button" class="leave-button">Leave</button>
+        </div>
+      </footer>
+    </div>
+
+    <div class="toasts"><div class="toast">Narration how/2 has no audio (HTTP 404): captions only</div></div>
+
+    <div class="overlay armed" role="dialog" aria-modal="true" aria-labelledby="relay-overlay-title" hidden>
+      <div class="panel">
+        <header class="panel-head">
+          <p class="panel-kicker">Join the meeting</p>
+          <h1 id="relay-overlay-title" class="panel-title">Relay</h1>
+          <p class="panel-sub">Relay presents · Ken hosts</p>
+        </header>
+        <ul class="checklist">
+          <li data-item="server" data-status="ok"><span class="ic"></span><span class="label">Connected to Relay</span><span class="detail">127.0.0.1:8000</span></li>
+          <li data-item="talk" data-status="warn">
+            <span class="ic"></span><span class="label">Talk loaded</span><span class="detail">relay-intro · 10 slides (8 Relay) · 21 chunks · FAKE AUDIO: placeholder tones, not TTS</span>
+          </li>
+          <li data-item="audio" data-status="ok"><span class="ic"></span><span class="label">Speaker</span><span class="detail">running · 24000 Hz · output latency 25 ms</span></li>
+          <li data-item="mic" data-status="ok">
+            <span class="ic"></span><span class="label">Microphone</span><span class="detail">MacBook Pro Microphone</span><span class="meter" style="--level: 0.6"><span class="meter-fill"></span></span>
+          </li>
+          <li data-item="narration" data-status="working"><span class="ic"></span><span class="label">Backup narration</span><span class="detail">17/21</span></li>
+          <li data-item="realtime" data-status="fail"><span class="ic"></span><span class="label">Higgs Realtime</span><span class="detail">error: BOSON_API_KEY missing</span></li>
+        </ul>
+        <div class="panel-actions">
+          <button type="button" class="arm-button" hidden>Join with Computer Audio</button>
+          <button type="button" class="done-button">Join anyway</button>
+          <p class="panel-hint">Joining turns on the speaker, asks for the microphone, loads the backup narration and checks Higgs Realtime.</p>
+        </div>
+        <dl class="keys">
+          <div><dt><kbd>Space</kbd></dt><dd>talk to Relay, again to send</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>cancel the turn</dd></div>
+          <div><dt><kbd>→</kbd> <kbd>←</kbd></dt><dd>next / previous slide</dd></div>
+          <div><dt><kbd>P</kbd></dt><dd>pause</dd></div>
+          <div><dt><kbd>H</kbd></dt><dd>presenter has the floor</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>back to Relay</dd></div>
+          <div><dt><kbd>T</kbd></dt><dd>type a question</dd></div>
+          <div><dt><kbd>I</kbd></dt><dd>meeting info</dd></div>
+        </dl>
+      </div>
+    </div>
+
+    <div id="mock-panel">
+      <p id="verdict">measuring…</p>
+      <label>View: <select id="mock-state"></select></label>
+    </div>
+
+    <script src="../../../web/vendor/reveal/reveal.js"></script>
+    <script>
+      // The deck's own options (web/js/deck.js REVEAL_OPTIONS), minus the markdown plugin.
+      const REVEAL_OPTIONS = {
+        embedded: true,
+        hash: false,
+        keyboard: false,
+        controls: false,
+        progress: true,
+        help: false,
+        overview: false,
+        touch: false,
+        center: true,
+        transition: "slide",
+        width: 1280,
+        height: 720,
+      };
+      const $ = (sel) => document.querySelector(sel);
+      const meeting = $(".meeting");
+      const captions = $(".captions");
+
+      // Each state starts from the page as written (sample content, chat closed, captions on, tiles shown).
+      const touched = [".people", ".chat", ".strip", ".more-menu", ".left-card", ".overlay", ".tile-hint", ".banner"].map($);
+      const initial = touched.map((el) => el.hidden);
+      function reset() {
+        touched.forEach((el, i) => (el.hidden = initial[i]));
+        meeting.classList.remove("side-off", "captions-off");
+        captions.dataset.mode = "live";
+      }
+      const STATES = [
+        { name: "default: tiles, live captions", apply() {} },
+        { name: "chat open", apply: () => ($(".chat").hidden = false) },
+        { name: "participants hidden, chat open", apply: () => (($(".people").hidden = true), ($(".chat").hidden = false)) },
+        { name: "participants and chat hidden", apply: () => (($(".people").hidden = true), meeting.classList.add("side-off")) },
+        { name: "captions off", apply: () => meeting.classList.add("captions-off") },
+        { name: "backup narration (karaoke captions)", apply: () => (captions.dataset.mode = "narration") },
+        { name: "meeting info and More menu open", apply: () => (($(".strip").hidden = false), ($(".more-menu").hidden = false)) },
+        { name: "you left the meeting", apply: () => ($(".left-card").hidden = false) },
+        { name: "join dialog", apply: () => ($(".overlay").hidden = false) },
+      ];
+
+      const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const box = (el) => el.getBoundingClientRect();
+      const shown = (el) => el && el.getClientRects().length > 0;
+      const within = (r, o, slack = 0.5) =>
+        r.left >= o.left - slack && r.right <= o.right + slack && r.top >= o.top - slack && r.bottom <= o.bottom + slack;
+      const view = () => ({ left: 0, top: 0, right: innerWidth, bottom: innerHeight });
+      const fmt = (r) => `${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}×${Math.round(r.height)}`;
+
+      /** Problems with the layout as it is now. */
+      function measure(name) {
+        const p = [];
+        const doc = document.documentElement;
+        if (doc.scrollWidth > innerWidth + 0.5 || doc.scrollHeight > innerHeight + 0.5) {
+          p.push(`page scrolls (${doc.scrollWidth}×${doc.scrollHeight})`);
+        }
+        for (const sel of [".meeting", ".topbar", ".toolbar", ".share", ".side", ".people", ".panel"]) {
+          const el = $(sel);
+          if (!shown(el)) continue;
+          if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) {
+            p.push(`${sel} overflows (${el.scrollWidth}×${el.scrollHeight} in ${el.clientWidth}×${el.clientHeight})`);
+          }
+        }
+        // the shared screen: a visible 16:9 slide box inside the share
+        const share = box($(".share"));
+        const slides = box($(".reveal"));
+        if (Math.abs(slides.width / slides.height - 16 / 9) > 0.02) p.push(`slides not 16:9 (${fmt(slides)})`);
+        if (!within(slides, share) || !within(slides, view())) p.push(`slides outside the share (${fmt(slides)} in ${fmt(share)})`);
+        if (slides.width < 320) p.push(`slides too small (${fmt(slides)})`);
+        // both tiles, unless the participants are hidden
+        if (shown($(".people"))) {
+          const [relay, you] = [".tile-relay", ".tile-you"].map((s) => box($(s)));
+          for (const [label, r] of [["Relay tile", relay], ["You tile", you]]) {
+            if (!within(r, view()) || !within(r, box($(".side")))) p.push(`${label} not fully visible (${fmt(r)})`);
+            if (r.height < 60) p.push(`${label} too small (${fmt(r)})`);
+          }
+          if (relay.bottom > you.top + 0.5 && relay.top < you.bottom - 0.5 && relay.right > you.left + 0.5 && relay.left < you.right - 0.5) {
+            p.push("the tiles overlap");
+          }
+          for (const sel of [".tile-relay .tile-status", ".tile-relay .nameplate", ".tile-you .nameplate", ".tile-relay .avatar"]) {
+            const r = box($(sel));
+            const tile = box($(sel).closest(".tile"));
+            if (!within(r, tile)) p.push(`${sel} spills out of its tile`);
+          }
+        }
+        // the toolbar, every button in it
+        const bar = box($(".toolbar"));
+        if (!within(bar, view())) p.push(`toolbar not fully visible (${fmt(bar)})`);
+        for (const b of document.querySelectorAll(".toolbar .tb, .toolbar .leave-button")) {
+          if (!within(box(b), bar)) p.push(`toolbar button ${b.className} outside the toolbar`);
+        }
+        // the topbar's items
+        const top = box($(".topbar"));
+        for (const el of document.querySelectorAll(".topbar-left > *, .topbar-center > *, .topbar-right > *")) {
+          if (shown(el) && !within(box(el), top)) p.push(`topbar item ${el.className} outside the topbar`);
+        }
+        // captions inside the share, ≥ 28 px, their text inside their box
+        if (shown(captions)) {
+          const cap = box(captions);
+          if (!within(cap, share)) p.push(`captions outside the share (${fmt(cap)})`);
+          const main = $(".cap-main");
+          if (parseFloat(getComputedStyle(main).fontSize) < 28) p.push("caption text under 28 px");
+          for (const sel of [".cap-narration .cap-words", ".cap-live .cap-live-text", ".cap-user"]) {
+            const el = $(sel);
+            if (shown(el) && !within(box(el), box(sel === ".cap-user" ? $(".cap-meta") : main), 1)) p.push(`${sel} spills out of the captions`);
+          }
+        } else if (!meeting.classList.contains("captions-off")) {
+          p.push("captions not shown");
+        }
+        // floating panels stay on screen
+        for (const sel of [".strip", ".more-menu", ".chat", ".left-panel", ".panel", ".banner", ".toasts"]) {
+          const el = $(sel);
+          if (shown(el) && !within(box(el), view())) p.push(`${sel} off screen (${fmt(box(el))})`);
+        }
+        return p.map((x) => `${name}: ${x}`);
+      }
+
+      // The picker shows one state at a time for a look (the check always walks all of them).
+      const picker = $("#mock-state");
+      STATES.forEach((state, i) => picker.append(new Option(state.name, String(i))));
+      function show() {
+        reset();
+        STATES[Number(picker.value) || 0].apply();
+        Reveal.layout();
+      }
+      picker.addEventListener("change", show);
+
+      let running = false;
+      async function check() {
+        if (running) return;
+        running = true;
+        const problems = [];
+        for (const state of STATES) {
+          reset();
+          state.apply();
+          Reveal.layout();
+          await frame();
+          problems.push(...measure(state.name));
+        }
+        show();
+        const size = `${innerWidth}×${innerHeight}`;
+        const verdict = $("#verdict");
+        verdict.className = problems.length ? "fail" : "pass";
+        verdict.textContent = problems.length
+          ? `FAIL at ${size}:\n${problems.join("\n")}`
+          : `PASS at ${size}: all ${STATES.length} meeting states fit`;
+        window.meetingCheck = { size, states: STATES.length, problems };
+        running = false;
+      }
+
+      Reveal.initialize(REVEAL_OPTIONS)
+        .then(() => document.fonts.ready)
+        .then(check);
+      addEventListener("resize", () => setTimeout(check, 150));
+    </script>
+  </body>
+</html>

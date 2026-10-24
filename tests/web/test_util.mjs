@@ -309,6 +309,58 @@ for (const [n, heard, received] of [[40, 0.5 * S1, 0.5 * S1], [40, 2 * S1, 2.1 *
   eq(`never faster than ${U.MAX_WORDS_PER_S} words/s (${n}, ${heard}, ${received}) → ${shown}`, shown <= Math.floor((heard / S1) * U.MAX_WORDS_PER_S) + 1, true);
 }
 
+// livePage: the sentence being said (+ the one before when both fit), long sentences in stable pages
+const lp = (text, shown, max) => {
+  const words = text.split(" ");
+  const { from, to } = U.livePage(words, shown, max);
+  return words.slice(from, to).join(" ");
+};
+const three = "Hi there. I am Relay. I present live.";
+eq("livePage nothing heard", U.livePage(three.split(" "), 0, 60), { from: 0, to: 0 });
+eq("livePage empty transcript", U.livePage([], 3, 60), { from: 0, to: 0 });
+eq("livePage bad shown", [U.livePage(["a."], NaN, 60), U.livePage(["a."], -2, 60)], [{ from: 0, to: 0 }, { from: 0, to: 0 }]);
+eq("livePage shown past the transcript is clamped", U.livePage(["a", "b."], 9, 60), { from: 0, to: 2 });
+eq("livePage first words", lp(three, 1, 60), "Hi");
+eq("livePage never shows words not heard yet", lp(three, 4, 60), "Hi there. I am");
+eq("livePage the sentence before rides along when both fit", lp(three, 6, 60), "I am Relay. I");
+eq("livePage never more than two sentences", lp(three, 8, 60), "I am Relay. I present live.");
+eq("livePage the sentence alone when both don't fit", lp(three, 8, 20), "I present live.");
+// the current sentence counts to its known end: no earlier sentence that would vanish halfway through
+const known = "Short one. This sentence goes on for quite a while yet.";
+eq("livePage judges the fit on the whole known sentence", lp(known, 3, 40), "This");
+eq("livePage …the same with only its start known", lp("Short one. This", 3, 40), "Short one. This");
+// a long sentence: pages of ≤ maxChars from its start, after a comma once more than half full
+const longSentence = "one two three four five six seven eight nine ten eleven twelve.";
+eq("livePage long sentence, first page", lp(longSentence, 4, 20), "one two three four");
+eq("livePage long sentence, next page", lp(longSentence, 6, 20), "five six");
+eq("livePage long sentence, third page", lp(longSentence, 11, 20), "nine ten eleven");
+eq("livePage long sentence, a page for the last word", lp(longSentence, 12, 20), "twelve.");
+eq("livePage soft break after a comma", lp("alpha beta gamma, delta epsilon zeta eta theta.", 5, 30), "delta epsilon");
+eq("livePage one huge word", lp("x".repeat(50), 1, 10), "x".repeat(50));
+{
+  // As words are heard one by one, a page only grows until the next one replaces it, and stays within maxChars.
+  const words = "Relay presents every slide live from its notes, in its own words, and when someone cuts in it answers, then carries on. The browser counts what the room heard. Relay trims its memory to match, so it never repeats itself or skips a beat.".split(" ");
+  let ok = true;
+  let prev = { from: 0, to: 0 };
+  for (let shown = 1; shown <= words.length; shown++) {
+    const page = U.livePage(words, shown, 60);
+    const text = words.slice(page.from, page.to).join(" ");
+    if (page.to !== shown || page.from < prev.from || (text.length > 60 && page.to - page.from > 1)) ok = false;
+    prev = page;
+  }
+  eq("livePage pages move forward only and fit, word by word", ok, true);
+}
+
+// clockText
+eq("clockText", [U.clockText(0), U.clockText(999), U.clockText(65_000), U.clockText(3_723_000), U.clockText(-5), U.clockText(NaN)], [
+  "00:00",
+  "00:00",
+  "01:05",
+  "1:02:03",
+  "00:00",
+  "00:00",
+]);
+
 // playedEstimate / samplesToMs
 eq("played no time passed", U.playedEstimate(2400, 10, 10, 9600), 2400);
 eq("played extrapolated", U.playedEstimate(2400, 10, 10.05, 9600), 3600);

@@ -2,11 +2,13 @@
 /**
  * reveal.js wrapper: slides by id, fragments by count (doc/design.md §4, §8). reveal's own keyboard, hash, controls,
  * touch and overview are off: the backend decides what is on screen, the presenter keys go through keys.js.
- * The markdown comes from /api/slides.md (see the data-markdown section in index.html).
+ * The markdown comes from /api/slides.md (see the data-markdown section in index.html). Embedded: the deck is the
+ * meeting's shared screen, sized by the page's layout, not the window, so every layout change calls layout().
  */
 import { fragmentIndex } from "./util.js";
 
 export const REVEAL_OPTIONS = Object.freeze({
+  embedded: true,
   hash: false,
   keyboard: false,
   controls: false,

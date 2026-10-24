@@ -1,10 +1,11 @@
 """`python -m relay serve talks/<id>`: serve the deck, the narration and the Realtime bridge (design §11).
 
     uv run python -m relay serve talks/test --fake-realtime     # offline end to end (no key needed)
-    uv run python -m relay serve talks/test                     # live: open http://localhost:8000, click Arm
+    uv run python -m relay serve talks/test                     # live: open http://localhost:8000, click Join
     uv run python -m relay serve talks/test --mic-mode hold     # noisy room: hold Space to talk
+    uv run python -m relay serve talks/test --narration rendered  # play the TTS 3 renders instead of presenting live
 
-Flags override the environment / `.env` (RELAY_HOST, RELAY_PORT, RELAY_FAKE_REALTIME, MIC_MODE).
+Flags override the environment / `.env` (RELAY_HOST, RELAY_PORT, RELAY_FAKE_REALTIME, MIC_MODE, RELAY_NARRATION).
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .config import MIC_MODES, ROOT, TALKS, Settings, load_settings
+from .config import MIC_MODES, NARRATION_MODES, ROOT, TALKS, Settings, load_settings
 from .talk import Talk, TalkError
 from .timeline import RenderedChunk, RenderMissing
 
@@ -26,7 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m relay", description="Relay: a live voice co-presenter.")
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
     serve = commands.add_parser("serve", help="serve a talk: deck, narration and the live Realtime bridge",
-                                description="Serve a talk package. Open the printed URL in Chrome and click Arm.")
+                                description="Serve a talk package. Open the printed URL in Chrome and click Join "
+                                            "with Computer Audio.")
     serve.add_argument("talk", help="talk folder, e.g. talks/test")
     serve.add_argument("--host", default=None, help="bind address (default 127.0.0.1, or RELAY_HOST)")
     serve.add_argument("--port", type=int, default=None, help="port (default 8000, or RELAY_PORT)")
@@ -34,6 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="use the offline stand-in for Higgs Realtime (no key, no network)")
     serve.add_argument("--mic-mode", choices=MIC_MODES, default=None,
                        help="tap (default: tap Space, turn detection ends the turn) or hold (hold Space to talk)")
+    serve.add_argument("--narration", choices=NARRATION_MODES, default=None,
+                       help="live (default: Higgs Realtime presents every slide, the TTS 3 renders are the offline "
+                            "backup) or rendered (the renders play)")
     return parser
 
 
@@ -62,7 +67,14 @@ def narration_note(narration: Mapping[tuple[str, int], Any], version: str) -> st
     """The startup line about the narration snapshot: what is loaded, and when a re-render takes effect."""
     megabytes = sum(len(wav.body) for wav in narration.values()) / 1e6
     return (f"narration loaded into memory ({len(narration)} wav files, {megabytes:.1f} MB, version {version}): a "
-            "re-render takes effect at the next server restart (an open deck then reloads itself; click Arm again)")
+            "re-render takes effect at the next server restart (an open deck then reloads itself; join again)")
+
+
+def narration_mode_note(settings: Settings) -> str | None:
+    """The startup line about who presents the slides; None in rendered mode (v1's behaviour, nothing new)."""
+    if settings.narration != "live":
+        return None
+    return "narration: live (Higgs Realtime presents every slide; the TTS 3 renders are the offline backup)"
 
 
 def startup_notes(talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], settings: Settings) -> list[str]:
@@ -81,6 +93,9 @@ def startup_notes(talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], s
     elif not settings.api_key:
         notes.append(f"live replies disabled: Space gives the floor to {talk.presenter} "
                      "(BOSON_API_KEY missing: add it to .env, or use --fake-realtime)")
+        if settings.narration == "live":
+            notes.append("live narration needs Higgs Realtime too: Relay will play the backup narration (the TTS 3 "
+                         "renders) only")
     if settings.host not in LOOPBACK_HOSTS:
         notes.append(f"listening on {settings.host or 'all interfaces'}: the mic only works when the deck is opened "
                      "via localhost on this machine")
@@ -93,7 +108,7 @@ def startup_notes(talk: Talk, chunks: Mapping[tuple[str, int], RenderedChunk], s
 def serve(args: argparse.Namespace) -> int:
     try:
         settings = load_settings(host=args.host, port=args.port, fake_realtime=args.fake_realtime,
-                                 mic_mode=args.mic_mode)
+                                 mic_mode=args.mic_mode, narration=args.narration)
     except ValueError as exc:
         print(f"relay: bad setting: {exc}", file=sys.stderr)
         return 1
@@ -113,7 +128,10 @@ def serve(args: argparse.Namespace) -> int:
     print(f"Relay: talk '{talk.id}' ({len(talk.slides)} slides, {len(chunks)} narration chunks, voice {talk.voice}, "
           f"mic mode {settings.mic_mode})")
     print(f"Relay: {narration_note(app.state.narration, app.state.version)}")
-    print(f"Relay: open {deck_url(settings)} in Chrome, then click Arm")
+    mode_note = narration_mode_note(settings)
+    if mode_note:
+        print(f"Relay: {mode_note}")
+    print(f"Relay: open {deck_url(settings)} in Chrome, then click Join with Computer Audio")
     for note in startup_notes(talk, chunks, settings):
         print(f"  warning: {note}")
     sys.stdout.flush()

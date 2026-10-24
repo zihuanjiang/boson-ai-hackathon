@@ -1,7 +1,7 @@
 // A small fake browser for running the real deck client (web/index.html + web/js/main.js) under JavaScriptCore:
-// an HTML parser + DOM with a selector engine, fake reveal.js, fake Web Audio / AudioWorklet nodes, fake WebSocket,
-// fetch and getUserMedia, and a manual clock (setTimeout, setInterval, requestAnimationFrame, performance.now,
-// AudioContext.currentTime all move only when the test calls advance()).
+// an HTML parser + DOM with a selector engine, fake reveal.js, fake Web Audio / AudioWorklet / analyser nodes, fake
+// WebSocket, fetch, getUserMedia and ResizeObserver, and a manual clock (setTimeout, setInterval,
+// requestAnimationFrame, performance.now, AudioContext.currentTime all move only when the test calls advance()).
 
 const nativeSetTimeout = globalThis.setTimeout;
 
@@ -391,6 +391,14 @@ export const env = {
   gumHold: false,
   /** when true, AudioContext has no audioWorklet (an insecure context, e.g. a LAN IP over http) */
   noWorklet: false,
+  /** when true, AudioContext has no createAnalyser (the meeting's speaking ring falls back to "audible") */
+  noAnalyser: false,
+  /** what the output analyser hears: every sample of its window has this value (so its RMS is |outputLevel|) */
+  outputLevel: 0,
+  /** @type {any[]} ResizeObserver instances (a test calls trigger() on one) */
+  resizeObservers: [],
+  /** Reveal.layout() calls */
+  layouts: 0,
   /** @type {Function|null} */
   gumRelease: null,
   /** location.reload() calls */
@@ -469,6 +477,7 @@ class FakeAudioNode {
   }
   connect(node) {
     this.outputs.push(node);
+    node.inputs?.push(this);
     return node;
   }
   disconnect() {
@@ -480,6 +489,18 @@ class FakeGain extends FakeAudioNode {
   constructor(ctx) {
     super(ctx);
     this.gain = new FakeParam(1);
+  }
+}
+
+class FakeAnalyser extends FakeAudioNode {
+  constructor(ctx) {
+    super(ctx);
+    this.fftSize = 2048;
+    /** @type {any[]} nodes connected into this one */
+    this.inputs = [];
+  }
+  getFloatTimeDomainData(buf) {
+    buf.fill(env.outputLevel);
   }
 }
 
@@ -520,6 +541,9 @@ class FakeAudioContext {
     this.destination = new FakeAudioNode(this);
     /** @type {FakeBufferSource[]} */
     this.sources = [];
+    /** @type {FakeAnalyser[]} */
+    this.analysers = [];
+    if (env.noAnalyser) this.createAnalyser = undefined;
     this.onstatechange = null;
     this.audioWorklet = env.noWorklet
       ? undefined
@@ -546,6 +570,11 @@ class FakeAudioContext {
   }
   createBufferSource() {
     return new FakeBufferSource(this);
+  }
+  createAnalyser() {
+    const analyser = new FakeAnalyser(this);
+    this.analysers.push(analyser);
+    return analyser;
   }
   createMediaStreamSource(stream) {
     const node = new FakeAudioNode(this);
@@ -630,7 +659,28 @@ class FakeRevealDeck {
   slide(h, v, f) {
     this.calls.push([h, v, f]);
   }
-  layout() {}
+  layout() {
+    env.layouts++;
+  }
+}
+
+class FakeResizeObserver {
+  constructor(callback) {
+    this.callback = callback;
+    /** @type {any[]} */
+    this.targets = [];
+    env.resizeObservers.push(this);
+  }
+  observe(el) {
+    this.targets.push(el);
+  }
+  disconnect() {
+    this.targets = [];
+  }
+  /** test side: the observed elements changed size */
+  trigger() {
+    this.callback(this.targets.map((target) => ({ target })), this);
+  }
 }
 
 export function install(indexHtml) {
@@ -655,6 +705,8 @@ export function install(indexHtml) {
 
   g.window = g;
   g.HTMLElement = FakeElement;
+  g.Element = FakeElement;
+  g.ResizeObserver = FakeResizeObserver;
   g.addEventListener = (type, fn) => (listeners[type] ??= []).push(fn);
   g.removeEventListener = (type, fn) => (listeners[type] = (listeners[type] ?? []).filter((f) => f !== fn));
   g.fireWindow = (type, event) => {

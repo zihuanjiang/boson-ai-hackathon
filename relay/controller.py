@@ -7,6 +7,12 @@ shown as an `error` message), and ignore message/event types they don't know.
 
 States (brief Appendix C): IDLE · NARRATING · PAUSED · LISTENING (mic open) · REPLYING (live reply, mic closed).
 A live turn remembers its `origin` (narration / paused / idle) so it can go back there when it ends without a tool.
+
+Narration (D52, D53): with `narration = "live"` every relay slide is presented by the one warm Realtime session, in
+Relay's own words, from that slide's notes: one `response.create` per slide (a `LiveNarration`), streamed to the deck
+as a reply. A cut truncates the model's memory to what the room heard and the slide continues live from there. When
+the link is not ready as a slide starts, or a request never speaks, the slide plays from its TTS 3 render (the
+backup: v1's chunk-by-chunk narration, which is all of `narration = "rendered"`).
 """
 
 from __future__ import annotations
@@ -21,8 +27,9 @@ from typing import Any, Awaitable, Callable, Mapping
 from . import tools
 from .config import RATE, STT_MODEL, Settings
 from .ports import AsyncioClock, BrowserPort, Clock, LogFn, RealtimePort, Timer, null_log
-from .prompts import TurnContext, build_instructions
+from .prompts import TurnContext, build_instructions, narration_instructions
 from .talk import Slide, Talk
+from .textutil import word_count
 from .timeline import CutPoint, RenderedChunk, Word, cut_point, render_version
 
 IDLE = "IDLE"
@@ -43,8 +50,16 @@ REPLY_STALL_S = 8.0  # a bound reply with no event of its own this long (and no 
 ERROR_GRACE_S = 1.5  # after a non-benign `error` mid-reply: this long without an event of the reply → as a stall
 DOUBLE_SEND_S = 1.0  # tap mode: Space this soon after a spoken turn ended (still thinking) was a "send": ignored
 SEND_NOW_MIN_FRAMES = 5  # tap mode: "send now" needs this many 100 ms mic frames (a quick double tap sends nothing)
-COUNTDOWN_S = 1.5  # "Resuming…" after a reply that called no tool (the deck shows whole seconds: ceil)
+COUNTDOWN_S = 1.5  # "Resuming…" / "Starting…" after a reply that called no tool (the deck shows whole seconds: ceil)
 DRAIN_GRACE_S = 2.0  # drain fallback = remaining reply audio + this
+NARRATION_WAIT_S = 6.0  # a live narration request → its first audio, else it failed (live: 0.26–0.55 s)
+NARRATION_RETRIES = 1  # a failed live narration is asked for once more, then the backup presents the slide
+NARRATION_MIN_S = 6  # the length a live narration is asked for: the slide's backup length, within these bounds
+NARRATION_MAX_S = 60
+CONTINUE_MIN_S = 5  # …and at least this for the rest of a slide that was cut
+WORDS_PER_SECOND = 2.6  # a slide without a backup render: its notes at a speaking pace
+HEARD_MAX_CHARS = 160  # what the room last heard of a cut slide, quoted in the request that continues it
+NARRATION_TIMERS = ("narration_wait", "narration_stall", "narration_drain")
 BYTES_PER_MS = RATE * 2 // 1000  # PCM16 mono at 24 kHz: 48 bytes per ms
 MAX_VAD_TAIL_MS = 5000  # speech_stopped.audio_end_ms this far behind the newest mic audio is not trusted
 USER_ITEMS_KEPT = 16  # user audio item ids remembered to match late transcripts to their turn
@@ -53,6 +68,7 @@ SUMMARY_PREFIX = "Context only, do not reply. Earlier live exchanges in this tal
 TURN_TIMERS = ("listen_silence", "listen_max", "reply_wait", "reply_stall", "drain")
 DROPPED = ("reconnecting", "error", "offline")
 CUT_CALL_OUTPUT = tools.error_output("not run: the reply was cut off")  # calls of a cut/stalled/rejected reply
+NARRATION_CALL_OUTPUT = tools.error_output("not now: you are presenting; the deck moves on by itself")
 NOTHING_TO_CANCEL = frozenset({"response_not_active", "response_cancel_not_active"})  # Higgs docs; OpenAI
 SEND_RACE_ERRORS = frozenset({"voice_output_task_ongoing", "input_audio_buffer_commit_empty"})
 
@@ -60,6 +76,7 @@ BANNER_HUMAN = "{presenter} has the floor"
 BANNER_OPENING = "{presenter} has the floor — tap Space to hand over"
 BANNER_QA = "Waiting for a question — tap Space"
 BANNER_RESUMING = "Resuming…"
+BANNER_STARTING = "Starting…"
 BANNER_PAUSED = "Paused — P to resume"
 BANNER_PAUSED_R = "Paused — R to resume"
 BANNER_OFFLINE = "Realtime offline — {presenter} has the floor (R resumes)"
@@ -78,12 +95,41 @@ ERROR_MAX_CHARS = 200
 @dataclass(frozen=True)
 class Cursor:
     """Where narration continues: chunk `chunk` of slide `slide`, from `offset_ms`. `resume_word` set ⇒ this is a
-    resume after a cut, and the captions show the jump back to that word."""
+    resume after a cut, and the captions show the jump back to that word. `live` ⇒ the room heard part of the slide's
+    live narration (`heard_ms` of it, ending in `heard`) and it continues live from there (chunk/offset unused).
+    `Cursor(slide, 0)` is the slide's start."""
 
     slide: str
     chunk: int
     offset_ms: int = 0
     resume_word: int | None = None
+    live: bool = False
+    heard: str = ""
+    heard_ms: int = 0
+
+    @property
+    def slide_start(self) -> bool:
+        return not self.live and self.chunk == 0 and self.offset_ms == 0 and self.resume_word is None
+
+
+@dataclass
+class LiveNarration:
+    """One live narration request: the Realtime session presents slide `slide` in its own words (D52). It reaches
+    the deck as reply `reply` (the same numbering as live answers)."""
+
+    slide: str
+    reply: int
+    continuing: bool  # the slide was cut: carry on from what the room heard (the cursor says what)
+    attempt: int = 0  # retries after requests that never spoke (NARRATION_RETRIES)
+    response_id: str | None = None  # the bound Realtime response
+    audio_item_id: str | None = None  # for conversation.item.truncate
+    audio_bytes: int = 0
+    first_audio_at: float | None = None
+    response_done: bool = False
+    incomplete: bool = False  # the link dropped or it stalled before response.done: the backup replays the slide
+    pending: list[dict] = field(default_factory=list)  # its response.create, held while another response is active
+    calls: dict[str, tuple[Any, Any]] = field(default_factory=dict)  # call_id → (name, arguments): never run
+    text: str = ""  # transcript so far
 
 
 @dataclass
@@ -153,6 +199,31 @@ def _quoted(text: str) -> str:
 
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: max(0, limit - 1)] + "…"
+
+
+def heard_text(transcript: str, played_ms: int, audio_ms: int) -> str:
+    """The words of a reply's `transcript` the room heard after `played_ms` of its `audio_ms` of audio, read at an
+    even pace: whole words only, those fully played; "" when nothing was played."""
+    words = transcript.split()
+    if played_ms <= 0 or audio_ms <= 0:
+        return ""
+    return " ".join(words[: len(words) * min(played_ms, audio_ms) // audio_ms])
+
+
+def _tail(text: str, limit: int) -> str:
+    """The end of `text`: at most `limit` characters, from the start of a word."""
+    if len(text) <= limit:
+        return text
+    tail = text[-limit:]
+    if not text[-limit - 1].isspace() and " " in tail:
+        tail = tail.split(" ", 1)[1]  # drop the clipped first word
+    return tail.strip()
+
+
+def _narration_tag(response: dict) -> dict | None:
+    """The metadata a narration request put on its response (Higgs echoes it on response.created), else None."""
+    metadata = response.get("metadata")
+    return metadata if isinstance(metadata, dict) and metadata.get("relay") == "narration" else None
 
 
 def _int(value: Any) -> int | None:
@@ -227,6 +298,11 @@ class Controller:
         self.floor_offline = False  # the presenter took the floor because Realtime was down: arrows move silently
         self._autos = 0  # ids of the watchdog's own actions in the ticker ("auto")
         self.turn: Turn | None = None
+        self._live_mode = settings.narration == "live"
+        self.live: LiveNarration | None = None  # NARRATING live: the slide's narration request
+        self.narration_source: str | None = None  # the current narration: live · backup (live mode) · rendered
+        self._presented = False  # a live narration was heard since the presentation started (no greeting after it)
+        self._echo = False  # Realtime echoes response metadata: a response without it is never a narration
         self.fragment: int | None = 0 if self.current_slide.is_relay else None  # visible on the current slide
         self.banner: str | None = None
 
@@ -327,6 +403,7 @@ class Controller:
         return {
             "state": self.state, "phase": self.phase, "slide": self.current_slide.id, "banner": self.banner,
             "thinking": self.thinking, "can_resume": self.can_resume, "mic_mode": self.settings.mic_mode,
+            "narration_mode": self.settings.narration, "narration": self.narration,
             "connection": {"status": status, "detail": detail}, "talk": self.talk.id,
         }
 
@@ -352,6 +429,12 @@ class Controller:
     @property
     def can_resume(self) -> bool:
         return self.cursor is not None and self.state != NARRATING
+
+    @property
+    def narration(self) -> str | None:
+        """What the room hears while NARRATING: live (Higgs Realtime), backup (the renders standing in for it) or
+        rendered (narration = "rendered"); None in every other state."""
+        return self.narration_source if self.state == NARRATING else None
 
     # --- guard, logging, sending ------------------------------------------------------------------------------
 
@@ -405,7 +488,7 @@ class Controller:
     def _state_message(self) -> dict:
         return {"type": "state", "state": self.state, "phase": self.phase, "slide": self.current_slide.id,
                 "banner": self.banner, "thinking": self.thinking, "can_resume": self.can_resume,
-                "mic_mode": self.settings.mic_mode}
+                "mic_mode": self.settings.mic_mode, "narration": self.narration}
 
     async def _sync_state(self, *, force: bool = False) -> None:
         msg = self._state_message()
@@ -422,6 +505,11 @@ class Controller:
 
     def _banner_human(self) -> str:
         return BANNER_HUMAN.format(presenter=self.talk.presenter)
+
+    def _idle_banner(self) -> str:
+        """IDLE after an interruption: "Paused — R to resume" when there is something to resume, else why Relay is
+        silent (a cancelled "Starting…" countdown had nothing to resume)."""
+        return BANNER_PAUSED_R if self.cursor is not None else self._phase_banner()
 
     def _phase_banner(self) -> str:
         """Why Relay is silent in IDLE, by phase."""
@@ -497,12 +585,14 @@ class Controller:
 
     async def _greet(self) -> None:
         """hello + slide + state + connection for a (re)connected deck. A deck that connects mid-turn or
-        mid-narration starts silent, so Relay goes IDLE first (cursor kept: R resumes)."""
+        mid-narration starts silent, so Relay goes IDLE first (cursor kept: R resumes; a live narration is cut at
+        what the wall clock says the room heard)."""
         if self.state in (NARRATING, LISTENING, REPLYING):
             await self._halt(None, cut=False)
             self._set_state(IDLE, BANNER_PAUSED_R)
         await self._send({"type": "hello", "talk": self.talk.id, "version": self._version(),
-                          "mic_mode": self.settings.mic_mode, "snapshot": self.snapshot()})
+                          "mic_mode": self.settings.mic_mode, "narration_mode": self.settings.narration,
+                          "snapshot": self.snapshot()})
         if self.state != NARRATING:
             await self._send({"type": "stop"})
         if not self._mic_open:
@@ -524,7 +614,7 @@ class Controller:
     async def _browser_gone(self) -> None:
         await self._halt(None, cut=False)
         self._mic_open = False
-        self._set_state(IDLE, BANNER_PAUSED_R if self.cursor is not None else self._phase_banner())
+        self._set_state(IDLE, self._idle_banner())
 
     async def _on_mic(self, msg: dict) -> None:
         turn = self.turn
@@ -586,7 +676,7 @@ class Controller:
     async def _key_esc(self, msg: dict) -> None:
         if self._countdown_running():
             await self._stop_countdown()
-            self._set_state(IDLE, BANNER_PAUSED_R)
+            self._set_state(IDLE, self._idle_banner())
         elif self.state == LISTENING:
             await self._close_mic(clear=True)
             await self._back_to_origin()
@@ -613,11 +703,15 @@ class Controller:
 
     async def _undo_local_stop(self, msg: dict) -> None:
         """The deck stops narration and flushes the reply on → ← before telling us; at the deck edge the key is
-        ignored, so put narration back where it was, and end a flushed reply properly. A running countdown (which
-        the deck hides on any key) is cancelled: presenter keys always win over the watchdog."""
+        ignored, so put narration back where it was (a live narration, which the flush cut off, continues live from
+        what was heard), and end a flushed reply properly. A running countdown (which the deck hides on any key) is
+        cancelled: presenter keys always win over the watchdog."""
         if self._countdown_running():
             await self._stop_countdown()
-            self._set_state(IDLE, BANNER_PAUSED_R)
+            self._set_state(IDLE, self._idle_banner())
+        elif self.state == NARRATING and self.live is not None:
+            await self._cut_live(msg)
+            await self._play(self.cursor)
         elif self.state == NARRATING:
             await self._play(self._pause_cursor(self._position(msg.get("at"))))
         elif self.state == REPLYING:
@@ -626,14 +720,20 @@ class Controller:
 
     async def _key_pause(self, msg: dict) -> None:
         if self.state == NARRATING:
-            await self._send({"type": "stop"})
-            self.cursor = self._pause_cursor(self._position(msg.get("at")))
+            if self.live is not None:  # P again continues the slide live (or the backup replays it, if offline)
+                await self._cut_live(msg)
+            else:
+                await self._send({"type": "stop"})
+                self.cursor = self._pause_cursor(self._position(msg.get("at")))
             self._set_state(PAUSED, BANNER_PAUSED)
         elif self.state == PAUSED and self.cursor is not None:
             await self._play(self.cursor)
-        elif self._countdown_running():  # P during "Resuming…": stay paused at the resume point
+        elif self._countdown_running():
             await self._stop_countdown()
-            self._set_state(PAUSED, BANNER_PAUSED)
+            if self.cursor is not None:  # P during "Resuming…": stay paused at the resume point
+                self._set_state(PAUSED, BANNER_PAUSED)
+            else:  # "Starting…": nothing to pause
+                self._set_state(IDLE, self._phase_banner())
 
     async def _key_human(self, msg: dict) -> None:
         await self._halt(msg, cut=True)
@@ -648,29 +748,26 @@ class Controller:
 
     async def _on_chunk_ended(self, msg: dict) -> None:
         cursor = self.cursor
-        if self.state != NARRATING or cursor is None or _int(msg.get("play_id")) != self.play_id:
+        if (self.state != NARRATING or self.live is not None or cursor is None
+                or _int(msg.get("play_id")) != self.play_id):  # (a live narration has no chunks)
             self._note("chunk_ended_ignored", {"play_id": msg.get("play_id"), "current": self.play_id,
                                                "state": self.state})
             return
         slide = self.talk.slide(cursor.slide)
         if cursor.chunk + 1 < len(slide.chunks):
-            await self._play(Cursor(slide.id, cursor.chunk + 1))
+            await self._play_rendered(Cursor(slide.id, cursor.chunk + 1))
             return
-        self.cursor = None
-        if slide.is_qa:
-            self._set_state(IDLE, BANNER_QA)
-            return
-        following = slide.index + 1
-        if following < len(self.talk.slides) and self.talk.slides[following].is_relay:
-            await self._play(Cursor(self.talk.slides[following].id, 0), show_slide=True)
-        elif following < len(self.talk.slides):
-            self._set_state(IDLE, self._banner_human())
-        else:
-            self._set_state(IDLE, BANNER_END)
+        await self._after_slide(slide)
 
     async def _on_reply_drained(self, msg: dict) -> None:
+        reply = _int(msg.get("reply"))
+        live = self.live
+        if self.state == NARRATING and live is not None:
+            if live.response_done and reply == live.reply:
+                await self._narration_drained("browser")
+            return
         turn = self.turn
-        if self.state != REPLYING or turn is None or not turn.response_done or _int(msg.get("reply")) != turn.reply:
+        if self.state != REPLYING or turn is None or not turn.response_done or reply != turn.reply:
             return
         await self._drained("browser")
 
@@ -701,7 +798,7 @@ class Controller:
         previous = self.turn
         if self.state in (LISTENING, REPLYING) and previous is not None:
             origin = previous.origin
-        elif self.state == NARRATING or countdown:
+        elif self.state == NARRATING or (countdown and self.cursor is not None):  # not "Starting…": nothing to resume
             origin = ORIGIN_NARRATION
         elif self.state == PAUSED:
             origin = ORIGIN_PAUSED
@@ -772,13 +869,21 @@ class Controller:
             await self._rt({"type": "response.cancel"})
 
     async def _send_pending(self) -> None:
-        """The held-back user item + response.create, once no response is active any more."""
-        turn = self.turn
-        if (turn is not None and turn.pending and not self._active and self.state == REPLYING
-                and turn.response_id is None):
+        """What was held back, once no response is active any more: a question (the user item + response.create),
+        or a narration request."""
+        if self._active:
+            return
+        turn, live = self.turn, self.live
+        if turn is not None and turn.pending and self.state == REPLYING and turn.response_id is None:
             events, turn.pending = turn.pending, []
             for event in events:
                 await self._rt(event)
+        elif live is not None and live.pending and self.state == NARRATING and live.response_id is None:
+            events, live.pending = live.pending, []
+            for event in events:
+                if not await self._rt(event):
+                    await self._narration_failed("not sent")
+                    return
 
     async def _close_mic(self, *, clear: bool) -> None:
         if self._mic_open:
@@ -803,7 +908,7 @@ class Controller:
                     await self._owe_output(turn.response_id, call_id, CUT_CALL_OUTPUT)
         played = None
         if turn.audio_item_id and turn.audio_bytes > 0:
-            played = self._played_ms(msg, turn)
+            played = self._played_ms(msg, turn.reply, turn.audio_bytes, turn.first_audio_at)
             await self._rt({"type": "conversation.item.truncate", "item_id": turn.audio_item_id,
                             "content_index": 0, "audio_end_ms": played})
         if turn.reply is not None:
@@ -811,16 +916,16 @@ class Controller:
         self._note("reply_cut", {"reply": turn.reply, "response_id": turn.response_id, "played_ms": played,
                                  "response_done": turn.response_done})
 
-    def _played_ms(self, msg: dict | None, turn: Turn) -> int:
-        """Reply audio the room actually heard: the deck's count if it is about this reply, else an estimate
-        from the wall clock; never more than was received."""
-        received = turn.audio_bytes // BYTES_PER_MS
+    def _played_ms(self, msg: dict | None, reply: int | None, audio_bytes: int, first_audio_at: float | None) -> int:
+        """Audio of reply `reply` the room actually heard: the deck's count if it is about this reply, else an
+        estimate from the wall clock since its first audio; never more than was received."""
+        received = audio_bytes // BYTES_PER_MS
         reported = _int(msg.get("reply_played_ms")) if msg else None
-        reply = _int(msg.get("reply")) if msg else None
-        if reported is not None and (reply is None or reply == turn.reply):
+        about = _int(msg.get("reply")) if msg else None
+        if reported is not None and (about is None or about == reply):
             played = reported
-        elif turn.first_audio_at is not None:
-            played = round((self.clock.now() - turn.first_audio_at) * 1000)
+        elif first_audio_at is not None:
+            played = round((self.clock.now() - first_audio_at) * 1000)
         else:
             played = 0
         return max(0, min(played, received))
@@ -863,14 +968,17 @@ class Controller:
 
     async def _halt(self, msg: dict | None, *, cut: bool) -> None:
         """Interrupt everything: queued action, countdown, turn timers, mic, reply, narration. With `cut`,
-        narration that was playing or paused is cut (the cursor moves to the cut sentence's start). The caller
-        sets the next state."""
+        narration that was playing or paused is cut (the cursor moves to the cut sentence's start); a live
+        narration is cut either way (the cursor continues it from what was heard). The caller sets the next
+        state."""
         await self._discard_queued("interrupted")
         await self._stop_countdown()
         if self.state == LISTENING:
             await self._close_mic(clear=True)
         elif self.state == REPLYING:
             await self._cut_reply(msg)
+        elif self.state == NARRATING and self.live is not None:
+            await self._cut_live(msg)
         elif self.state == NARRATING:
             await self._send({"type": "stop"})
             if cut:
@@ -880,8 +988,8 @@ class Controller:
         self._end_turn()
 
     async def _drained(self, reason: str) -> None:
-        """The reply has finished playing: run the queued tool, else count down back to the script (origin
-        narration), else return to PAUSED / IDLE."""
+        """The reply has finished playing: run the queued tool, else count down to the presentation (a greeting,
+        D57) or back to the script (origin narration), else return to PAUSED / IDLE."""
         turn = self.turn
         if turn is None:
             return
@@ -896,6 +1004,11 @@ class Controller:
         elif self.current_slide.is_qa and turn.first_audio_at is not None:
             # A Q&A answer was given but the model didn't hand back (live F5: it rarely does; D-watchdog).
             await self._auto(tools.HANDOFF_TO_HUMAN)
+        elif self.phase == "opening" and turn.first_audio_at is not None:
+            # The greeting was heard but called no tool (F5 again): the watchdog starts the presentation (D57).
+            self._set_state(IDLE, BANNER_STARTING)
+            await self._send({"type": "countdown", "seconds": math.ceil(COUNTDOWN_S)})
+            self._start_timer("countdown", COUNTDOWN_S, self._on_start_countdown)
         elif turn.origin == ORIGIN_NARRATION:
             self._set_state(IDLE, BANNER_RESUMING)
             await self._send({"type": "countdown", "seconds": math.ceil(COUNTDOWN_S)})
@@ -912,6 +1025,16 @@ class Controller:
         return slide.fragment_at(chunk) if slide.is_relay else None
 
     async def _play(self, cursor: Cursor, *, show_slide: bool = False) -> None:
+        """Narrate from `cursor`: live (D52) when the link is ready and the cursor starts a slide or continues a live
+        one, else from the renders (rendered mode, or the backup, D53). A backup narration cut mid-slide continues
+        from the renders even once the link is back; the next slide start decides again."""
+        if self._live_mode and self.realtime.ready and (cursor.live or cursor.slide_start):
+            await self._narrate(cursor, show_slide=show_slide)
+        else:  # the backup can't continue a live slide: it presents it again from its start
+            await self._play_rendered(Cursor(cursor.slide, 0) if cursor.live else cursor, show_slide=show_slide)
+
+    async def _play_rendered(self, cursor: Cursor, *, show_slide: bool = False) -> None:
+        """Play the rendered chunk at `cursor` (the narration of rendered mode; the backup in live mode)."""
         slide = self.talk.slide(cursor.slide)
         fragment = self._fragments(slide, cursor.chunk)
         if show_slide or slide.index != self.slide_index:
@@ -924,9 +1047,44 @@ class Controller:
         self.floor_human = False
         self.floor_offline = False
         self._cut_info = None
+        self.narration_source = "backup" if self._live_mode else "rendered"
         await self._send({"type": "play", "play_id": self.play_id, "slide": slide.id, "chunk": cursor.chunk,
                           "offset_ms": cursor.offset_ms, "fragment": fragment, "resume_word": cursor.resume_word})
         self._set_state(NARRATING, None)
+
+    async def _narrate(self, cursor: Cursor, *, show_slide: bool = False) -> None:
+        """Present the cursor's slide live: the whole slide shows (all its fragments) and the Realtime session is
+        asked to present it, from its start or, for a live cursor, from what the room heard."""
+        slide = self.talk.slide(cursor.slide)
+        if show_slide or slide.index != self.slide_index or self.fragment is not None:
+            self.slide_index = slide.index
+            await self._send({"type": "slide", "slide": slide.id, "fragment": None})
+        self.fragment = None
+        self.cursor = Cursor(slide.id, 0, live=cursor.live, heard=cursor.heard, heard_ms=cursor.heard_ms)
+        self.started = True
+        self.floor_human = False
+        self.floor_offline = False
+        self._cut_info = None
+        self._reply_seq += 1
+        self.live = LiveNarration(slide.id, self._reply_seq, continuing=cursor.live)
+        self.narration_source = "live"
+        self._set_state(NARRATING, None)
+        await self._request_narration(self.live)
+
+    async def _after_slide(self, slide: Slide) -> None:
+        """The slide's narration is over: wait for a question (Q&A slide), present the next relay slide, or leave
+        the floor to the presenter (a human slide next, or the end of the deck)."""
+        self.cursor = None
+        if slide.is_qa:
+            self._set_state(IDLE, BANNER_QA)
+            return
+        following = slide.index + 1
+        if following < len(self.talk.slides) and self.talk.slides[following].is_relay:
+            await self._play(Cursor(self.talk.slides[following].id, 0), show_slide=True)
+        elif following < len(self.talk.slides):
+            self._set_state(IDLE, self._banner_human())
+        else:
+            self._set_state(IDLE, BANNER_END)
 
     async def _goto(self, index: int) -> None:
         """Show slide `index`: a relay slide narrates from chunk 0, a human slide leaves the presenter the floor
@@ -969,6 +1127,7 @@ class Controller:
             self._note("opening_rearmed", {"slide": self.talk.slides[index].id})
         self.started = False
         self.floor_human = False
+        self._presented = False
 
     async def _start_presentation(self) -> None:
         first = self.talk.next_relay_index(0)
@@ -1057,8 +1216,8 @@ class Controller:
 
     async def _cut_paused(self) -> None:
         cursor = self.cursor
-        if cursor is None:
-            return
+        if cursor is None or cursor.live or (self._live_mode and cursor.slide_start):
+            return  # a live slide continues from what was heard; a slide start stays one (it may start live)
         if cursor.resume_word is not None:  # already at a sentence start
             await self._cut_at(cursor.slide, cursor.chunk, None, cursor)
         else:
@@ -1083,17 +1242,175 @@ class Controller:
         self._note("cut", {"slide": slide, "chunk": chunk, "t_ms": t_ms, "cut_word": point.cut_word,
                            "word": word.word, "resume_word": point.resume_word, "offset_ms": point.offset_ms})
 
+    # --- live narration (D52) --------------------------------------------------------------------------------
+
+    def _narration_seconds(self, slide: Slide) -> int:
+        """How long a live narration of `slide` should take: as long as its backup, else its notes at a speaking
+        pace; within NARRATION_MIN_S…NARRATION_MAX_S."""
+        rendered = [self.chunks.get((slide.id, chunk.index)) for chunk in slide.chunks]
+        backup_ms = sum(chunk.duration_ms for chunk in rendered if chunk is not None)
+        seconds = backup_ms / 1000 if backup_ms else word_count(slide.narration) / WORDS_PER_SECOND
+        return round(min(NARRATION_MAX_S, max(NARRATION_MIN_S, seconds)))
+
+    async def _request_narration(self, live: LiveNarration) -> None:
+        """Ask the Realtime session to present the slide: one response.create with its own instructions, tagged in
+        `metadata` (echoed on response.created) and with tool_choice "none" (live findings 2026-10-23). Like a
+        question, it is held back while another response is active, and that one is cancelled. Never preceded by a
+        user message (a "stage direction" made the model say just "Hello."). No audio within NARRATION_WAIT_S →
+        it failed."""
+        slide = self.talk.slide(live.slide)
+        cursor = self.cursor
+        seconds = self._narration_seconds(slide)
+        heard = None
+        if live.continuing and cursor is not None and cursor.live:
+            seconds = max(CONTINUE_MIN_S, round(seconds - cursor.heard_ms / 1000))
+            heard = cursor.heard
+        event = {"type": "response.create", "response": {
+            "instructions": narration_instructions(self.talk, slide, seconds=seconds, continuing=live.continuing,
+                                                   heard=heard, first=not self._presented),
+            "metadata": {"relay": "narration", "reply": str(live.reply), "slide": slide.id},
+            "tool_choice": "none"}}
+        self._start_timer("narration_wait", NARRATION_WAIT_S, self._on_narration_wait)
+        self._note("narration_request", {"slide": slide.id, "reply": live.reply, "attempt": live.attempt,
+                                         "continuing": live.continuing, "seconds": seconds,
+                                         "held": bool(self._active)})
+        if self._active:
+            live.pending = [event]
+            if self._active - self._ignored:
+                self._ignored |= self._active
+                await self._rt({"type": "response.cancel"})
+        elif not await self._rt(event):
+            await self._narration_failed("not sent")
+
+    def _answers_narration(self, response: dict, live: LiveNarration) -> bool:
+        """Whether a response.created answers the narration request `live`: its echoed metadata names that request.
+        A response without metadata may be it too, unless Realtime has been seen echoing metadata: then it is
+        another one (e.g. the late response of a question that was cut while Relay was thinking)."""
+        if not response.get("metadata"):
+            return not self._echo
+        tag = _narration_tag(response)
+        return tag is not None and tag.get("reply") == str(live.reply)
+
+    async def _finish_narration(self, live: LiveNarration) -> None:
+        """No more narration audio: answer the tool calls it made (it may not drive the deck), reply_end, and arm
+        the drain fallback. A narration that never spoke failed."""
+        live.response_done = True
+        self._cancel_timer("narration_stall")
+        await self._reject_narration_calls(live)
+        if live.first_audio_at is None:
+            await self._narration_failed("no audio")
+            return
+        self._cancel_timer("narration_wait")
+        await self._send({"type": "reply_end", "reply": live.reply})
+        self._start_timer("narration_drain",
+                          self._remaining_audio_s(live.first_audio_at, live.audio_bytes) + DRAIN_GRACE_S,
+                          self._on_narration_drain)
+
+    async def _reject_narration_calls(self, live: LiveNarration) -> None:
+        """A narration was asked not to call tools, and the deck moves on by itself: every call it made anyway gets
+        an error output (at its response.done, never followed by response.create) and shows as rejected."""
+        if live.response_id is None:
+            return
+        for call_id, (name, arguments) in live.calls.items():
+            if call_id in self._answered:
+                continue
+            await self._owe_output(live.response_id, call_id, NARRATION_CALL_OUTPUT)
+            await self._tool_message(call_id, str(name), tools.parse_args(arguments), "rejected")
+            self._note("tool", {"call_id": call_id, "name": name, "status": "rejected", "reason": "narrating"})
+
+    async def _narration_drained(self, reason: str) -> None:
+        """The live narration has finished playing: on to what follows the slide; a narration the link or a stall
+        cut short is followed by the backup presenting the slide again from its start."""
+        live = self.live
+        if live is None:
+            return
+        self.live = None
+        for name in NARRATION_TIMERS:
+            self._cancel_timer(name)
+        self._note("narration_drained", {"reason": reason, "reply": live.reply, "slide": live.slide,
+                                         "incomplete": live.incomplete})
+        if live.incomplete:
+            await self._play_rendered(Cursor(live.slide, 0))
+        else:
+            await self._after_slide(self.talk.slide(live.slide))
+
+    async def _drop_narration_response(self, live: LiveNarration) -> None:
+        """Stop a narration's response for good: cancel it if it may still be generating, ignore its later events,
+        and owe its tool calls the cut output. A request still held back is simply never sent."""
+        if not live.response_done and (live.response_id is not None or not live.pending):
+            await self._rt({"type": "response.cancel"})
+        if live.response_id is not None:
+            self._ignored.add(live.response_id)
+            if not live.response_done:
+                for call_id in live.calls:
+                    await self._owe_output(live.response_id, call_id, CUT_CALL_OUTPUT)
+
+    async def _narration_failed(self, why: str) -> None:
+        """A narration request that never spoke: no audio in time, a response that ended or stalled silent, a
+        request the link could not send. Ask once more while the link is ready, else the backup presents the slide
+        (D53)."""
+        live = self.live
+        if live is None:
+            return
+        for name in NARRATION_TIMERS:
+            self._cancel_timer(name)
+        if live.pending:  # the response it waited on never reported done: don't let it hold back the retry
+            self._note("stale_responses", {"ids": sorted(self._active)})
+            self._active.clear()
+        await self._drop_narration_response(live)
+        await self._send({"type": "reply_flush", "reply": live.reply})
+        retry = live.attempt < NARRATION_RETRIES and self.realtime.ready
+        self._note("narration_failed", {"why": why, "slide": live.slide, "reply": live.reply,
+                                        "attempt": live.attempt, "then": "retry" if retry else "backup"})
+        if retry:
+            self._reply_seq += 1
+            self.live = LiveNarration(live.slide, self._reply_seq, live.continuing, attempt=live.attempt + 1)
+            await self._request_narration(self.live)
+        else:
+            self.live = None
+            await self._play_rendered(Cursor(live.slide, 0))
+
+    async def _cut_live(self, msg: dict | None) -> tuple[str, str, int] | None:
+        """Cut the live narration off: cancel it if still generating, truncate the model's memory of it to what
+        the room heard (the deck's count, else the wall clock), flush the deck's reply player. The cursor then
+        continues the slide live from what was heard (a cut before any audio leaves it where it was), and STATE's
+        cut line quotes it. Returns (slide, words heard, ms heard) of this narration, None if there was none."""
+        live = self.live
+        if live is None:
+            return None
+        self.live = None
+        for name in NARRATION_TIMERS:
+            self._cancel_timer(name)
+        await self._drop_narration_response(live)
+        played = 0
+        if live.audio_bytes > 0:
+            played = self._played_ms(msg, live.reply, live.audio_bytes, live.first_audio_at)
+            if live.audio_item_id:
+                await self._rt({"type": "conversation.item.truncate", "item_id": live.audio_item_id,
+                                "content_index": 0, "audio_end_ms": played})
+        await self._send({"type": "reply_flush", "reply": live.reply})
+        heard = heard_text(live.text, played, live.audio_bytes // BYTES_PER_MS)
+        cursor = self.cursor if self.cursor is not None and self.cursor.slide == live.slide else Cursor(live.slide, 0)
+        if played > 0:  # what the room heard of this slide so far: earlier parts too, when this one continued it
+            so_far = " ".join(part for part in (cursor.heard, heard) if part)
+            cursor = Cursor(live.slide, 0, live=True, heard=_tail(so_far, HEARD_MAX_CHARS),
+                            heard_ms=cursor.heard_ms + played)
+        self.cursor = cursor
+        self._cut_info = (cursor.heard.split()[-1], cursor.heard) if cursor.heard else None
+        self._note("narration_cut", {"slide": live.slide, "reply": live.reply, "played_ms": played, "heard": heard})
+        return live.slide, heard, played
+
     # --- tools ------------------------------------------------------------------------------------------------
 
     async def _tool_message(self, call_id: str, name: str, args: dict, status: str) -> None:
         await self._send({"type": "tool", "call_id": call_id, "name": name, "args": args, "status": status})
 
-    def _register_call(self, turn: Turn, call_id: Any, name: Any, arguments: Any) -> bool:
-        if not isinstance(call_id, str) or not call_id or call_id in turn.calls or call_id in self._answered:
+    def _register_call(self, owner: Turn | LiveNarration, call_id: Any, name: Any, arguments: Any) -> bool:
+        if not isinstance(call_id, str) or not call_id or call_id in owner.calls or call_id in self._answered:
             return False
-        turn.calls[call_id] = (name, arguments)
+        owner.calls[call_id] = (name, arguments)
         self._note("tool_call", {"call_id": call_id, "name": name, "arguments": arguments,
-                                 "response_id": turn.response_id})
+                                 "response_id": owner.response_id})
         return True
 
     def _remember_call_item(self, call_id: Any, item_id: Any) -> None:
@@ -1216,8 +1533,11 @@ class Controller:
         if not isinstance(event, dict):
             return
         turn = self._open_reply()
-        if turn is not None and self._of_reply(event, turn):
+        if turn is not None and self._of_response(event, turn.response_id):
             self._start_timer("reply_stall", REPLY_STALL_S, self._on_reply_stall)  # still streaming: not stalled
+        live = self._open_narration()
+        if live is not None and self._of_response(event, live.response_id):
+            self._start_timer("narration_stall", REPLY_STALL_S, self._on_narration_stall)
         handler = self._event_handlers.get(event.get("type"))  # anything else: ignore
         if handler is not None:
             await handler(event)
@@ -1229,14 +1549,32 @@ class Controller:
             return turn
         return None
 
+    def _open_narration(self) -> LiveNarration | None:
+        """The live narration while its bound response is still streaming (bound, no response.done yet)."""
+        live = self.live
+        if self.state == NARRATING and live is not None and live.response_id is not None and not live.response_done:
+            return live
+        return None
+
     @staticmethod
-    def _of_reply(event: dict, turn: Turn) -> bool:
-        """A streaming event of the turn's bound response (one without an id counts, as in _event_turn)."""
-        response_id, kind = event.get("response_id"), event.get("type")
-        if response_id is not None:
-            return response_id == turn.response_id
+    def _of_response(event: dict, response_id: str | None) -> bool:
+        """A streaming event of the bound response `response_id` (one without an id counts, as in _event_turn)."""
+        of, kind = event.get("response_id"), event.get("type")
+        if of is not None:
+            return of == response_id
         return isinstance(kind, str) and kind.startswith("response.") and kind not in ("response.created",
                                                                                      "response.done")
+
+    def _event_narration(self, response_id: Any) -> LiveNarration | None:
+        """The live narration if `response_id` is its bound response (events without an id count as current)."""
+        live = self.live
+        if self.state != NARRATING or live is None or live.response_id is None:
+            return None
+        if response_id is None:
+            return live
+        if response_id != live.response_id or response_id in self._ignored:
+            return None
+        return live
 
     def _event_turn(self, response_id: Any) -> Turn | None:
         """The current turn if `response_id` is its bound response (events without an id count as current)."""
@@ -1316,24 +1654,45 @@ class Controller:
             self._active.add(response_id)
         else:
             response_id = None
+        tag = _narration_tag(response)
+        self._echo = self._echo or tag is not None
+        live = self.live
+        if (self.state == NARRATING and live is not None and live.response_id is None and not live.pending
+                and response_id is not None and response_id not in self._ignored
+                and self._answers_narration(response, live)):
+            live.response_id = response_id
+            self._start_timer("narration_stall", REPLY_STALL_S, self._on_narration_stall)
+            await self._send({"type": "reply_start", "reply": live.reply, "kind": "narration"})
+            self._note("narration_start", {"reply": live.reply, "slide": live.slide, "response_id": response_id,
+                                           "attempt": live.attempt})
+            return
         turn = self.turn
         if (self.state == REPLYING and turn is not None and turn.expects_response and turn.response_id is None
-                and not turn.pending and response_id is not None and response_id not in self._ignored):
-            # (a response created while our own question is still held back can't be the answer to it)
+                and not turn.pending and response_id is not None and response_id not in self._ignored
+                and tag is None):
+            # (a response created while our own question is still held back can't be the answer to it, and neither
+            # can a narration's)
             turn.response_id = response_id
             self._cancel_timer("reply_wait")
             self._start_timer("reply_stall", REPLY_STALL_S, self._on_reply_stall)
-            await self._send({"type": "reply_start", "reply": turn.reply})
+            await self._send({"type": "reply_start", "reply": turn.reply, "kind": "answer"})
             self._note("reply_start", {"reply": turn.reply, "response_id": response_id})
             return
         if response_id is not None:
             self._ignored.add(response_id)
-        self._note("response_rejected", {"response_id": response_id, "state": self.state})
-        await self._rt({"type": "response.cancel"})
+        self._note("response_rejected", {"response_id": response_id, "state": self.state,
+                                         "narration": tag is not None})
+        if tag is None:  # a stale narration's own cancel went out when it was dropped: another could hit the current
+            await self._rt({"type": "response.cancel"})
 
     async def _ev_audio_delta(self, event: dict) -> None:
-        turn = self._event_turn(event.get("response_id"))
         delta = event.get("delta")
+        live = self._event_narration(event.get("response_id"))
+        if live is not None:
+            if not live.response_done and isinstance(delta, str) and delta:
+                await self._narration_audio(live, event.get("item_id"), delta)
+            return
+        turn = self._event_turn(event.get("response_id"))
         if turn is None or self.state != REPLYING or turn.response_done or not isinstance(delta, str):
             return
         if turn.first_audio_at is None:
@@ -1344,22 +1703,46 @@ class Controller:
         turn.audio_bytes += _b64_bytes(delta)
         await self._send({"type": "reply_audio", "reply": turn.reply, "pcm": delta})
 
+    async def _narration_audio(self, live: LiveNarration, item_id: Any, delta: str) -> None:
+        if live.first_audio_at is None:  # it speaks: no retry, and later narrations don't greet
+            live.first_audio_at = self.clock.now()
+            self._presented = True
+            self._cancel_timer("narration_wait")
+        if live.audio_item_id is None and isinstance(item_id, str):
+            live.audio_item_id = item_id
+        live.audio_bytes += _b64_bytes(delta)
+        await self._send({"type": "reply_audio", "reply": live.reply, "pcm": delta})
+
     async def _ev_transcript_delta(self, event: dict) -> None:
-        turn = self._event_turn(event.get("response_id"))
         delta = event.get("delta")
-        if turn is None or self.state != REPLYING or not isinstance(delta, str) or not delta:
+        if not isinstance(delta, str) or not delta:
+            return
+        live = self._event_narration(event.get("response_id"))
+        if live is not None:
+            live.text += delta
+            await self._send({"type": "caption", "role": "assistant", "text": live.text, "final": False,
+                              "reply": live.reply})
+            return
+        turn = self._event_turn(event.get("response_id"))
+        if turn is None or self.state != REPLYING:
             return
         turn.assistant_text += delta
         await self._send({"type": "caption", "role": "assistant", "text": turn.assistant_text, "final": False,
                           "reply": turn.reply})
 
     async def _ev_transcript_done(self, event: dict) -> None:
+        transcript = event.get("transcript")
+        final = transcript.strip() if isinstance(transcript, str) else ""
+        live = self._event_narration(event.get("response_id"))
+        if live is not None:
+            live.text = final or live.text
+            await self._send({"type": "caption", "role": "assistant", "text": live.text, "final": True,
+                              "reply": live.reply})
+            return
         turn = self._event_turn(event.get("response_id"))
         if turn is None or self.state != REPLYING:
             return
-        transcript = event.get("transcript")
-        if isinstance(transcript, str) and transcript.strip():
-            turn.assistant_text = transcript.strip()
+        turn.assistant_text = final or turn.assistant_text
         await self._send({"type": "caption", "role": "assistant", "text": turn.assistant_text, "final": True,
                           "reply": turn.reply})
 
@@ -1372,6 +1755,12 @@ class Controller:
         self._remember_call_item(call_id, event.get("item_id"))
         if isinstance(response_id, str) and response_id in self._ignored:  # cut, stalled or rejected: never run
             await self._owe_output(response_id, call_id, CUT_CALL_OUTPUT)
+            return
+        live = self._event_narration(response_id)
+        if live is not None:
+            if self._register_call(live, call_id, event.get("name"), event.get("arguments")) \
+                    and live.response_done:  # a straggler after response.done: answer it now
+                await self._reject_narration_calls(live)
             return
         turn = self._event_turn(response_id)
         if turn is None:
@@ -1397,6 +1786,16 @@ class Controller:
                 for item in calls:
                     await self._owe_output(response_id, item.get("call_id"), CUT_CALL_OUTPUT)
         await self._send_pending()  # after those outputs: the user's held-back item comes last, then the create
+        live = self._event_narration(response_id)
+        if live is not None:
+            if not live.response_done:
+                for item in calls:
+                    self._register_call(live, item.get("call_id"), item.get("name"), item.get("arguments"))
+                self._note("narration_done", {"reply": live.reply, "response_id": response_id,
+                                              "status": response.get("status"), "audio_ms":
+                                              live.audio_bytes // BYTES_PER_MS, "calls": list(live.calls)})
+                await self._finish_narration(live)
+            return
         turn = self._event_turn(response_id)
         if turn is None or turn.response_done or self.state != REPLYING:
             return
@@ -1435,13 +1834,15 @@ class Controller:
         await self._settle_calls(turn, owe=owe)
         if turn.reply is not None:
             await self._send({"type": "reply_end", "reply": turn.reply})
-        self._start_timer("drain", self._remaining_audio_s(turn) + DRAIN_GRACE_S, self._on_drain_timeout)
+        self._start_timer("drain", self._remaining_audio_s(turn.first_audio_at, turn.audio_bytes) + DRAIN_GRACE_S,
+                          self._on_drain_timeout)
 
-    def _remaining_audio_s(self, turn: Turn) -> float:
-        if turn.first_audio_at is None:
+    def _remaining_audio_s(self, first_audio_at: float | None, audio_bytes: int) -> float:
+        """Reply audio still to play, if it started playing at its first delta."""
+        if first_audio_at is None:
             return 0.0
-        audio_ms = turn.audio_bytes / BYTES_PER_MS
-        elapsed_ms = (self.clock.now() - turn.first_audio_at) * 1000
+        audio_ms = audio_bytes / BYTES_PER_MS
+        elapsed_ms = (self.clock.now() - first_audio_at) * 1000
         return max(0.0, audio_ms - elapsed_ms) / 1000
 
     def _estimate_speech_end(self, turn: Turn, audio_end_ms: Any) -> None:
@@ -1503,6 +1904,8 @@ class Controller:
             await self._send({"type": "connection", "status": "error", "detail": self._connection[1]})
         if self._open_reply() is not None:  # mid-reply: if the reply now goes quiet, end it soon (no done may come)
             self._start_timer("reply_stall", ERROR_GRACE_S, self._on_reply_stall)
+        elif self._open_narration() is not None:  # the same for a narration still streaming
+            self._start_timer("narration_stall", ERROR_GRACE_S, self._on_narration_stall)
 
     def _quiet_error(self, err_type: str, code: str) -> bool:
         """Errors about our own housekeeping that the presenter can't act on (logged, not shown): an output inserted
@@ -1549,8 +1952,9 @@ class Controller:
     def _new_session(self) -> None:
         """A new Realtime session: an empty conversation that numbers its ids afresh. Forget the old session's
         response and call ids (a reused id must be neither ignored nor deduped), its owed outputs, user items and
-        input-stream position. The link reads one socket at a time, so no old event can follow `ready`. A turn
-        still draining from the old session keeps its state, but its audio item is gone: nothing to truncate."""
+        input-stream position. The link reads one socket at a time, so no old event can follow `ready`. A turn or a
+        narration still draining from the old session keeps its state, but its audio item is gone: nothing to
+        truncate."""
         self._active.clear()
         self._ignored.clear()
         self._answered.clear()
@@ -1561,11 +1965,15 @@ class Controller:
         self._stream_ms = 0.0
         if self.turn is not None:
             self.turn.audio_item_id = None
+        if self.live is not None:
+            self.live.audio_item_id = None
 
     async def _link_lost(self) -> None:
-        """Mid-turn drop: LISTENING goes back to its origin; a reply without response.done counts as done."""
+        """Mid-turn drop: LISTENING goes back to its origin; a reply without response.done counts as done. Mid
+        live narration: nothing heard yet → the backup presents the slide now; else what arrived plays out and
+        then the backup presents the slide again."""
         self._active.clear()
-        turn = self.turn
+        turn, live = self.turn, self.live
         if self.state == LISTENING:
             await self._close_mic(clear=False)
             await self._send_error(ERR_LINK_LOST)
@@ -1576,6 +1984,12 @@ class Controller:
                 await self._drained("link lost")
             else:
                 await self._finish_response(turn)
+        elif self.state == NARRATING and live is not None and not live.response_done:
+            if live.first_audio_at is None:
+                await self._narration_failed("link lost")
+            else:
+                live.incomplete = True
+                await self._finish_narration(live)
 
     async def _send_summary(self) -> None:
         exchanges = list(self._history)
@@ -1648,6 +2062,39 @@ class Controller:
                 await self._tool_message(self._auto_id(), tools.RESUME_SCRIPT, {}, "auto")
                 self._note("tool", {"name": tools.RESUME_SCRIPT, "status": "auto"})
 
+    async def _on_start_countdown(self) -> None:
+        """"Starting…" ran out: the greeting called no tool, so the watchdog starts the presentation (D57)."""
+        if self.state == IDLE:
+            await self._auto(tools.START_PRESENTATION)
+
+    async def _on_narration_wait(self) -> None:
+        live = self.live
+        if self.state == NARRATING and live is not None and live.first_audio_at is None:
+            await self._narration_failed("timeout")
+
+    async def _on_narration_stall(self) -> None:
+        """The bound narration went quiet: no event of its own for REPLY_STALL_S (or ERROR_GRACE_S after an error)
+        and no response.done. Cancel it and ignore the rest of it: what was heard plays out, then the backup
+        presents the slide again; a narration that never spoke failed."""
+        live = self._open_narration()
+        if live is None:
+            return
+        self._note("narration_stalled", {"reply": live.reply, "response_id": live.response_id,
+                                         "audio_ms": live.audio_bytes // BYTES_PER_MS})
+        self._active.discard(live.response_id)  # a dead response must not hold back the next request
+        if live.first_audio_at is None:
+            await self._narration_failed("stalled")
+            return
+        await self._rt({"type": "response.cancel"})
+        self._ignored.add(live.response_id)
+        live.incomplete = True
+        await self._finish_narration(live)
+
+    async def _on_narration_drain(self) -> None:
+        live = self.live
+        if self.state == NARRATING and live is not None and live.response_done:
+            await self._narration_drained("fallback")
+
     def _auto_id(self) -> str:
         self._autos += 1
         return f"auto_{self._autos}"
@@ -1664,7 +2111,8 @@ class Controller:
 
     def _context(self) -> TurnContext:
         word, sentence = self._cut_info if self._cut_info else (None, None)
-        return TurnContext(phase=self.phase, slide_id=self.current_slide.id, cut_word=word, cut_sentence=sentence)
+        return TurnContext(phase=self.phase, slide_id=self.current_slide.id, cut_word=word, cut_sentence=sentence,
+                           live=self._live_mode)
 
     def _instructions(self) -> str:
         return build_instructions(self.talk, self._context())

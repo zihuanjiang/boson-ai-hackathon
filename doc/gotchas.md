@@ -169,3 +169,48 @@ Add our own findings here as we hit them (date them).
   - First real render (`talks/test`, chloe): 22.1 s of narration vs 29.5 s for the fake estimate. TTS words come
     without punctuation and some are zero-length (`a@1520-1520`); sentence ids still align. Sentence gaps 400 ms
     (natural) and 720 ms (with `<|prosody:pause|>`), so resume offsets land mid-pause (1560 ms in both examples).
+- 2026-10-23 evening, live narration probes (`.scratch/live-narration/probe.py`, `probe2.py`; voice `default`,
+  turn detection off, Relay's five tools declared), before Relay switched to presenting live (D52):
+  - **Per-response instructions work**: `response.create {"response": {"instructions": …, "metadata": …}}` made the
+    model present a slide from notes that existed only in those instructions, in its own words (`problem`: ~31 s of
+    audio from ~85 words of notes; `how`: 32 s). First audio 0.26–0.55 s after the request. `metadata` is echoed on
+    `response.created` (null on `response.done`). `tool_choice: "none"` inside `response` is accepted.
+  - **On an empty conversation the first narration request produced only a `start_presentation` call, no audio.** In
+    the real order (hand-over line → greeting → narration) it spoke every time (4/4 variants). Relay retries a
+    silent narration once, then plays the backup.
+  - **A "stage direction" user message before the request** (`[Deck, not the audience: present slide …]`) made
+    the model answer "Hello." (880 ms) instead of presenting. Never send one.
+  - The model greets on the Q&A slide ("Hello! I'm ready to take your questions") unless told not to in so many
+    words, and without a `Talk:` line it invents the talk's topic in the opening greeting ("a talk on AI-powered
+    code generation").
+  - A "continue this slide, you were interrupted partway" request bridged with "As I was saying" and covered only the
+    slide's later points. (In that run the earlier narration had produced no audio, so truncating a heard narration
+    is still to be checked live with `scripts/live_check.py`.)
+  - `response.output_audio_transcript.length` events (Higgs extension) carry `length_ms`: how much audio the
+    transcript so far covers (cumulative, 3–7 per response).
+  - In the opening, the model called `start_presentation` in 3 of 4 runs (the fourth only greeted): the opening
+    watchdog (D57) covers that.
+  - **Live narration keeps the session alive** (`probe_idle.py`): with no user audio at all and a narration
+    `response.create` every 75 s until 455 s, `session.idle_timeout` (`seconds_idle: 300`) came at ~775 s, i.e.
+    300 s after the last response, not after the last user speech. A typed user item made no difference. So the
+    warm session is no longer replaced every 5 min during a talk (F7's note applies to the rendered mode only).
+- 2026-10-23 ~20:15, facilitator probes for `doc/brief_updated.md` (`.scratch/same-page/probe_facilitator.py`,
+  voice `default`, tools lookup_evidence / record_clarification / save_decision / resume_presentation):
+  - **Retrieval tool calls are reliable**: "Wait, I thought Friday was production. Which one is it?" → the first
+    response was a silent `lookup_evidence` call in **6/6** fresh sessions (queries like "Friday rollout audience");
+    after the `function_call_output` + `response.create` the model answered from the result in 0.35–0.41 s ("Friday
+    is the beta release, not production. I'm returning to the slide."). It never said the source id aloud, although
+    told to: show the source on screen.
+  - **Listener mode works with `turn_detection: null`**: appended speech + `input_audio_buffer.commit` →
+    `committed`, `conversation.item.added`, `input_audio_transcription.completed` (exact transcripts of two TTS
+    lines), and no response. The app decides when the model speaks.
+  - **`turn_detection` cannot be changed after session start**: a later `session.update` with a new
+    `audio.input.turn_detection` → `invalid_request_error` "turn_detection cannot be changed after session start".
+    Switching between semantic VAD and manual commits means a new session (or manual commits throughout).
+  - Intervention by per-response instructions (evidence + "ask one neutral question, two sentences at most"): a good
+    neutral question that cited the earlier clarification and dates, but 17 s long. Ask for one short sentence each.
+  - **`save_decision` arguments can be invented**: asked to save the decision the group just confirmed, the first
+    call was `{"decision": "Use the new onboarding flow for the pilot program", "owner": "Alex", …}` (nothing like
+    the conversation); the follow-up `response.create` without new instructions called `save_decision` again (this
+    time right: beta users only, owner Bob) and said nothing. Validate decisions against the transcript; follow-ups
+    after a tool result need explicit instructions and no tools.

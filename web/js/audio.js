@@ -1,11 +1,12 @@
 // @ts-check
 /**
- * Web Audio for the deck (doc/design.md §8): one AudioContext at 24 kHz, made in the Arm click; the narration player
- * (decoded wav chunks, the listener's exact position, chunk_ended on natural ends only); the live-reply player
- * (pcm-player worklet, played-sample count, drained); the microphone (mic-capture worklet → 100 ms PCM16 frames +
- * RMS). Everything runs at 24 kHz, so a sample out is a sample in and positions need no resampling maths.
+ * Web Audio for the deck (doc/design.md §8): one AudioContext at 24 kHz, made in the Join click (Arm); the narration
+ * player (decoded wav chunks, the listener's exact position, chunk_ended on natural ends only); the live-reply player
+ * (pcm-player worklet, played-sample count, drained), which also plays Relay's live narration; the microphone
+ * (mic-capture worklet → 100 ms PCM16 frames + RMS); an analyser on both output buses for Relay's speaking ring.
+ * Everything runs at 24 kHz, so a sample out is a sample in and positions need no resampling maths.
  */
-import { RATE, base64ToInt16, int16ToFloat, isNewerReply, listenerPositionMs, playedEstimate, samplesToMs } from "./util.js";
+import { RATE, base64ToInt16, int16ToFloat, isNewerReply, listenerPositionMs, playedEstimate, rms, samplesToMs } from "./util.js";
 
 const WORKLETS = ["/web/worklets/pcm-player.js", "/web/worklets/mic-capture.js"];
 export const STOP_FADE_S = 0.012; // narration fades out over 12 ms on stop: a hard cut clicks on the speakers
@@ -28,6 +29,10 @@ export class AudioEngine {
     this.narrationBus = null;
     /** @type {GainNode|null} */
     this.replyBus = null;
+    /** @type {AnalyserNode|null} taps both buses: what Relay sounds like right now (the meeting's speaking ring) */
+    this.analyser = null;
+    /** @type {Float32Array|null} */
+    this.levelBuffer = null;
     this.workletsReady = false;
     /** @type {(state: string) => void} */
     this.onStateChange = () => {};
@@ -50,9 +55,25 @@ export class AudioEngine {
       this.narrationBus.connect(ctx.destination);
       this.replyBus = ctx.createGain();
       this.replyBus.connect(ctx.destination);
+      if (typeof ctx.createAnalyser === "function") {
+        // A side tap (Chrome pulls an analyser without a path to the destination): no effect on what plays.
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 1024; // ~43 ms at 24 kHz: about one animation frame and a half
+        this.narrationBus.connect(analyser);
+        this.replyBus.connect(analyser);
+        this.analyser = analyser;
+        this.levelBuffer = new Float32Array(analyser.fftSize);
+      }
       ctx.onstatechange = () => this.onStateChange(ctx.state);
     }
     return this.ctx.resume();
+  }
+
+  /** Relay's audible level now: RMS (0..1) of the last ~43 ms of narration and reply audio; 0 without an analyser. */
+  outputLevel() {
+    if (!this.analyser || !this.levelBuffer) return 0;
+    this.analyser.getFloatTimeDomainData(/** @type {any} */ (this.levelBuffer));
+    return rms(this.levelBuffer);
   }
 
   /** Resume a context that got suspended (from a key or pointer handler: resuming needs a user gesture). */

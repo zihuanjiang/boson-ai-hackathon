@@ -25,6 +25,9 @@ REALTIME_MODELS = ("higgs-realtime", "higgs-realtime-1.5-preview")  # the ids th
 STT_MODEL = "higgs-stt-3.1"
 PRESET_VOICES = ("default", "chloe", "eleanor", "jake", "marcus", "nora", "oliver")
 MIC_MODES = ("tap", "hold")  # "open" (hands-free) is a nice-to-have, not in v1
+# live: Higgs Realtime presents every slide in its own words (D52); rendered: the TTS 3 renders play, as in v1.
+# In live mode the renders are the offline backup (D53).
+NARRATION_MODES = ("live", "rendered")
 # Live 2026-10-23: semantic_vad's default 100 ms silence ended 3 of 4 spoken lines at their first pause ("Sorry," →
 # "No worries…"); with 700 ms every line was heard in full and replies still started within ~0.7–1.2 s.
 DEFAULT_TURN_DETECTION: dict = {"type": "semantic_vad", "silence_duration_ms": 700}
@@ -37,6 +40,7 @@ class Settings:
     realtime_url: str = "wss://api.boson.ai/v1/realtime"
     realtime_model: str = REALTIME_MODEL
     mic_mode: str = "tap"
+    narration: str = "live"
     turn_detection: dict | None = field(default_factory=lambda: dict(DEFAULT_TURN_DETECTION))
     temperature: float | None = None
     full_session_update: bool = False
@@ -88,6 +92,7 @@ def load_settings(**overrides) -> Settings:
         "realtime_url": (env.get("BOSON_REALTIME_URL") or "wss://api.boson.ai/v1/realtime").strip().rstrip("/"),
         "realtime_model": (env.get("BOSON_REALTIME_MODEL") or REALTIME_MODEL).strip(),
         "mic_mode": (env.get("MIC_MODE") or "tap").strip().lower(),
+        "narration": (env.get("RELAY_NARRATION") or "live").strip().lower(),
         "turn_detection": _turn_detection(env.get("RELAY_TURN_DETECTION")),
         "temperature": float(temperature) if temperature else None,
         "full_session_update": _flag(env.get("RELAY_FULL_SESSION_UPDATE")),
@@ -99,4 +104,6 @@ def load_settings(**overrides) -> Settings:
     settings = Settings(**values)
     if settings.mic_mode not in MIC_MODES:
         raise ValueError(f"MIC_MODE must be one of {MIC_MODES}, got {settings.mic_mode!r}")
+    if settings.narration not in NARRATION_MODES:
+        raise ValueError(f"RELAY_NARRATION must be one of {NARRATION_MODES}, got {settings.narration!r}")
     return settings

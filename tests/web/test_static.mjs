@@ -19,10 +19,11 @@ function exists(path) {
   }
 }
 
-const JS = ["util", "talk", "socket", "deck", "audio", "captions", "status", "keys", "main"].map((n) => `web/js/${n}.js`);
+const JS = ["util", "talk", "socket", "deck", "audio", "captions", "status", "keys", "meeting", "main"].map((n) => `web/js/${n}.js`);
 const WORKLETS = ["web/worklets/pcm-player.js", "web/worklets/mic-capture.js"];
 const html = read(`${ROOT}/web/index.html`);
 const css = read(`${ROOT}/web/css/relay.css`);
+const mock = read(`${ROOT}/tests/web/mock/meeting.html`);
 
 // ---- every script is checked JS, offline (no URLs it would fetch)
 for (const file of [...JS, ...WORKLETS]) {
@@ -41,13 +42,45 @@ const order = ["/web/vendor/reveal/reveal.js", "/web/vendor/reveal/plugin/markdo
 );
 check("scripts: reveal, markdown plugin, then main", order.every((i, k) => i > 0 && (k === 0 || i > order[k - 1])), String(order));
 check("main.js is a module", html.includes('<script type="module" src="/web/js/main.js">'));
-check("Arm is a <button> named exactly Arm", /<button type="button" class="arm-button"( autofocus)?>Arm<\/button>/.test(html));
-check("one Arm-like button", (html.match(/<button[^>]*>[^<]*arm[^<]*<\/button>/gi) ?? []).length === 1);
+// scripts/e2e_chrome.py clicks the join button by role and exact name
+check(
+  "Join is a <button> named exactly Join with Computer Audio",
+  /<button type="button" class="arm-button"( autofocus)?>Join with Computer Audio<\/button>/.test(html),
+);
+check("one Join-with-audio button", (html.match(/<button[^>]*>[^<]*Join with Computer Audio[^<]*<\/button>/g) ?? []).length === 1);
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
 check("own element ids are prefixed (slide ids live in the same document)", ids.every((id) => id.startsWith("relay-")), ids.join(","));
+check("icons are inline SVG (no images to fetch)", !/<img\b/i.test(html) && (html.match(/<svg /g) ?? []).length >= 10);
 for (const path of [...html.matchAll(/(?:src|href)="(\/web\/[^"]+)"/g)].map((m) => m[1])) {
   check(`index.html asset ${path} exists`, exists(`${ROOT}${path}`));
 }
+
+// ---- the meeting window (contract D55, §6.2)
+const inside = (outer, inner, close) => {
+  const a = html.indexOf(outer);
+  const b = html.indexOf(inner, a);
+  const c = html.indexOf(close, a);
+  return a >= 0 && b > a && c > b;
+};
+check("the deck is Relay's shared screen", inside('<main class="share"', '<div class="reveal">', "</main>"));
+check("captions sit inside the share", inside('<main class="share"', '<section class="captions"', "</main>"));
+check("the tool ticker sits in the Relay tile", inside('<article class="tile tile-relay"', '<ol class="ticker"', "</article>"));
+check("the status strip is the hidden Meeting info panel", /<section class="strip" aria-label="Meeting info"[^>]* hidden>/.test(html));
+check("chat hidden at start", /<section class="chat"[^>]* hidden>/.test(html));
+check("left card hidden at start", /<div class="left-card"[^>]* hidden>/.test(html));
+for (const cls of ["mic-button", "people-button", "chat-button", "cc-button", "prev-button", "next-button", "more-button", "leave-button", "rejoin-button", "info-button"]) {
+  check(`toolbar/topbar button .${cls}`, new RegExp(`<button type="button" class="[^"]*\\b${cls}\\b`).test(html));
+}
+check("More is a menu", /class="more-menu" role="menu"/.test(html));
+const actions = [...html.matchAll(/role="menuitem" data-action="([^"]+)"/g)].map((m) => m[1]);
+check("More menu items", JSON.stringify(actions) === JSON.stringify(["pause", "human", "relay", "prev", "next", "type", "checklist", "info"]), actions.join(","));
+const rows = [...html.matchAll(/<li data-item="(\w+)"[^>]*>\s*<span class="ic"[^>]*><\/span><span class="label">([^<]+)<\/span/g)].map((m) => `${m[1]}=${m[2]}`);
+check(
+  "join dialog rows, labelled for people",
+  JSON.stringify(rows) ===
+    JSON.stringify(["server=Connected to Relay", "talk=Talk loaded", "audio=Speaker", "mic=Microphone", "narration=Backup narration", "realtime=Higgs Realtime"]),
+  rows.join(" | "),
+);
 
 // ---- assets referenced from JS
 for (const file of JS) {
@@ -70,13 +103,13 @@ for (const font of new Set([...fontCss.matchAll(/url\('\.\/([^'?#]+)/g)].map((m)
 const bare = css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/"[^"]*"/g, '""');
 check("css braces balance", (bare.match(/{/g) ?? []).length === (bare.match(/}/g) ?? []).length);
 check("no remote URLs in css", !/url\(\s*["']?https?:/.test(css) && !/@import/.test(css));
+check("system font stack, no web fonts of our own", /--font:\s*-apple-system,/.test(css) && !/@font-face/.test(css));
 const defined = new Set([...bare.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]));
 for (const name of ["--level", "--mic-level"]) defined.add(name); // set from JS (style.setProperty)
 const used = new Set([...bare.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1]));
 const reveal = new Set(["--r-background-color"]);
 for (const name of used) check(`css var ${name} is defined`, defined.has(name) || reveal.has(name));
 check("captions ≥ 28px", /--cap:\s*max\(28px,/.test(css));
-check("5% safe area", /--safe-x:\s*5vw/.test(css) && /--safe-y:\s*5vh/.test(css));
 check("hidden attribute wins over display rules", /\[hidden\]\s*{\s*display:\s*none !important;/.test(css));
 
 /** Declarations of the rule whose selector list is exactly `selector` ("" when there is none). */
@@ -90,25 +123,23 @@ function rule(selector) {
 // clicked, behind the backend's back. The bar stays visible, for display only.
 check("reveal progress bar is display-only", /pointer-events:\s*none/.test(rule(".reveal .progress, .reveal .progress::after")));
 check("reveal progress bar still shown", /progress:\s*true/.test(read(`${ROOT}/web/js/deck.js`)));
-// A crowded status strip (two long tool names, every badge) must never push the right-hand group out of the strip:
-// the ticker gives way first (it gets only what is left, down to one chip), then the slide label, then the phase.
-// The real layout at 1280×720 and 1920×1080: open tests/web/mock/strip.html in Chrome (it checks itself).
-check("index.html: strip groups", html.includes('class="strip-group strip-left"') && html.includes('class="strip-group strip-right"'));
-check("strip: right-hand group never shrinks", /flex:\s*none/.test(rule(".strip-right")));
-check("strip: state badge never shrinks", /flex:\s*none/.test(rule(".strip-left .state-badge")));
-check("strip: ticker gets what is left (basis 0)", /flex:\s*1 1 0;/.test(rule(".ticker")));
-check("strip: ticker keeps room for one chip", /min-width:\s*var\(--ticker-min\)/.test(rule(".ticker")) && /--ticker-min:\s*\d/.test(rule(".ticker")));
-check("strip: newest chip ellipsises", /min-width:\s*0/.test(rule(".tool:first-child")) && /text-overflow:\s*ellipsis/.test(rule(".tool .tool-name")));
-for (const sel of [".where", ".phase"]) {
-  const r = rule(sel);
-  check(`strip: ${sel} truncates`, /min-width:\s*0/.test(r) && /overflow:\s*hidden/.test(r) && /text-overflow:\s*ellipsis/.test(r));
-}
-check("strip: the slide label shrinks before the phase", (() => {
-  const shrink = (sel) => Number((/flex:\s*0 (\d+) auto/.exec(rule(sel)) ?? [])[1]);
-  return shrink(".where") > shrink(".phase");
-})());
+check("reveal is embedded in the page", /embedded:\s*true/.test(read(`${ROOT}/web/js/deck.js`)));
+// The layout: the share and the side column between the topbar and the toolbar; tiles above the share when narrow.
+// The real layout at 1280×720 and 1920×1080: open tests/web/mock/meeting.html in Chrome (it checks itself).
+const withStrings = css.replace(/\/\*[\s\S]*?\*\//g, ""); // grid areas are strings
+check("meeting grid: share | side between topbar and toolbar", /\n\.meeting \{[^}]*"top top"\s*"share side"\s*"bar bar"/.test(withStrings));
+check(
+  "meeting grid: no side column when both panels are hidden",
+  /\n\.meeting\.side-off \{[^}]*"top"\s*"share"\s*"bar"/.test(withStrings) && /display:\s*none/.test(rule(".meeting.side-off .side")),
+);
+check("narrow windows: the tiles go above the share", /@media \(max-width: 899px\)[\s\S]*"side"\s*"share"/.test(withStrings));
+check("the slides keep 16:9 in the share", /width:\s*min\(100cqw, 100cqh \* 16 \/ 9\)/.test(rule(".share .reveal")) && /container-type:\s*size/.test(rule(".screen")));
+check("captions off frees their room", /display:\s*none/.test(rule(".meeting.captions-off .captions")));
+check("ticker: newest chip ellipsises", /min-width:\s*0/.test(rule(".tool:first-child")) && /text-overflow:\s*ellipsis/.test(rule(".tool .tool-name")));
+check("icons never take a click from their button", /pointer-events:\s*none/.test(rule(".ico")));
 
-// ---- every class the JS looks up exists in index.html (or is created by the JS itself)
+// ---- every class the JS looks up exists in index.html (or is created by the JS itself), on an HTML element: an
+//      <svg> is not an HTMLElement, so part()/el() would throw on it in a real browser
 const lookedUp = new Set();
 const created = new Set();
 for (const file of JS) {
@@ -116,11 +147,21 @@ for (const file of JS) {
   for (const m of src.matchAll(/(?:part\([^,]+,\s*|el\(|querySelector\()"(\.[\w-]+(?:\s+\.[\w-]+)*)"/g)) lookedUp.add(m[1]);
   for (const m of src.matchAll(/className = "([\w -]+)"/g)) for (const c of m[1].split(/\s+/)) created.add(c);
 }
+const SVG_TAGS = new Set(["svg", "path", "rect", "circle", "line", "g"]);
 for (const sel of lookedUp) {
   const last = sel.split(/\s+/).at(-1).slice(1);
-  check(`index.html has ${sel}`, created.has(last) || new RegExp(`class="[^"]*\\b${last}\\b`).test(html));
+  const tags = [...html.matchAll(new RegExp(`<(\\w+)[^>]*\\bclass="[^"]*\\b${last}\\b`, "g"))].map((m) => m[1]);
+  check(`index.html has ${sel}`, created.has(last) || tags.length > 0);
+  check(`${sel} is an HTML element`, tags.every((t) => !SVG_TAGS.has(t)), tags.join(","));
 }
-check("found the selector lookups", lookedUp.size >= 20, String(lookedUp.size));
+check("found the selector lookups", lookedUp.size >= 40, String(lookedUp.size));
+
+// ---- the layout mock stays a copy of the real meeting window
+const meetingHtml = html.slice(html.indexOf('<div class="meeting"'), html.indexOf("<form class=\"typed\""));
+const classes = new Set([...meetingHtml.matchAll(/class="([^"]+)"/g)].flatMap((m) => m[1].split(/\s+/)));
+classes.delete("empty"); // a state the JS toggles: the mock's live caption has text
+const missing = [...classes].filter((c) => !new RegExp(`class="[^"]*\\b${c}\\b`).test(mock));
+check("mock/meeting.html has every class of the meeting window", missing.length === 0, missing.join(", "));
 
 print(`static: ${passed} passed, ${failed} failed`);
 if (failed) throw new Error(`${failed} static check(s) failed`);

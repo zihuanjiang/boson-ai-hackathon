@@ -88,7 +88,7 @@ def talk_json(talk: Talk, chunks: Chunks, settings: Settings) -> dict:
         slides.append({"id": slide.id, "index": slide.index, "speaker": slide.speaker, "mode": slide.mode,
                        "title": slide.title, "fragments": slide.fragments, "chunks": items})
     return {"id": talk.id, "presenter": talk.presenter, "voice": talk.voice, "mic_mode": settings.mic_mode,
-            "fake_audio": any(chunk.fake for chunk in chunks.values()),
+            "narration_mode": settings.narration, "fake_audio": any(chunk.fake for chunk in chunks.values()),
             "version": render_version(talk, dict(chunks)), "slides": slides}
 
 
@@ -483,7 +483,8 @@ def create_app(talk_dir: str | Path, settings: Settings | None = None, *, out_ro
     web_dir = Path(web_dir)
     log = EventLog.for_talk(talk.id, out_root)
     log("server_start", {"talk": talk.id, "root": str(talk.root), "voice": talk.voice, "mic_mode": settings.mic_mode,
-                         "fake_realtime": settings.fake_realtime, "key_set": bool(settings.api_key),
+                         "narration": settings.narration, "fake_realtime": settings.fake_realtime,
+                         "key_set": bool(settings.api_key),
                          "realtime_url": settings.realtime_url, "turn_detection": settings.turn_detection,
                          "temperature": settings.temperature, "full_session_update": settings.full_session_update,
                          "chunks": len(chunks), "fake_audio": any(chunk.fake for chunk in chunks.values()),

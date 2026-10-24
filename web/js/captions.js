@@ -1,12 +1,14 @@
 // @ts-check
 /**
- * Captions band (doc/design.md §8). Narration: karaoke from the rendered word timings (said / being said / still to
- * come), one sentence-sized page at a time; on a cut the cut word is marked and the resume word flagged; when
- * narration resumes with `resume_word` the highlight sweeps back from the cut word to it ("the jump back").
- * Live: what the user said (mic prefix, its own colour) and Relay's live reply, revealed in step with what the
- * room has heard of its audio (never ahead of the voice), frozen on the heard words when the reply is cut.
+ * Captions band, the meeting's subtitles at the bottom of the shared screen (doc/design.md §8). Rendered narration
+ * (the backup): karaoke from the rendered word timings (said / being said / still to come), one sentence-sized page
+ * at a time; on a cut the cut word is marked and the resume word flagged; when narration resumes with `resume_word`
+ * the highlight sweeps back from the cut word to it ("the jump back"). Live: what the user said ("You") and Relay's
+ * live speech ("Relay": an answer, or a whole slide presented live), revealed in step with what the room has heard
+ * of its audio (never ahead of the voice), a sentence-sized page at a time (livePage), frozen on the heard words
+ * when it is cut.
  */
-import { captionPages, clamp, displayWords, karaokeAt, liveRevealCount, liveWords, pageOf } from "./util.js";
+import { captionPages, clamp, displayWords, karaokeAt, livePage, liveRevealCount, liveWords, pageOf } from "./util.js";
 
 /** @typedef {import("./util.js").Word} Word */
 /** @typedef {"idle"|"narration"|"live"} Mode */
@@ -36,11 +38,12 @@ import { captionPages, clamp, displayWords, karaokeAt, liveRevealCount, liveWord
  * @property {number} shown  words on screen (only ever grows while the reply plays)
  * @property {boolean} done  played to its end: everything shows
  * @property {string|null} cutText  frozen on a cut
+ * @property {boolean} narration  Relay presenting a slide live (not answering)
  */
 
 /** @param {number|null} reply @returns {LiveReply} */
 function freshLive(reply) {
-  return { reply, words: [], heard: 0, received: 0, ended: false, shown: 0, done: false, cutText: null };
+  return { reply, words: [], heard: 0, received: 0, ended: false, shown: 0, done: false, cutText: null, narration: false };
 }
 
 const REWIND_STEP_MS = 45; // sweep speed, per word, from the cut word back to the resume word
@@ -178,12 +181,26 @@ export class Captions {
 
   // ---- narration ----
 
-  /** Characters per caption page: about 1.3 lines of the band at its current size. */
-  pageChars() {
+  /**
+   * Characters on `lines` lines of the band at its current size (about half an em per character), or null when it
+   * can't be measured (hidden).
+   * @param {number} lines
+   */
+  bandChars(lines) {
     const width = this.mainEl.clientWidth;
     const px = parseFloat(getComputedStyle(this.mainEl).fontSize);
-    if (!width || !Number.isFinite(px) || px <= 0) return 96;
-    return clamp(Math.floor((width / (px * 0.5)) * 1.3), 40, 120);
+    if (!width || !Number.isFinite(px) || px <= 0) return null;
+    return Math.floor((width / (px * 0.5)) * lines);
+  }
+
+  /** Characters per narration page: about 1.3 lines of the band. */
+  pageChars() {
+    return clamp(this.bandChars(1.3) ?? 96, 40, 120);
+  }
+
+  /** Characters per live page: under two lines of the band (the speaker label and word wrap take the rest). */
+  liveChars() {
+    return clamp(this.bandChars(1.7) ?? 110, 50, 160);
   }
 
   /**
@@ -419,13 +436,15 @@ export class Captions {
   // ---- live turn ----
 
   /**
-   * The mic opened for a new turn: clear the last exchange, keep a frozen narration line (with its cut).
+   * The mic opened for a new turn: clear the last exchange, keep a frozen narration line (the rendered one with its
+   * cut, or the live one with what the room heard).
    * @param {string} [hint]  how the turn ends, e.g. "Space to send · Esc to cancel"
    */
   listening(hint = "") {
     this.wake();
-    this.clearLive();
-    this.setMode(this.chunk && this.cut ? "narration" : this.mode === "live" ? "idle" : this.mode);
+    const liveCut = this.live.narration && this.live.cutText !== null;
+    if (!liveCut) this.clearLive();
+    this.setMode(liveCut ? "live" : this.chunk && this.cut ? "narration" : this.mode === "live" ? "idle" : this.mode);
     this.setFlag("listening", true);
     this.hintEl.textContent = hint;
     this.hintEl.hidden = !hint;
@@ -458,6 +477,12 @@ export class Captions {
     this.live = freshLive(reply);
     this.setMode("live");
     this.renderLive();
+  }
+
+  /** The live reply is Relay presenting a slide (reply_start kind "narration"): the last question's line goes. */
+  narrationReply() {
+    this.live.narration = true;
+    this.setUser("");
   }
 
   /**
@@ -513,8 +538,9 @@ export class Captions {
   }
 
   /**
-   * The reply was cut off: keep the words heard, ending in a dash. `audio.heard` = what the listener had heard at
-   * the cut (the reply_played_ms the backend truncates the model's copy to); without `audio`, what is on screen.
+   * The reply was cut off: keep the words heard (their page), ending in a dash. `audio.heard` = what the listener
+   * had heard at the cut (the reply_played_ms the backend truncates the model's copy to); without `audio`, what is on
+   * screen.
    * @param {LiveAudio} [audio]
    */
   replyCut(audio) {
@@ -522,9 +548,16 @@ export class Captions {
     if (live.cutText === null && !live.done) {
       if (audio) this.setAudio(audio);
       live.shown = Math.max(live.shown, this.heardWords(live.heard));
-      live.cutText = live.words.slice(0, live.shown).join(" ");
+      live.cutText = this.pageText(live.shown);
     }
     this.renderLive();
+  }
+
+  /** The live page ending with word `count − 1` (livePage). @param {number} count */
+  pageText(count) {
+    const words = this.live.words;
+    const { from, to } = livePage(words, count, this.liveChars());
+    return words.slice(from, to).join(" ");
   }
 
   renderLive() {
@@ -534,7 +567,7 @@ export class Captions {
         ? live.cutText
           ? `${live.cutText} —`
           : ""
-        : live.words.slice(0, live.done ? live.words.length : live.shown).join(" ");
+        : this.pageText(live.done ? live.words.length : live.shown);
     this.liveTextEl.textContent = text;
     this.liveEl.classList.toggle("empty", !text);
     this.liveEl.classList.toggle("speaking", live.cutText === null && !live.done && live.shown > 0);

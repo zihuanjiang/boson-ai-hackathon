@@ -1,17 +1,27 @@
-/* Relay deck client. Projector first: 16:9 at 1280×720 … 1920×1080, sizes follow the viewport height, and
-   everything that matters sits inside a 5% safe area (projectors crop and dim the edges). Dark, high contrast,
-   calm: the slides and the captions are the show; the strip is for the presenter (and curious judges). */
+/* Relay deck client: a video meeting (D55). Relay shares its screen (the slides, 16:9, letterboxed) with Zoom-style
+   subtitles under it; the participant tiles (Relay, You) and the chat sit in a column on the right; a toolbar of
+   icon-over-label buttons runs along the bottom. Dark chrome, the system font, inline SVG icons, nothing fetched.
+   Fits 1280×720 … 1920×1080 with no scrollbars (tests/web/mock/meeting.html checks itself); under 900 px wide the
+   tiles move above the shared screen. */
 
 :root {
-  --bg: #0b0d12;
-  --bg-raise: #141821;
-  --bg-panel: rgba(20, 24, 33, 0.94);
+  --chrome: #1a1a1a; /* topbar, toolbar, the side column */
+  --chrome-2: #232323; /* panels, chat */
+  --tile: #2b2b2b;
+  --tile-2: #383838;
+  --share-bg: #000;
+  --bg: #0f1218; /* the slides (reveal's background) */
+  --bg-panel: rgba(35, 35, 37, 0.97);
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.16);
   --fg: #f4f6fa;
-  --fg-2: #c9d0dc;
-  --fg-dim: #939cad;
-  --fg-faint: #5f6878;
+  --fg-2: #c9ccd2;
+  --fg-dim: #9a9ea6;
+  --fg-faint: #62666e;
+
+  --speak: #22d36b; /* the active speaker's border and ring */
+  --primary: #0e72ed; /* Zoom blue: the join button, menu highlight */
+  --leave: #e5302f;
 
   --c-idle: #a3acbd;
   --c-narrating: #3ddc97;
@@ -26,16 +36,16 @@
   --c-warn: #ffc95c;
   --c-fail: #ff6b6b;
 
-  --font: "Source Sans Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
-  --safe-x: 5vw;
-  --safe-y: 5vh;
-  --gap: 1.2vh;
-  --ui: max(12px, 1.95vh); /* status strip text */
-  --strip-h: max(30px, 5vh);
+  --top-h: clamp(40px, 5vh, 54px);
+  --bar-h: clamp(64px, 8vh, 84px);
+  --side-w: clamp(248px, 17vw, 340px);
+  --gap: 8px;
+  --ui: clamp(12px, 1.75vh, 17px); /* tiles, chat, panels */
   --cap: max(28px, 4.3vh); /* caption text: ≥ 28px at 1280×720 */
-  --cap-meta: max(17px, 2.6vh);
+  --cap-meta: max(16px, 2.4vh);
   --cap-pad: 1vh;
   --cap-h: calc(var(--cap-meta) * 1.5 + var(--cap) * 1.25 * 2 + var(--cap-pad) * 2 + 2px);
 
@@ -63,117 +73,36 @@ body {
 body {
   margin: 0;
   overflow: hidden;
-  background: var(--bg);
+  background: var(--chrome);
   color: var(--fg);
   font-family: var(--font);
   -webkit-font-smoothing: antialiased;
 }
 
-/* ---------------------------------------------------------------- layout */
-
-.app {
-  position: fixed;
-  inset: 0;
-  display: grid;
-  grid-template-columns: var(--safe-x) minmax(0, 1fr) var(--safe-x);
-  grid-template-rows: var(--safe-y) var(--strip-h) var(--gap) minmax(0, 1fr) var(--gap) var(--cap-h) var(--safe-y);
+.ico {
+  flex: none;
+  width: 1.25em;
+  height: 1.25em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none; /* a click on an icon is a click on its button */
 }
 
-.strip {
-  grid-area: 2 / 2;
+.ico .fill {
+  fill: currentColor;
+  stroke: none;
 }
 
-.stage {
-  grid-area: 4 / 2;
-  position: relative;
-  min-height: 0;
-  isolation: isolate;
-}
-
-.captions {
-  grid-area: 6 / 2;
-}
-
-/* reveal fills the stage; it scales the 1280×720 slide to fit (non-embedded: it measures .reveal itself). */
-.stage .reveal {
+.sr-only {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-
-.reveal h1,
-.reveal h2,
-.reveal h3 {
-  font-weight: 600;
-}
-
-.reveal small {
-  color: var(--fg-dim);
-}
-
-.reveal .slides section .fragment {
-  transition-duration: 0.45s;
-}
-
-.reveal .progress {
-  height: 3px;
-  color: var(--c-narrating);
-  background: rgba(255, 255, 255, 0.06);
-}
-
-/* Display only: reveal jumps to the slide under the pointer when the bar (or the invisible 10 px band above it) is
-   clicked, behind the backend's back. Clicks fall through to the slide instead. */
-.reveal .progress,
-.reveal .progress::after {
-  pointer-events: none;
-}
-
-/* ---------------------------------------------------------------- status strip */
-
-.strip {
-  display: flex;
-  align-items: center;
-  gap: 1.4vh;
-  min-width: 0;
-  padding: 0 1.2vh;
-  font-size: var(--ui);
-  line-height: 1.2;
-  color: var(--fg-2);
-  background: var(--bg-raise);
-  border: 1px solid var(--line);
-  border-radius: 1.2vh;
-  transition: opacity 0.3s ease;
-}
-
-.strip.offline {
-  border-color: rgba(255, 107, 107, 0.45);
-}
-
-.strip-group {
-  display: flex;
-  align-items: center;
-  gap: 1.3vh;
-  min-width: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
   white-space: nowrap;
-}
-
-/* Who gives way on a crowded strip (two long tool names, "Realtime reconnecting…", every badge on):
-   1. the tool ticker: it only gets what the two groups leave (flex-basis 0), so chips drop out and the newest one
-      ellipsises, down to --ticker-min;
-   2. then the slide label (ellipsis), then the phase;
-   3. never the state badge or the right-hand group (latency, mic meter, Realtime, mic mode, badges): flex none. */
-.strip-left {
-  flex: 0 1 auto;
-}
-
-.strip-left .state-badge {
-  flex: none;
-}
-
-.strip-right {
-  flex: none;
-  margin-left: auto;
 }
 
 .dot {
@@ -185,20 +114,301 @@ body {
   background: currentColor;
 }
 
+/* ---------------------------------------------------------------- the meeting window */
+
+.meeting {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--side-w);
+  grid-template-rows: var(--top-h) minmax(0, 1fr) var(--bar-h);
+  grid-template-areas:
+    "top top"
+    "share side"
+    "bar bar";
+  background: var(--chrome);
+}
+
+/* Participants and chat both hidden: the shared screen takes the whole width. */
+.meeting.side-off {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "top"
+    "share"
+    "bar";
+}
+
+.meeting.side-off .side {
+  display: none;
+}
+
+.topbar {
+  grid-area: top;
+}
+
+.share {
+  grid-area: share;
+}
+
+.side {
+  grid-area: side;
+}
+
+.toolbar {
+  grid-area: bar;
+}
+
+/* ---------------------------------------------------------------- topbar */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 12px;
+  font-size: clamp(13px, 1.35vh, 15px);
+  line-height: 1.2;
+  color: var(--fg-2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.topbar-left,
+.topbar-right {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.topbar-right {
+  justify-content: flex-end;
+}
+
+.topbar-center {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  font-size: 1.08em;
+  font-weight: 700;
+  color: #fff;
+}
+
+.brand .ico {
+  color: var(--speak);
+  stroke-width: 2.4;
+}
+
+.talk-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.talk-name::before {
+  content: "·";
+  margin-right: 10px;
+  color: var(--fg-faint);
+}
+
+.live-badge {
+  --live-c: var(--fg-dim);
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.92em;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--live-c);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.live-badge[data-status="ready"] {
+  --live-c: #4be38b;
+  background: rgba(34, 211, 107, 0.14);
+}
+
+.live-badge[data-status="error"] {
+  --live-c: var(--c-fail);
+}
+
+.live-badge[data-status="connecting"] .dot,
+.live-badge[data-status="reconnecting"] .dot {
+  animation: pulse 0.9s ease-in-out infinite;
+}
+
+.pill {
+  flex: none;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.82em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.backup-badge {
+  color: var(--c-warn);
+  background: rgba(255, 201, 92, 0.14);
+}
+
+.fake-pill {
+  color: var(--c-warn);
+  border: 1px solid color-mix(in srgb, var(--c-warn) 55%, transparent);
+}
+
+.server-pill {
+  color: #fff;
+  background: var(--leave);
+}
+
+.viewing {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 0.92em;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #fff;
+  background: #1f9d55;
+}
+
+.clock {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+}
+
+.info-button,
+.chat-close,
+.chat-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  font-size: 16px;
+  color: var(--fg-2);
+  background: transparent;
+  cursor: pointer;
+}
+
+.info-button:hover,
+.info-button[aria-expanded="true"],
+.chat-close:hover {
+  color: #fff;
+  background: var(--tile);
+}
+
+/* ---------------------------------------------------------------- meeting info (the status strip) */
+
+.strip {
+  position: absolute;
+  top: calc(var(--top-h) + 6px);
+  right: 12px;
+  z-index: 50;
+  width: min(330px, calc(100vw - 24px));
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--fg-2);
+  background: var(--bg-panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  animation: toast-in 0.18s ease-out;
+}
+
+.strip.offline {
+  border-color: rgba(255, 107, 107, 0.55);
+}
+
+.strip-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.strip-rows {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.strip-rows > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.strip-rows dt {
+  flex: none;
+  color: var(--fg-dim);
+}
+
+.strip-rows dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.strip-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+
+.strip-badges:not(:has(> :not([hidden]))) {
+  display: none;
+}
+
+.strip-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+
 .state-badge {
   --state-c: var(--c-idle);
   display: inline-flex;
   align-items: center;
-  gap: 0.55em;
-  padding: 0.26em 0.85em;
+  gap: 0.5em;
+  padding: 0.18em 0.7em;
   border-radius: 999px;
-  font-weight: 600;
+  font-size: 0.9em;
+  font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--state-c);
   background: color-mix(in srgb, var(--state-c) 13%, transparent);
   border: 1px solid color-mix(in srgb, var(--state-c) 42%, transparent);
-  transition: color 0.2s, background-color 0.2s, border-color 0.2s;
 }
 
 .state-badge .dot {
@@ -227,146 +437,23 @@ body {
 }
 
 .phase {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--fg-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  font-size: 0.92em;
-}
-
-.where {
-  flex: 0 12 auto; /* shrinks long before the phase does */
-  min-width: 0;
-  max-width: 26vw;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--fg);
-}
-
-/* One line of chips, newest first. Chips that don't fit wrap onto a second line, which is clipped: on a crowded
-   strip the older calls drop out instead of all three shrinking into ellipses; the last one left ellipsises. */
-.ticker {
-  --ticker-min: 13em;
-  flex: 1 1 0;
-  min-width: var(--ticker-min);
-  height: 1.8em;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-items: center;
-  align-content: flex-start;
-  column-gap: 0.6em;
-  row-gap: 1em;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  overflow: hidden;
-}
-
-.ticker:empty {
-  min-width: 0; /* no tool call yet: nothing to keep room for */
-}
-
-.tool {
-  --tool-c: var(--c-warn);
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 0.45em;
-  box-sizing: border-box;
-  height: 1.8em;
-  padding: 0 0.65em;
-  border-radius: 0.55em;
-  white-space: nowrap;
-  background: color-mix(in srgb, var(--tool-c) 9%, transparent);
-  border: 1px solid color-mix(in srgb, var(--tool-c) 32%, transparent);
-  animation: tool-in 0.35s ease-out;
-}
-
-.tool:first-child {
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
-.tool:not(:first-child) {
-  opacity: 0.62;
-}
-
-.tool .tool-dot {
-  flex: none;
-  width: 0.5em;
-  height: 0.5em;
-  border-radius: 50%;
-  background: var(--tool-c);
-}
-
-.tool .tool-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-family: var(--mono);
-  font-size: 0.9em;
-  color: var(--fg);
-}
-
-.tool .tool-status {
-  font-size: 0.82em;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--tool-c);
-}
-
-.tool[data-status="applied"] {
-  --tool-c: var(--c-ok);
-}
-
-.tool[data-status="rejected"] {
-  --tool-c: var(--c-fail);
-}
-
-.tool[data-status="discarded"] {
-  --tool-c: var(--fg-faint);
-}
-
-.tool[data-status="discarded"] .tool-name {
-  text-decoration: line-through;
-  color: var(--fg-dim);
-}
-
-/* Relay's watchdog acted, not the model (resume after a reply, hand-back after a Q&A answer): dashed and dim. */
-.tool[data-status="auto"] {
-  --tool-c: var(--fg-dim);
-  border-style: dashed;
-}
-
-.tool.flash {
-  animation: tool-flash 0.6s ease-out;
-}
-
-.latency-label {
-  color: var(--fg-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  font-size: 0.85em;
+  text-transform: capitalize;
 }
 
 .latency-value {
   font-variant-numeric: tabular-nums;
-  color: var(--fg);
 }
 
 .meter {
   --level: 0;
   display: inline-block;
   flex: none;
-  width: 4.6em;
+  width: 6em;
   height: 0.5em;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.09);
+  vertical-align: middle;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .meter-fill {
@@ -404,21 +491,16 @@ body {
   --rt-c: var(--c-warn);
 }
 
-.rt[data-status="connecting"] .dot,
-.rt[data-status="reconnecting"] .dot {
-  animation: pulse 0.9s ease-in-out infinite;
-}
-
 .rt[data-status="error"] {
   --rt-c: var(--c-fail);
   color: var(--c-fail);
 }
 
 .micmode {
-  padding: 0.12em 0.5em;
+  padding: 0.1em 0.5em;
   border: 1px solid var(--line-strong);
   border-radius: 0.4em;
-  font-size: 0.85em;
+  font-size: 0.9em;
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--fg-dim);
@@ -428,7 +510,7 @@ body {
   padding: 0.14em 0.55em;
   border-radius: 0.4em;
   font-size: 0.85em;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
@@ -443,36 +525,105 @@ body {
   background: var(--c-fail);
 }
 
-/* ---------------------------------------------------------------- banner */
+/* ---------------------------------------------------------------- the shared screen */
+
+.share {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--cap-h);
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--gap);
+  background: var(--share-bg);
+  isolation: isolate;
+}
+
+.meeting.captions-off .share {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.meeting.captions-off .captions {
+  display: none;
+}
+
+/* The slides' box: the largest 16:9 rectangle the shared screen has room for (letterboxed). */
+.screen {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  container-type: size;
+}
+
+/* reveal (embedded) makes .reveal its viewport and sizes the 1280×720 slide to it; these win over reveal.css's
+   .reveal / .reveal-viewport (100% × 100%). */
+.share .reveal {
+  position: relative;
+  width: min(100cqw, 100cqh * 16 / 9);
+  height: min(100cqh, 100cqw * 9 / 16);
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--bg);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.reveal h1,
+.reveal h2,
+.reveal h3 {
+  font-weight: 600;
+}
+
+.reveal small {
+  color: var(--fg-dim);
+}
+
+.reveal .slides section .fragment {
+  transition-duration: 0.45s;
+}
+
+.reveal .progress {
+  height: 3px;
+  color: var(--c-narrating);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Display only: reveal jumps to the slide under the pointer when the bar (or the invisible 10 px band above it) is
+   clicked, behind the backend's back. Clicks fall through to the slide instead. */
+.reveal .progress,
+.reveal .progress::after {
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- banner (a notice at the top of the share) */
 
 .banner {
   position: absolute;
-  top: 1.4vh;
+  top: calc(var(--gap) + 1.4vh);
   left: 50%;
   z-index: 30;
   display: inline-flex;
   align-items: center;
   gap: 0.75em;
-  max-width: 92%;
-  padding: 0.5em 1.25em;
+  max-width: 90%;
+  padding: 0.45em 1.15em;
   transform: translateX(-50%);
   border-radius: 999px;
-  font-size: max(16px, 2.6vh);
+  font-size: max(15px, 2.3vh);
   font-weight: 600;
   line-height: 1.2;
   white-space: nowrap;
-  color: var(--fg);
-  background: var(--bg-panel);
+  color: #fff;
+  background: rgba(28, 28, 30, 0.9);
   border: 1px solid var(--line-strong);
   box-shadow: 0 1vh 3vh rgba(0, 0, 0, 0.45);
   animation: banner-in 0.3s ease-out;
-}
-
-.banner {
   transition: opacity 0.6s ease, margin-top 0.6s ease;
 }
 
-/* after a few seconds the banner steps aside (the strip keeps showing the state); a countdown always shows */
+/* after a few seconds the banner steps aside (the Relay tile keeps showing the state); a countdown always shows */
 .banner.settled:not(.counting) {
   margin-top: -0.8vh;
   opacity: 0;
@@ -486,34 +637,36 @@ body {
 
 .banner-count {
   display: inline-grid;
-  place-items: center;
   flex: none;
+  place-items: center;
   width: 1.8em;
   height: 1.8em;
   border-radius: 50%;
   font-variant-numeric: tabular-nums;
   color: #06140d;
-  background: var(--c-narrating);
+  background: var(--speak);
   animation: count-tick 1s ease-out infinite;
 }
 
-/* ---------------------------------------------------------------- captions */
+/* ---------------------------------------------------------------- captions (Zoom subtitles under the slides) */
 
 .captions {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  justify-self: center;
+  width: min(100%, 1500px);
   min-width: 0;
-  padding: var(--cap-pad) 2vh;
+  padding: var(--cap-pad) 2.2vh;
   overflow: hidden;
-  border-radius: 1.4vh;
-  background: rgba(255, 255, 255, 0.028);
-  border: 1px solid var(--line);
-  transition: opacity 0.6s ease, background-color 0.4s ease, border-color 0.4s ease;
+  border-radius: 10px;
+  font-family: var(--font);
+  color: #fff;
+  background: rgba(36, 36, 40, 0.92);
+  transition: opacity 0.6s ease, background-color 0.4s ease;
 }
 
 .captions[data-mode="idle"] {
   background: transparent;
-  border-color: transparent;
 }
 
 .captions.faded {
@@ -537,9 +690,9 @@ body {
 .cap-tag {
   --tag-c: var(--fg-dim);
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 0.5em;
-  flex: none;
   font-weight: 600;
   color: var(--tag-c);
 }
@@ -570,14 +723,6 @@ body {
   animation: pulse 1.1s ease-in-out infinite;
 }
 
-/* how the open turn ends, after "Listening…": small and quiet, it is for the presenter */
-.cap-hint {
-  flex: none;
-  font-size: 0.82em;
-  letter-spacing: 0.02em;
-  color: var(--fg-dim);
-}
-
 /* a live mic level bar after "Listening…" */
 .cap-tag[data-kind="listening"]::after {
   content: "";
@@ -587,23 +732,47 @@ body {
   background: linear-gradient(90deg, var(--c-listening) calc(var(--mic-level, 0) * 100%), rgba(255, 255, 255, 0.1) 0);
 }
 
+/* how the open turn ends, after "Listening…": small and quiet, it is for the presenter */
+.cap-hint {
+  flex: none;
+  font-size: 0.82em;
+  letter-spacing: 0.02em;
+  color: var(--fg-dim);
+}
+
 .cap-user {
   display: inline-flex;
   align-items: center;
-  gap: 0.45em;
   min-width: 0;
   color: var(--c-user);
-}
-
-.cap-user .ico-mic {
-  flex: none;
-  width: 1em;
-  height: 1em;
 }
 
 .cap-user-text {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* who is speaking: a small label before each line (Relay green, You teal) */
+.cap-speaker {
+  flex: none;
+  margin: 0;
+  padding: 0.14em 0.5em;
+  border-radius: 0.35em;
+  font-size: 0.46em;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #062311;
+  background: var(--speak);
+}
+
+.cap-user .cap-speaker {
+  align-self: center;
+  margin: 0 0.6em 0 0;
+  font-size: 0.72em;
+  color: #04201c;
+  background: var(--c-user);
 }
 
 .cap-main {
@@ -614,27 +783,25 @@ body {
   line-height: 1.25;
 }
 
+/* The label hangs left of its text, on the first line's baseline: a one-row grid (label | text | thinking dots),
+   centred as a whole. */
 .cap-narration,
 .cap-live {
   position: absolute;
   inset: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  text-wrap: balance;
-}
-
-.cap-narration {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-columns: auto minmax(0, max-content);
   justify-content: center;
+  align-content: center;
+  align-items: baseline;
+  column-gap: 0.6em;
+  margin: 0;
 }
 
-/* live text grows upwards: the newest two lines stay visible (plain wrapping: balancing would make words jump
-   between lines as the reply streams in) */
+/* live text grows upwards: the newest lines stay visible (livePage keeps it to about two) */
 .cap-live {
-  justify-content: flex-end;
-  text-wrap: wrap;
+  align-content: end;
 }
 
 .captions:not([data-mode="narration"]) .cap-narration,
@@ -642,19 +809,26 @@ body {
   display: none;
 }
 
-.cap-words {
+.cap-words,
+.cap-live-text {
+  min-width: 0;
   max-width: 100%;
+  text-align: left;
+}
+
+.cap-words {
+  text-wrap: balance;
 }
 
 .cap-narration .w {
   padding: 0 0.04em;
   border-radius: 0.14em;
-  color: var(--fg-dim);
+  color: #a7abb3;
   transition: color 0.12s linear;
 }
 
 .cap-narration .w.past {
-  color: var(--fg);
+  color: #fff;
 }
 
 .cap-narration .w.now {
@@ -696,58 +870,685 @@ body {
   opacity: 0.94;
 }
 
-.captions.paused .cap-words {
+.captions.paused .cap-words,
+.captions.paused .cap-live-text {
   opacity: 0.75;
 }
 
 .cap-live-text {
-  max-width: 100%;
-  color: var(--fg);
+  color: #fff;
 }
 
-/* Relay is speaking live: a small blue dot leads the line */
-.cap-live.speaking .cap-live-text::before {
-  content: "";
-  display: inline-block;
-  width: 0.36em;
-  height: 0.36em;
-  margin-right: 0.45em;
-  border-radius: 50%;
-  vertical-align: 0.18em;
-  background: var(--c-replying);
-  animation: pulse 1.1s ease-in-out infinite;
+/* no live text yet: no label either, unless Relay is thinking (then the label and three dots) */
+.captions:not(.thinking) .cap-live.empty .cap-speaker {
+  visibility: hidden;
 }
 
-/* thinking: three dots until the first audio */
 .captions.thinking .cap-live.empty::after {
   content: "";
   width: 3.2em;
   height: 0.7em;
-  margin-bottom: 0.35em;
   background: radial-gradient(circle closest-side, var(--c-replying) 85%, transparent) 0 50% / 0.7em 0.7em repeat-x;
   opacity: 0.85;
   animation: thinking 1.2s ease-in-out infinite;
+}
+
+/* ---------------------------------------------------------------- "you left the meeting" */
+
+.left-card {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.left-panel {
+  max-width: 440px;
+  padding: 26px 30px;
+  font-size: 15px;
+  line-height: 1.45;
+  text-align: center;
+  color: var(--fg-2);
+  background: var(--chrome-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  box-shadow: 0 2vh 6vh rgba(0, 0, 0, 0.55);
+}
+
+.left-panel h2 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.left-panel p {
+  margin: 0 0 18px;
+}
+
+.rejoin-button {
+  padding: 10px 28px;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: var(--primary);
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- the side column: tiles and chat */
+
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+  min-height: 0;
+  padding: var(--gap);
+}
+
+.people {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55em;
+  aspect-ratio: 16 / 10;
+  min-width: 0;
+  padding: 2.4em 10px 2.2em;
+  overflow: hidden;
+  border-radius: 10px;
+  font-size: var(--ui);
+  background: var(--tile);
+  transition: box-shadow 0.15s ease;
+}
+
+/* the active speaker: a bright green border (a box shadow: no layout shift) */
+.tile[data-speaking="true"] {
+  box-shadow:
+    inset 0 0 0 3px var(--speak),
+    0 0 18px rgba(34, 211, 107, 0.22);
+}
+
+.avatar {
+  position: relative;
+  flex: none;
+  width: clamp(44px, 7vh, 72px);
+  height: clamp(44px, 7vh, 72px);
+}
+
+.avatar-face {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: clamp(20px, 3.2vh, 32px);
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(145deg, #4b5563, #374151);
+}
+
+.tile-relay .avatar-face {
+  background: linear-gradient(145deg, #16a34a, #0e7490);
+}
+
+.tile-relay .avatar-face .ico {
+  width: 60%;
+  height: 60%;
+  stroke-width: 2.4;
+}
+
+/* the ring breathes with the level (Relay: its output; You: your mic, while open) */
+.ring {
+  --level: 0;
+  position: absolute;
+  inset: -5px;
+  border: 3px solid var(--speak);
+  border-radius: 50%;
+  opacity: 0;
+  transform: scale(calc(1 + var(--level) * 0.28));
+  transition:
+    transform 90ms linear,
+    opacity 0.2s ease;
+}
+
+.tile[data-speaking="true"] .ring {
+  opacity: 0.9;
+}
+
+.tile-status {
+  max-width: 100%;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+}
+
+.tile-status:empty {
+  display: none;
+}
+
+.meeting[data-state="NARRATING"] .tile-relay .tile-status,
+.meeting[data-state="REPLYING"] .tile-relay .tile-status {
+  color: #fff;
+}
+
+.meeting[data-state="LISTENING"] .tile-relay .tile-status {
+  color: var(--c-listening);
+}
+
+.tile-relay.thinking .tile-status {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.nameplate {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: calc(100% - 12px);
+  padding: 3px 8px 3px 5px;
+  border-radius: 6px;
+  font-size: 0.92em;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.nameplate .name {
+  flex: none;
+  font-weight: 600;
+  color: #fff;
+}
+
+.nameplate .role {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-dim);
+}
+
+.mic-ico {
+  display: inline-flex;
+  flex: none;
+  color: #fff;
+}
+
+.mic-ico .ico {
+  width: 1.1em;
+  height: 1.1em;
+}
+
+.mic-ico .slash,
+.mic-button .slash {
+  stroke: var(--leave);
+  stroke-width: 2.2;
+}
+
+.mic-ico[data-muted="false"] .slash {
+  display: none;
+}
+
+.mic-ico[data-muted="true"] {
+  color: #ff8a80;
+}
+
+.tile-hint {
+  position: absolute;
+  right: 8px;
+  bottom: 2.6em;
+  left: 8px;
+  z-index: 2;
+  margin: 0;
+  padding: 6px 9px;
+  border-radius: 8px;
+  font-size: 0.92em;
+  line-height: 1.3;
+  text-align: center;
+  color: #fff;
+  background: rgba(14, 114, 237, 0.96);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  animation: toast-in 0.25s ease-out;
+}
+
+/* ---- tool ticker: the Relay tile's top row, newest first. Chips that don't fit wrap onto a second line, which is
+        clipped: older calls drop out instead of all of them shrinking into ellipses; the last one left ellipsises. */
+.ticker {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  left: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: center;
+  column-gap: 5px;
+  row-gap: 1em;
+  height: 1.8em;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  list-style: none;
+  font-size: 0.86em;
+}
+
+.tool {
+  --tool-c: var(--c-warn);
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.4em;
+  box-sizing: border-box;
+  height: 1.8em;
+  padding: 0 0.6em;
+  border-radius: 0.55em;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--tool-c) 14%, rgba(0, 0, 0, 0.35));
+  border: 1px solid color-mix(in srgb, var(--tool-c) 40%, transparent);
+  animation: tool-in 0.35s ease-out;
+}
+
+.tool:first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.tool:not(:first-child) {
+  opacity: 0.62;
+}
+
+.tool .tool-dot {
+  flex: none;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--tool-c);
+}
+
+.tool .tool-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--fg);
+}
+
+.tool .tool-status {
+  font-size: 0.82em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--tool-c);
+}
+
+.tool[data-status="applied"] {
+  --tool-c: var(--c-ok);
+}
+
+.tool[data-status="rejected"] {
+  --tool-c: var(--c-fail);
+}
+
+.tool[data-status="discarded"] {
+  --tool-c: var(--fg-faint);
+}
+
+.tool[data-status="discarded"] .tool-name {
+  text-decoration: line-through;
+  color: var(--fg-dim);
+}
+
+/* Relay's watchdog acted, not the model (start, resume, hand back): dashed and dim. */
+.tool[data-status="auto"] {
+  --tool-c: var(--fg-dim);
+  border-style: dashed;
+}
+
+.tool.flash {
+  animation: tool-flash 0.6s ease-out;
+}
+
+/* ---- chat */
+
+.chat {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  font-size: var(--ui);
+  background: var(--chrome-2);
+  border: 1px solid var(--line);
+}
+
+.chat-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 6px 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.chat-title {
+  margin: 0;
+  font-size: 1em;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.chat-log {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 9px;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 12px;
+  overflow-y: auto;
+  list-style: none;
+  line-height: 1.35;
+}
+
+.chat-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.chat-who {
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.chat-line[data-kind="relay"] .chat-who,
+.chat-line[data-kind="tool"] .chat-who {
+  color: #4be38b;
+}
+
+.chat-line[data-kind="you"] .chat-who {
+  color: var(--c-user);
+}
+
+.chat-time {
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-faint);
+}
+
+.chat-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-2);
+}
+
+/* system lines: a slide, a slide presented */
+.chat-line[data-kind="slide"],
+.chat-line[data-kind="presented"] {
+  text-align: center;
+}
+
+.chat-line[data-kind="slide"] .chat-text,
+.chat-line[data-kind="presented"] .chat-text {
+  font-size: 0.9em;
+  color: var(--fg-dim);
+}
+
+.chat-tool {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--fg);
+}
+
+.chat-status {
+  --tool-c: var(--c-warn);
+  font-size: 0.82em;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--tool-c);
+}
+
+.chat-status[data-status="applied"] {
+  --tool-c: var(--c-ok);
+}
+
+.chat-status[data-status="rejected"] {
+  --tool-c: var(--c-fail);
+}
+
+.chat-status[data-status="discarded"],
+.chat-status[data-status="auto"] {
+  --tool-c: var(--fg-dim);
+}
+
+.chat-compose {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.chat-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--tile);
+  outline: none;
+}
+
+.chat-input:focus {
+  border-color: var(--primary);
+}
+
+.chat-send {
+  color: #fff;
+  background: var(--primary);
+}
+
+/* ---------------------------------------------------------------- toolbar */
+
+.toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.toolbar-left {
+  justify-self: start;
+}
+
+.toolbar-center {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.toolbar-right {
+  justify-self: end;
+}
+
+.tb {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 70px;
+  height: calc(var(--bar-h) - 14px);
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-size: clamp(11.5px, 1.2vh, 13px);
+  white-space: nowrap;
+  color: #e8e8e8;
+  background: transparent;
+  cursor: pointer;
+}
+
+.tb .ico {
+  width: clamp(24px, 2.6vh, 28px);
+  height: clamp(24px, 2.6vh, 28px);
+}
+
+.tb:hover,
+.tb[aria-expanded="true"] {
+  background: var(--tile);
+}
+
+.tb:focus-visible,
+.leave-button:focus-visible,
+.info-button:focus-visible,
+.more-menu button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.people-button[aria-pressed="false"],
+.cc-button[aria-pressed="false"] {
+  color: var(--fg-dim);
+}
+
+.chat-button[aria-pressed="true"] {
+  color: #fff;
+  background: var(--tile);
+}
+
+.mic-button[data-muted="true"] .ico-mic-on,
+.mic-button[data-muted="false"] .ico-mic-off {
+  display: none;
+}
+
+.mic-button[aria-pressed="true"] {
+  color: #fff;
+  background: color-mix(in srgb, var(--speak) 18%, transparent);
+}
+
+.tb-badge {
+  position: absolute;
+  top: 5px;
+  right: 14px;
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--leave);
+}
+
+.leave-button {
+  height: clamp(34px, 4vh, 42px);
+  padding: 0 18px;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-size: clamp(13px, 1.35vh, 15px);
+  font-weight: 700;
+  color: #fff;
+  background: var(--leave);
+  cursor: pointer;
+}
+
+.leave-button:hover {
+  background: #f0413f;
+}
+
+.more {
+  position: relative;
+}
+
+.more-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  min-width: 270px;
+  padding: 6px;
+  transform: translateX(-50%);
+  border-radius: 10px;
+  background: var(--tile);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  animation: menu-in 0.15s ease-out;
+}
+
+.more-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  cursor: pointer;
+}
+
+.more-menu button:hover {
+  background: var(--primary);
+}
+
+.more-menu kbd {
+  font-size: 0.8em;
 }
 
 /* ---------------------------------------------------------------- toasts */
 
 .toasts {
   position: fixed;
-  top: calc(var(--safe-y) + var(--strip-h) + var(--gap));
-  right: var(--safe-x);
+  top: calc(var(--top-h) + 10px);
+  left: 12px;
   z-index: 60;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 0.8vh;
-  max-width: 36vw;
+  max-width: min(460px, 42vw);
   pointer-events: none;
 }
 
 .toast {
   padding: 0.65em 1em;
-  border-radius: 0.9vh;
-  font-size: max(13px, 2vh);
+  border-radius: 8px;
+  font-size: max(13px, 1.9vh);
   line-height: 1.35;
   color: var(--fg);
   background: var(--bg-panel);
@@ -755,7 +1556,9 @@ body {
   border-left: 0.35em solid var(--c-fail);
   box-shadow: 0 1vh 3vh rgba(0, 0, 0, 0.45);
   animation: toast-in 0.25s ease-out;
-  transition: opacity 0.4s ease, transform 0.4s ease;
+  transition:
+    opacity 0.4s ease,
+    transform 0.4s ease;
 }
 
 .toast.info {
@@ -767,21 +1570,22 @@ body {
   transform: translateY(-0.6vh);
 }
 
-/* ---------------------------------------------------------------- typed question */
+/* ---------------------------------------------------------------- typed question (T) */
 
 .typed {
   position: fixed;
-  left: var(--safe-x);
-  right: var(--safe-x);
-  bottom: calc(var(--safe-y) + var(--cap-h) + var(--gap));
-  z-index: 50;
+  bottom: calc(var(--bar-h) + var(--cap-h) + 22px);
+  left: 50%;
+  z-index: 55;
   display: flex;
   align-items: center;
   gap: 1em;
+  width: min(760px, calc(100vw - 32px));
   padding: 0.9vh 1.8vh;
-  border-radius: 1.2vh;
+  transform: translateX(-50%);
+  border-radius: 12px;
   background: var(--bg-panel);
-  border: 1px solid var(--c-replying);
+  border: 1px solid var(--primary);
   box-shadow: 0 1vh 3vh rgba(0, 0, 0, 0.5);
 }
 
@@ -797,18 +1601,19 @@ body {
   min-width: 0;
   padding: 0.25em 0;
   font: inherit;
-  font-size: max(18px, 2.9vh);
+  font-size: max(18px, 2.8vh);
   color: var(--fg);
   background: transparent;
   border: 0;
   outline: none;
 }
 
-.typed-input::placeholder {
+.typed-input::placeholder,
+.chat-input::placeholder {
   color: var(--fg-faint);
 }
 
-/* ---------------------------------------------------------------- Arm overlay (pre-show checklist) */
+/* ---------------------------------------------------------------- join dialog (the pre-show checklist) */
 
 .overlay {
   position: fixed;
@@ -816,44 +1621,49 @@ body {
   z-index: 100;
   display: grid;
   place-items: center;
-  padding: var(--safe-y) var(--safe-x);
-  background: rgba(6, 8, 12, 0.86);
+  padding: 24px;
+  background: rgba(8, 8, 10, 0.84);
   backdrop-filter: blur(6px);
 }
 
 .panel {
-  width: min(100%, 880px);
+  width: min(100%, 760px);
   max-height: 100%;
   overflow: auto;
-  padding: 3vh 3.6vh;
-  font-size: max(14px, 2.1vh);
+  padding: 26px 32px;
+  font-size: max(14px, 1.9vh);
   line-height: 1.35;
   color: var(--fg-2);
-  background: var(--bg-raise);
+  background: var(--chrome-2);
   border: 1px solid var(--line-strong);
-  border-radius: 2vh;
-  box-shadow: 0 3vh 8vh rgba(0, 0, 0, 0.55);
+  border-radius: 16px;
+  box-shadow: 0 3vh 8vh rgba(0, 0, 0, 0.6);
 }
 
 .panel-head {
-  display: flex;
-  align-items: baseline;
-  gap: 0.8em;
   margin-bottom: 1.6vh;
 }
 
-.panel-head h1 {
-  font-size: max(26px, 4.4vh);
-  font-weight: 600;
+.panel-kicker {
+  margin: 0 0 4px;
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.panel-title {
+  margin: 0;
+  font-size: max(26px, 4vh);
+  font-weight: 700;
   letter-spacing: -0.01em;
-  color: var(--fg);
+  color: #fff;
 }
 
 .panel-sub {
-  color: var(--fg-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: 0.85em;
+  margin: 4px 0 0;
+  color: var(--fg-2);
 }
 
 .checklist {
@@ -865,16 +1675,16 @@ body {
 .checklist li {
   --check-c: var(--fg-faint);
   display: grid;
-  grid-template-columns: 1.5em 11em minmax(0, 1fr) auto;
+  grid-template-columns: 1.5em 10em minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.8em;
-  padding: 0.6em 0;
+  padding: 0.55em 0;
   border-bottom: 1px solid var(--line);
 }
 
 .checklist .label {
-  color: var(--fg);
   font-weight: 600;
+  color: var(--fg);
 }
 
 .checklist .detail {
@@ -900,10 +1710,10 @@ body {
   height: 1.3em;
   border-radius: 50%;
   font-size: 0.85em;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1;
+  color: var(--chrome-2);
   border: 2px solid var(--check-c);
-  color: var(--bg);
 }
 
 .checklist li[data-status="ok"] {
@@ -956,9 +1766,9 @@ body {
 
 .panel-actions {
   display: flex;
-  align-items: center;
   flex-wrap: wrap;
-  gap: 1.2em;
+  align-items: center;
+  gap: 1em 1.2em;
   margin-bottom: 2.2vh;
 }
 
@@ -966,18 +1776,22 @@ body {
 .done-button {
   font: inherit;
   font-weight: 600;
-  border-radius: 999px;
+  border-radius: 10px;
   cursor: pointer;
 }
 
 .arm-button {
-  padding: 0.5em 2.4em;
-  font-size: max(20px, 3.2vh);
-  color: #04150d;
-  background: var(--c-narrating);
+  padding: 0.6em 1.8em;
+  font-size: max(17px, 2.5vh);
+  color: #fff;
+  background: var(--primary);
   border: 0;
-  box-shadow: 0 0 0 0 rgba(61, 220, 151, 0.5);
-  animation: arm-glow 2.2s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(14, 114, 237, 0.5);
+  animation: join-glow 2.2s ease-in-out infinite;
+}
+
+.arm-button:hover {
+  background: #2483f5;
 }
 
 .arm-button:disabled {
@@ -987,38 +1801,40 @@ body {
 }
 
 .done-button {
-  padding: 0.55em 1.8em;
-  font-size: max(16px, 2.4vh);
+  padding: 0.55em 1.6em;
+  font-size: max(15px, 2.1vh);
   color: var(--fg);
   background: transparent;
   border: 1px solid var(--line-strong);
 }
 
 .arm-button:focus-visible,
-.done-button:focus-visible {
+.done-button:focus-visible,
+.rejoin-button:focus-visible {
   outline: 3px solid var(--c-replying);
   outline-offset: 3px;
 }
 
 .panel-hint {
   flex: 1 1 16em;
-  color: var(--fg-dim);
+  margin: 0;
   font-size: 0.92em;
+  color: var(--fg-dim);
 }
 
 .overlay.armed .panel-hint::before {
-  content: "Armed. Esc or a click outside closes this checklist; other presenter keys close it and act. ";
-  color: var(--c-ok);
+  content: "Joined. Esc or a click outside closes this; the other presenter keys close it and act. ";
   font-weight: 600;
+  color: var(--c-ok);
 }
 
 .keys {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5em 1.6em;
+  gap: 0.5em 1.5em;
   margin: 0;
-  color: var(--fg-dim);
   font-size: 0.9em;
+  color: var(--fg-dim);
 }
 
 .keys div {
@@ -1044,6 +1860,62 @@ kbd {
   border: 1px solid var(--line-strong);
   border-bottom-width: 2px;
   border-radius: 0.35em;
+}
+
+/* ---------------------------------------------------------------- narrow windows: tiles above the shared screen */
+
+@media (max-width: 899px) {
+  .meeting {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: var(--top-h) auto minmax(0, 1fr) var(--bar-h);
+    grid-template-areas:
+      "top"
+      "side"
+      "share"
+      "bar";
+  }
+
+  .meeting.side-off {
+    grid-template-rows: var(--top-h) minmax(0, 1fr) var(--bar-h);
+  }
+
+  .side {
+    padding-bottom: 0;
+  }
+
+  .people {
+    flex-direction: row;
+  }
+
+  .tile {
+    flex: 1 1 0;
+    aspect-ratio: auto;
+    height: clamp(96px, 17vh, 140px);
+    padding-top: 2em;
+    padding-bottom: 2em;
+  }
+
+  /* the chat floats over the shared screen */
+  .chat {
+    position: fixed;
+    top: calc(var(--top-h) + var(--gap));
+    right: var(--gap);
+    bottom: calc(var(--bar-h) + var(--gap));
+    z-index: 45;
+    width: min(340px, calc(100vw - 2 * var(--gap)));
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  }
+
+  .viewing,
+  .talk-name {
+    display: none;
+  }
+
+  .tb {
+    min-width: 56px;
+    padding: 0 4px;
+    font-size: 10.5px;
+  }
 }
 
 /* ---------------------------------------------------------------- motion */
@@ -1117,6 +1989,13 @@ kbd {
   }
 }
 
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+}
+
 @keyframes thinking {
   0%,
   100% {
@@ -1127,13 +2006,13 @@ kbd {
   }
 }
 
-@keyframes arm-glow {
+@keyframes join-glow {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(61, 220, 151, 0.45);
+    box-shadow: 0 0 0 0 rgba(14, 114, 237, 0.45);
   }
   50% {
-    box-shadow: 0 0 0 0.45em rgba(61, 220, 151, 0);
+    box-shadow: 0 0 0 0.45em rgba(14, 114, 237, 0);
   }
 }
 

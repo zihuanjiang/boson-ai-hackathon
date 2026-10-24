@@ -28,7 +28,9 @@ from tests.conftest import TEST_TALK_DIR, synthetic_chunks
 
 ENV_VARS = ("BOSON_API_KEY", "BOSON_BASE_URL", "BOSON_REALTIME_URL", "MIC_MODE", "RELAY_TURN_DETECTION",
             "RELAY_TEMPERATURE", "RELAY_FULL_SESSION_UPDATE", "RELAY_FAKE_REALTIME", "RELAY_HOST", "RELAY_PORT",
-            "RELAY_FAKE_DROP_AFTER")
+            "RELAY_FAKE_DROP_AFTER", "RELAY_NARRATION")
+LIVE_NOTE = "Relay: narration: live (Higgs Realtime presents every slide; the TTS 3 renders are the offline backup)"
+BACKUP_ONLY = "live narration needs Higgs Realtime too: Relay will play the backup narration (the TTS 3 renders) only"
 VALID_SESSION = {"type": "realtime", "model": "higgs-realtime", "instructions": "You are Relay.\n\nPhase: opening",
                  "output_modalities": ["audio"],
                  "audio": {"input": {"turn_detection": {"type": "semantic_vad"},
@@ -188,8 +190,9 @@ def test_api_talk_matches_the_design_shape(tmp_path: Path, web: Path) -> None:
     with TestClient(app) as client:
         data = client.get("/api/talk").json()
     assert data == talk_json(controller.talk, controller.chunks, controller.settings)
-    assert {key: data[key] for key in ("id", "presenter", "voice", "mic_mode", "fake_audio")} == {
-        "id": "test", "presenter": "Ken", "voice": "chloe", "mic_mode": "tap", "fake_audio": True}
+    assert {key: data[key] for key in ("id", "presenter", "voice", "mic_mode", "narration_mode", "fake_audio")} == {
+        "id": "test", "presenter": "Ken", "voice": "chloe", "mic_mode": "tap", "narration_mode": "live",
+        "fake_audio": True}
     # what this server run presents: the deck compares it with the controller's hello after a reconnect
     assert data["version"] == render_version(controller.talk, controller.chunks) == app.state.version
     assert re.fullmatch(r"[0-9a-f]{12}", data["version"])
@@ -214,10 +217,10 @@ def test_fake_audio_is_false_when_every_chunk_is_real(tmp_path: Path, web: Path)
     chunks = synthetic_chunks(load_talk(TEST_TALK_DIR))
     for chunk in chunks.values():
         chunk.fake = False
-    app, _ = build(tmp_path, web, chunks=chunks, settings=Settings(mic_mode="hold"))
+    app, _ = build(tmp_path, web, chunks=chunks, settings=Settings(mic_mode="hold", narration="rendered"))
     with TestClient(app) as client:
         data = client.get("/api/talk").json()
-    assert data["fake_audio"] is False and data["mic_mode"] == "hold"
+    assert data["fake_audio"] is False and data["mic_mode"] == "hold" and data["narration_mode"] == "rendered"
 
 
 def test_media_serves_only_rendered_chunks_of_this_talk(tmp_path: Path, web: Path) -> None:
@@ -721,25 +724,51 @@ def served(tmp_path: Path, web: Path, monkeypatch: pytest.MonkeyPatch) -> Iterat
 
 
 def test_cli_serves_with_flags(served: dict[str, Any], capsys: pytest.CaptureFixture[str]) -> None:
-    code = cli.main(["serve", "talks/test", "--port", "8123", "--fake-realtime", "--mic-mode", "hold"])
+    code = cli.main(["serve", "talks/test", "--port", "8123", "--fake-realtime", "--mic-mode", "hold",
+                     "--narration", "rendered"])
     assert code == 0
     assert served["run"] == {"host": "127.0.0.1", "port": 8123, "log_level": "info"}
     settings = served["settings"]
     assert settings.fake_realtime is True and settings.mic_mode == "hold" and settings.port == 8123
+    assert settings.narration == "rendered"
     assert Path(served["talk_dir"]).resolve() == TEST_TALK_DIR.resolve()
     out = capsys.readouterr().out
     assert "http://localhost:8123" in out and "fake Realtime" in out and "fake narration audio" in out
-    assert "live replies disabled" not in out
+    assert "live replies disabled" not in out and "narration: live" not in out  # rendered: nothing new to say
     version = served["app"].state.version
     assert f"narration loaded into memory (0 wav files, 0.0 MB, version {version})" in out
     assert "a re-render takes effect at the next server restart" in out
+
+
+def test_cli_says_relay_presents_live_by_default(served: dict[str, Any], capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["serve", "talks/test", "--fake-realtime"]) == 0
+    assert served["settings"].narration == "live"
+    out = capsys.readouterr().out
+    assert LIVE_NOTE in out.splitlines()
+    assert BACKUP_ONLY not in out  # the fake Realtime presents the slides
 
 
 def test_cli_warns_that_live_replies_need_a_key(served: dict[str, Any], capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["serve", str(TEST_TALK_DIR)]) == 0
     out = capsys.readouterr().out
     assert "live replies disabled: Space gives the floor to Ken" in out
+    assert f"  warning: {BACKUP_ONLY}" in out.splitlines()  # live narration without Realtime: the backup only
     assert served["run"] == {"host": "127.0.0.1", "port": 8000, "log_level": "info"}
+    assert cli.main(["serve", str(TEST_TALK_DIR), "--narration", "rendered"]) == 0
+    out = capsys.readouterr().out
+    assert "live replies disabled" in out and BACKUP_ONLY not in out and "narration: live" not in out
+
+
+def test_cli_narration_flag_wins_over_the_environment(served: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+                                                      capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("RELAY_NARRATION", "rendered")
+    assert cli.main(["serve", "test", "--fake-realtime"]) == 0
+    assert served["settings"].narration == "rendered" and LIVE_NOTE not in capsys.readouterr().out
+    assert cli.main(["serve", "test", "--fake-realtime", "--narration", "live"]) == 0
+    assert served["settings"].narration == "live" and LIVE_NOTE in capsys.readouterr().out
+    monkeypatch.setenv("RELAY_NARRATION", "tts")
+    assert cli.main(["serve", "test"]) == 1
+    assert "bad setting: RELAY_NARRATION must be one of" in capsys.readouterr().err
 
 
 def test_cli_flags_win_over_the_environment(served: dict[str, Any], monkeypatch: pytest.MonkeyPatch,

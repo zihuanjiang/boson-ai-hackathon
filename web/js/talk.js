@@ -33,6 +33,9 @@ import { resolveSlide, toInt } from "./util.js";
  * @property {string} presenter
  * @property {string} voice
  * @property {"tap"|"hold"} mic_mode
+ * @property {"live"|"rendered"} narration_mode  live: Higgs Realtime presents every slide and the renders are the
+ *   offline backup; rendered: the renders are the narration ("rendered" from a server that doesn't say: it predates
+ *   live narration)
  * @property {boolean} fake_audio
  * @property {TalkSlide[]} slides
  */
@@ -69,6 +72,7 @@ export function normalizeTalk(raw) {
     presenter: String(raw?.presenter ?? "The presenter"),
     voice: String(raw?.voice ?? ""),
     mic_mode: raw?.mic_mode === "hold" ? "hold" : "tap",
+    narration_mode: raw?.narration_mode === "live" ? "live" : "rendered",
     fake_audio: Boolean(raw?.fake_audio),
     slides: slides.map((/** @type {any} */ s, /** @type {number} */ i) => {
       const id = String(s?.id ?? `slide-${i}`);
@@ -111,6 +115,12 @@ export function staleTalk(talk, helloTalk, helloVersion) {
   if (typeof helloTalk === "string" && helloTalk && talk.id && helloTalk !== talk.id) return "talk";
   if (typeof helloVersion === "string" && helloVersion && talk.version && helloVersion !== talk.version) return "version";
   return null;
+}
+
+/** The talk's name in the meeting window: the first slide's title, else the talk id. @param {Talk|null} talk */
+export function talkTitle(talk) {
+  if (!talk) return "";
+  return talk.slides[0]?.title || talk.id;
 }
 
 /**
