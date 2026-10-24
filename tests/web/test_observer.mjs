@@ -267,6 +267,31 @@ async function run() {
   meetingMsg("discussion", { decisions: [D1] });
   eq("the decision in the notes and over the share", [text('[data-section="decisions"] .note-text'), $(".callout").dataset.kind, text(".callout-kind")], [D1.decision, "decision", "Added to the notes"]);
 
+  // ---- the model-based check (contract v5 §4) on the share: the Alignment line, and a hidden disagreement between a
+  //      labelled line and an unlabelled one (Zoom labels speakers best effort; the backend never guesses one)
+  meetingMsg("discussion", { decisions: [D1], alignment: { mode: "claude", model: "claude-opus-5-5", available: true, in_flight: true, waiting: false, last_latency_ms: null, last_error: null, analyses: 3, last_policy: null } });
+  eq("the Alignment line while an analysis runs, no badge", [$(".strip-alignment").hidden, text(".alignment-text"), $(".alignment-pill").hidden], [false, "Claude (claude-opus-5-5) · analysing…", true]);
+  server({ type: "transcript", utterance: { id: "U5", text: "For me Friday means the beta release.", speaker: "Alice", at_s: 114.0, phase: "discussion", source: "voice" } });
+  const UNLABELLED = "Friday's release is production, I'll tell everyone.";
+  server({ type: "transcript", utterance: { id: "U6", text: UNLABELLED, speaker: null, at_s: 116.0, phase: "discussion", source: "voice" } });
+  const IS2 = {
+    issue_id: "IS2", issue_type: "hidden_disagreement", topic: "What Friday's release is", label: "What Friday's release is", slot: "IS2", claim: "Friday's release", claimed_label: "Friday's release",
+    evidence: [], missing_details: [], source_ids: [], clarification_ids: [], decision_ids: [], established_label: "", commitment: "confirming", confidence: "high", recommendation: "clarify",
+    participant_views: [{ speaker: "Alice", utterance_id: "U5", quote: "the beta release", view: "the beta" }, { speaker: null, utterance_id: "U6", quote: "is production", view: "production" }],
+    question: "Is Friday's release the beta or production?",
+  };
+  server({ type: "alignment", event: { id: "AL7", type: "conflict", ...IS2, utterance_id: "U6", at_s: 116.0, quote: UNLABELLED, quote_speaker: null, quote_utterance_id: "U6", policy: "clarify", has_action: true, repeat: false } });
+  server({ type: "alignment", event: { id: "AL8", type: "intervene", ...IS2, conflict_id: "AL7", conflict_ids: ["AL7"], related: [], quote: UNLABELLED, quote_utterance_id: "U6", quote_speaker: null, confirm_quote: "", utterance_id: "U6", at_s: 116.0, query: "What Friday's release is", revision: 6 } });
+  const disagreement = $('.align-card[data-issue-type="hidden_disagreement"]');
+  eq("a hidden disagreement on the share: its kind, both readings (the unlabelled one as the room's), the question, no sources", [
+    disagreement !== null,
+    disagreement.querySelector(".align-title").textContent,
+    disagreement.querySelectorAll(".align-view").map((v) => v.textContent.replace(/\s+/g, " ").trim()),
+    disagreement.querySelector(".align-question-text").textContent,
+    disagreement.querySelector(".align-sources").hidden,
+  ], [true, "Alignment check · hidden disagreement", ["Alice · “the beta release” → the beta", "Room · “is production” → production"], "Is Friday's release the beta or production?", true]);
+  eq("…the first card is still there, resolved", [$$(".align-card").length, $('.align-card[data-status="resolved"]') !== null], [2, true]);
+
   // ---- a countdown, an error, an unlabelled line (the room's), the wrap-up
   server({ type: "countdown", seconds: 2 });
   eq("the countdown shows", [$(".banner").hidden, $(".banner-count").textContent], [false, "2"]);
@@ -274,7 +299,8 @@ async function run() {
   server({ type: "error", message: "No reply" });
   check("an error is a toast", $$(".toast").some((t) => t.textContent === "No reply"));
   server({ type: "caption", role: "user", text: "Can we move on?", final: true, reply: 8 });
-  eq("a user line without a speaker is the room's", [chatLines().at(-1), $(".cap-user .cap-speaker").textContent], ["Room: Can we move on?", "Carol"]);
+  // (the caption's speaker is the last transcript line's: the unlabelled U6 above, so the room's too)
+  eq("a user line without a speaker is the room's", [chatLines().at(-1), $(".cap-user .cap-speaker").textContent], ["Room: Can we move on?", "Room"]);
   server({ type: "mic", open: false });
   server({ type: "reply_start", reply: 9, kind: "summary" });
   checkpoint = { slide_id: "discussion", talking_point_id: null, status: "wrapping_up" };

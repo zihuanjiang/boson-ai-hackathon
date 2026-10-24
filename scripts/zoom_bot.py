@@ -777,11 +777,94 @@ def ensure_fake_media(talk_dir: Path, out_root: Path, log: Callable[[str], None]
         raise SystemExit(f"fake clips failed: {clips.fatal or clips.failed}")
 
 
+# The dry run's stand-in for Claude (the fake Realtime can't call it, and the dry run is offline): what the analysis
+# should report on the demo's own discussion lines, per demo step, citing the talk's passages verbatim. A disclosed
+# fake like the fake transcripts: it proves the controller's model-based path through the voice input (issue → one
+# question at the confirmation → resolution → the decision with its owner), not the model's judgement
+# (scripts/alignment_eval.py measures that live).
+DRY_RUN_ANALYSIS: dict[str, dict[str, Any]] = {
+    "submission-review": {
+        "claim": "bob-claim", "confirm": "carol-finalize", "fix": "carol-correct",
+        "evidence": [("LIM-2", "built for online meetings, not hands-free in-person ones")],
+        "topic": "Where it works: online or in person",
+        "said": "The write-up says it works for in-person meetings too",
+        "question": "Before we finalize: didn't we establish it is built for online meetings only? Should the write-up "
+                    "say that?",
+        "decision": "The write-up says it works for online meetings only; in-person is future work",
+        "owner": "Bob", "follow_up": "Bob writes the limitations section",
+    },
+    "rollout-review": {
+        "claim": "bob-announce", "confirm": "carol-finalize", "fix": "carol-correct",
+        "evidence": [("REQ-2", "the beta release, not the production release, goes to the beta group only"),
+                     ("DEC-2", "The Friday 24 October beta is announced to beta users only")],
+        "topic": "Friday's release and its audience",
+        "said": "Announce Friday as a production launch to all customers",
+        "question": "Before we confirm: didn't we establish Friday is the beta? Should the announcement go to beta "
+                    "users only?",
+        "decision": "Friday is the beta release, announced to beta users only",
+        "owner": "Bob", "follow_up": "Bob announces the beta to beta users",
+    },
+}
+
+
+def dry_run_analyzer(talk: Any, demo: Any) -> Any:
+    """A `semantic.FakeAnalyzer` scripted from DRY_RUN_ANALYSIS for this talk's demo, or None when the talk has no
+    script (the dry run then needs `--alignment legacy`)."""
+    from relay import semantic
+
+    spec = DRY_RUN_ANALYSIS.get(talk.id)
+    if spec is None or demo is None:
+        return None
+
+    def norm(text: Any) -> str:
+        return " ".join(str(text or "").split())
+
+    says = {step.id: norm(step.say) for step in demo.clips}
+    lines = {role: says.get(spec[role]) for role in ("claim", "confirm", "fix")}
+    if None in lines.values():
+        return None
+    evidence = [{"kind": "source", "id": sid, "quote": quote} for sid, quote in spec["evidence"]]
+
+    def issue(**fields: Any) -> dict:
+        return {"existing_issue_id": None, "issue_type": "evidence_conflict", "topic": spec["topic"],
+                "claim": spec["said"], "claim_utterance_ids": [], "participant_views": [], "missing_details": [],
+                "evidence": evidence, "material_consequence": None, "commitment": "proposed",
+                "commitment_utterance_ids": [], "recommendation": "silent", "confidence": "high",
+                "explanation": "dry-run script", "question": spec["question"], **fields}
+
+    def answer(snapshot: Any) -> dict:
+        ids = {norm(u["text"]): u["id"] for u in snapshot.utterances}
+        new = {norm(snapshot.utterance(uid)["text"]) for uid in snapshot.new_utterance_ids if snapshot.utterance(uid)}
+        known = snapshot.issues[0]["id"] if snapshot.issues else None
+        claim_id = ids.get(lines["claim"])
+        if lines["fix"] in new and known is not None:
+            fix_id = ids[lines["fix"]]
+            return {"updates": [{"issue_id": known, "status": "resolved", "utterance_ids": [fix_id], "settled": [],
+                                 "note": spec["decision"]}],
+                    "decision_proposals": [{"decision": spec["decision"], "status": "confirmed", "owner": spec["owner"],
+                                            "owner_utterance_ids": [fix_id], "agreement_utterance_ids": [fix_id],
+                                            "follow_up": spec["follow_up"], "source_ids": [sid for sid, _ in spec["evidence"]],
+                                            "supersedes_decision_id": None, "resolves_issue_ids": [known],
+                                            "explanation": "dry-run script"}]}
+        if lines["confirm"] in new and claim_id is not None:
+            return {"issues": [issue(existing_issue_id=known, claim_utterance_ids=[claim_id],
+                                     commitment_utterance_ids=[ids[lines["confirm"]]], commitment="confirming",
+                                     recommendation="clarify")]}
+        if lines["claim"] in new and claim_id is not None:
+            return {"issues": [issue(claim_utterance_ids=[claim_id])]}
+        return {}
+
+    return semantic.FakeAnalyzer(answer, model="dry-run-script")
+
+
 async def dry_run(talk_dir: Path, *, out_root: Path, out_dir: Path, log: Callable[[str], None] = print,
-                  narration_s: float = 3.0, timeout_scale: float = 1.0, owner: str = "Bob") -> dict:
+                  narration_s: float = 3.0, timeout_scale: float = 1.0, owner: str = "Bob",
+                  alignment: str = "claude") -> dict:
     """The whole demo over the real server (`--input voice`, in-process uvicorn) with the fake Realtime hearing the
     demo's lines in order, the fake Zoom page playing the clips on their cues, and the bot's ZoomDeck as the deck.
-    Returns the summary (with the §8 checks); writes out_dir/{frames.jsonl, heard.wav, summary.json}."""
+    `alignment`: claude (the default: the model-based path, with DRY_RUN_ANALYSIS standing in for Claude), legacy
+    (checks.yaml) or off. Returns the summary (with the §8 checks); writes out_dir/{frames.jsonl, heard.wav,
+    summary.json}."""
     import uvicorn
     import websockets
 
@@ -804,10 +887,16 @@ async def dry_run(talk_dir: Path, *, out_root: Path, out_dir: Path, log: Callabl
     # the fake Realtime can't transcribe: it "hears" the demo's lines in the order the turns are committed; replies
     # arrive fast (speed 50×) and a narration lasts narration_s (the cues' heard_ms need real seconds of narration)
     connector = FakeConnector(think_s=0.1, speed=50.0, narration_s=narration_s, reply_s=1.0, transcripts=lines)
-    # legacy alignment (checks.yaml): the fake Realtime can't run a Claude analysis, and the demo's cues were written
-    # for it (as tests/test_demo_e2e.py pins it); the model-based path has its own flow tests
-    settings = Settings(fake_realtime=True, input="voice", narration="live", turn_detection=None, alignment="legacy")
-    app = create_app(talk_dir, settings, out_root=out_root, connect=connector)
+    # the model-based check through the voice input, with the scripted stand-in for Claude (offline: no key, no
+    # network); `alignment="legacy"` runs the checks.yaml engine instead
+    analyzer = None
+    if alignment == "claude":
+        analyzer = dry_run_analyzer(talk, demo)
+        if analyzer is None:
+            raise SystemExit(f"the dry run has no scripted analysis for {talk.id}: run it with --alignment legacy")
+        log("dry run: the alignment analysis is a scripted stand-in for Claude (no API call)")
+    settings = Settings(fake_realtime=True, input="voice", narration="live", turn_detection=None, alignment=alignment)
+    app = create_app(talk_dir, settings, out_root=out_root, connect=connector, analyzer=analyzer)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="on"))
     serving = asyncio.create_task(server.serve())
     for _ in range(300):
@@ -843,7 +932,8 @@ async def dry_run(talk_dir: Path, *, out_root: Path, out_dir: Path, log: Callabl
             await asyncio.wait_for(ears, 5)
             frames = frames_of(deck)
             checks = assess(frames, participants=participants, owner=owner)
-            summary = summarize(frames, dry_run=True, joined=None, shared=None, steps=steps,
+            summary = summarize(frames, dry_run=True, joined=None, shared=None, steps=steps, alignment=alignment,
+                                analyses=len(getattr(analyzer, "calls", [])),
                                 checks={name: {"ok": ok, "seen": seen} for name, (ok, seen) in checks.items()},
                                 heard_ms=len(deck.heard) // BYTES_PER_MS, frames_sent=deck.frames_sent,
                                 speakers_seen=deck.speakers_seen, pushed_ms={str(k): v // BYTES_PER_MS
@@ -985,12 +1075,16 @@ def start_server(args: argparse.Namespace, out_dir: Path) -> tuple[subprocess.Po
         command.append("--fake-realtime")
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     dotenv = main_checkout_env()
-    if dotenv is not None and "BOSON_API_KEY" not in env:
+    if dotenv is not None:  # what the environment doesn't set yet (BOSON_API_KEY, ANTHROPIC_API_KEY, …), never printed
         try:
             from dotenv import dotenv_values
-            env.update({k: v for k, v in dotenv_values(dotenv).items() if v is not None})
+            env.update({k: v for k, v in dotenv_values(dotenv).items() if v is not None and k not in env})
         except Exception:  # noqa: BLE001
             pass
+    if args.alignment == "claude" and not env.get("ANTHROPIC_API_KEY"):
+        print("  !! --alignment claude but ANTHROPIC_API_KEY is not set (.env or the environment): the server will say "
+              "the alignment check is unavailable and the facilitator won't speak up. Add the key, or pass "
+              "--alignment legacy.", flush=True)
     log_path = out_dir / "server.log"
     log = log_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -1200,10 +1294,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server", default="http://127.0.0.1:8000", help="the relay server (started unless --no-serve)")
     parser.add_argument("--no-serve", action="store_true", help="don't start relay serve: it is running already")
     parser.add_argument("--fake-realtime", action="store_true", help="start the server with the fake Realtime (rehearsal)")
-    # legacy until the model-based check is finished in the controller (merge 2026-10-24: the Zoom path keeps the
-    # verified checks.yaml check); claude needs ANTHROPIC_API_KEY
-    parser.add_argument("--alignment", choices=("legacy", "claude", "off"), default="legacy",
-                        help="who checks the discussion: legacy (checks.yaml, the verified default), claude, off")
+    # claude (the model-based check, doc/design.md §12) needs ANTHROPIC_API_KEY; the dry run scripts its analysis
+    parser.add_argument("--alignment", choices=("claude", "legacy", "off"), default="claude",
+                        help="who checks the discussion: claude (default; needs ANTHROPIC_API_KEY, the dry run uses a "
+                             "scripted stand-in), legacy (the checks.yaml patterns) or off")
     parser.add_argument("--name", default=BOT_NAME)
     parser.add_argument("--web-host", default="app.zoom.us", help="host of the Zoom web client")
     parser.add_argument("--join-wait", type=float, default=180, help="how long to wait for the join to finish (s)")
@@ -1223,7 +1317,7 @@ def main(argv: list[str] | None = None) -> int:
 
         out_root = Path(args.out_root).expanduser().resolve() if args.out_root else ROOT / "out"
         summary = asyncio.run(dry_run(resolve_talk_dir(args.talk), out_root=out_root, out_dir=OUT, log=print,
-                                      timeout_scale=args.timeout_scale))
+                                      timeout_scale=args.timeout_scale, alignment=args.alignment))
         return 0 if report(summary, OUT) else 1
     if not args.url:
         build_parser().error("--url is required (or --dry-run)")

@@ -411,6 +411,52 @@ def test_the_injected_page_script_under_jsc():
 # --- the dry run, end to end ------------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("talk_id", ["submission-review", "rollout-review"])
+async def test_the_dry_runs_scripted_analysis_survives_the_real_validation(talk_id):
+    """DRY_RUN_ANALYSIS stands in for Claude in the dry run: its quotes must be verbatim in the talk's passages (else
+    reconcile drops them and the dry run would prove nothing), and its verdicts must give one question at the
+    confirmation and a resolution with Bob as the owner."""
+    from relay import semantic
+    from relay.meeting import MeetingState, load_demo, load_meeting
+    from relay.talk import load_talk
+
+    talk = load_talk(ROOT / "talks" / talk_id)
+    package, demo = load_meeting(talk), load_demo(talk)
+    analyzer = bot.dry_run_analyzer(talk, demo)
+    assert analyzer is not None and analyzer.model == "dry-run-script"
+    spec = bot.DRY_RUN_ANALYSIS[talk_id]
+    says = {step.id: step.say for step in demo.clips}
+    state = MeetingState(package, lambda: 0.0)
+    state.set_phase("discussion")
+    seen = 0
+
+    async def after(step: str, speaker: str) -> tuple[semantic.Reconciled, semantic.Snapshot]:
+        nonlocal seen
+        state.add_utterance(says[spec[step]], speaker, "voice")
+        new = [u.id for u in state.transcript[seen:]]
+        seen = len(state.transcript)
+        snapshot = semantic.build_snapshot(package, state, generation=0, new_utterance_ids=new)
+        outcome = await analyzer.analyze(snapshot)
+        assert outcome.error is None
+        return semantic.reconcile(outcome.result, snapshot), snapshot
+
+    rec, snap = await after("claim", "Bob")
+    (claim,) = rec.issues
+    assert claim.evidence_ok and not claim.dropped and semantic.decide_policy(claim, snap)[0] == "silent"
+    record = state.add_issue(status="pending", issue_type="evidence_conflict", topic=claim.model.topic,
+                             claim=claim.model.claim, claim_utterance_ids=claim.claim_utterance_ids,
+                             participant_views=[], missing_details=[], evidence=claim.evidence,
+                             material_consequence=None, commitment="proposed", confidence="high",
+                             recommendation="silent", question=claim.model.question, revision=1)
+    rec, snap = await after("confirm", "Carol")
+    (confirm,) = rec.issues
+    assert confirm.existing_id == record.id and semantic.decide_policy(confirm, snap)[0] == "clarify"
+    rec, snap = await after("fix", "Carol")
+    assert [(u.issue_id, u.status) for u in rec.updates] == [(record.id, "resolved")]
+    (decision,) = rec.proposals
+    assert (decision.owner, decision.resolves_issue_ids, decision.dropped) == ("Bob", [record.id], [])
+
+
 @pytest.mark.slow
 @pytest.mark.skipif(not __import__("tests.test_e2e", fromlist=["_can_bind"])._can_bind(),
                     reason="local port binding is not allowed here")
@@ -423,6 +469,9 @@ async def test_the_dry_run_end_to_end_over_the_fake_realtime(tmp_path):
                                 log=lines.append, narration_s=2.5)
     checks = summary["checks"]
     assert all(c["ok"] for c in checks.values()), {k: v["seen"] for k, v in checks.items() if not v["ok"]}
+    # the model-based check (the default), its analysis scripted: one analysis per discussion line at least
+    assert summary["alignment"] == "claude" and summary["analyses"] >= 3
+    assert any("scripted stand-in for Claude" in line for line in lines)
     assert summary["wrapped_up"] and not summary["backup_plays"] and not summary["errors"]
     assert not any(step["timed_out"] or step["unavailable"] for step in summary["steps"])
     assert summary["barge_ins"][0]["speaker"] == "Alice" and summary["barge_ins"][0]["state"] == "NARRATING"
