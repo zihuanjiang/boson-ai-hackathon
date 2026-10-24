@@ -39,6 +39,7 @@ playback positions. The browser never decides what plays next.
 | `talks/test/` | 3-slide test talk (milestone 1 + test fixture) |
 | `talks/relay-intro/` | the self-intro talk (Claude drafts, Ken owns every spoken line) |
 | `talks/project-overview/` | the demo deck (D88): On the Same Page presents itself, every talking point guided |
+| `scripts/probe_guided.py` | live probe (D88): are the guided beats performed word for word on the current model? |
 
 Units everywhere: audio is PCM16 mono **24 kHz**; times inside a chunk are **integer milliseconds**; chunk indices
 are **0-based**; `fragment` is a **count** of visible fragments.
@@ -68,14 +69,15 @@ Input contract is brief Appendix B. Parser/validator rules beyond it:
   starting with a letter, a tag not spelled exactly `<|kind:value|>`, a `Note:` line.
 
 **Script guidance (D88).** In a meeting, a talking point (script chunk) may carry a `guide:`: Claude writes the
-script, Higgs Realtime performs it, one talking point per response. Without one, everything below is as before.
+script before the meeting, Higgs Realtime performs it live, one talking point per response. Without one, everything
+below is as before.
 
 ```yaml
 - id: hook
   say: "<the TTS 3 backup line, ≤ 300 chars; may be left out when every beat is verbatim: then the beats joined>"
   guide:
     intent: what the point must do for the listener          # required, ≤ 160 chars
-    bridge: how it connects to the point before              # optional, ≤ 160 (dropped when resuming after a cut)
+    bridge: how it connects to the point before              # optional, ≤ 160: only before a gist opening (below)
     seconds: 25                                              # optional, 3–45: the point's live length
     delivery: for the whole point                            # optional, ≤ 100
     avoid: a greeting before the first line                  # optional, ≤ 160 (or a list)
@@ -85,17 +87,24 @@ script, Higgs Realtime performs it, one talking point per response. Without one,
         phrases: [key phrase, another]                       # 1–5 key phrases to work in (≤ 60 each)
         delivery: pace, energy, pauses, emphasis             # ≤ 100; per beat, adds to the point's
         seconds: 6                                           # optional, 1–30
+    resume:                                                  # optional, one beat (verbatim or gist): the prepared
+      verbatim: "As I was saying, … Just like that."          #   line that picks the point up after a cut, in place
+      delivery: brisk                                        #   of what is left (for a staged interruption)
 ```
 
-A top-level `handover:` (same shape) guides the hand-over to the discussion. Validation: errors for a missing
-`intent`, a beat with both or neither of `verbatim`/`gist`, too many beats or phrases, a field over its length, a
-`seconds` out of range, and, in every spoken field (verbatim, gist, phrases), digits (numbers as words; source ids),
-TTS tags (Higgs Realtime would read them), brackets / markdown / stage directions, URLs and double quotes (the prompt
-quotes the line); a verbatim line must end a sentence and be ≤ 300 chars; a `say` left out must be derivable (every
-beat verbatim) and the beats joined must pass the `say` rules. Warnings: unknown keys, acronyms and abbreviations in a
-spoken field, a line that is only true live ("live right now", "what you hear is live": the backup would make it
-false), a `seconds` that the beats' own `seconds` or its verbatim words (2.6 words/s) contradict, guides or `handover`
-in a plain talk (no agenda.yaml: unused). The CLI prints how many points are guided and their live length.
+A top-level `handover:` (same shape; a `resume` there is ignored, with a warning) guides the hand-over to the
+discussion. A `bridge` is the performer's own words, so it is sent only before a gist opening; a point that opens
+word for word has its bridge written into its first line. Validation: errors for a missing `intent`, a beat (or the
+`resume`) with both or neither of `verbatim`/`gist`, too many beats or phrases, a field over its length, a `seconds`
+out of range, and, in every spoken field (verbatim, gist, phrases, the resume line), digits (numbers as words; source
+ids), TTS tags (Higgs Realtime would read them), brackets / markdown / stage directions, URLs and double quotes (the
+prompt quotes the line); a verbatim line must end a sentence and be ≤ 300 chars; a `say` left out must be derivable
+(every beat verbatim) and the beats joined must pass the `say` rules. Warnings: unknown keys, acronyms and
+abbreviations in a spoken field, a line that is only true live ("live right now", "what you hear is live": the backup
+would make it false), a `seconds` that the beats' own `seconds` or its lines contradict (verbatim words at 2.6 words/s,
+a gist at ~1.4× its note: live 2026-10-24), a `bridge` before a verbatim opening or on the presentation's first point
+(unused), guides or `handover` in a plain talk (no agenda.yaml: unused). The CLI prints how many points are guided and
+their live length.
 
 Render (`uv run python -m relay.render talks/<id> [--fake] [--force] [--only SLIDE] [--jobs 4] [--check]
 [--out DIR]`; `--out` replaces the `out/` root): TTS 3 with `{"model": "higgs-tts-3", "input": say, "voice": voice, "response_format": "wav", "timestamps": true}`.
@@ -518,28 +527,39 @@ start_presentation.`; qa → `This is Q&A: answer in up to four sentences using 
 handoff_to_human.`; human → `{presenter} has the floor: answer briefly.` `Slides:` lists relay slides only.
 
 **Guided talking points (D88).** `prompts.talking_point_instructions` hands a point with a `guide` to
-`guided_point_instructions` (the unguided text is unchanged): the header (meeting, slide, on screen), `Its job:
-<intent>`, how the previous point ended (its verbatim beats when all are verbatim, else its notes; the last ~200
-chars), `Bridge in from the previous point: …`, then "Perform it in N beats, straight through, in this order:" and one
-line per beat — `Beat k, word for word: "<verbatim>"` (a quoted sentence comes back word for word, live 2026-10-24) or
-`Beat k, in your own words, one or two short sentences: <gist>; work in "<phrase>"` — each with `Delivery: …`; then
-`Delivery throughout`, `About N seconds in all. Avoid: …`, the rules (say the word-for-word beats exactly; never the
-beat numbers, delivery notes, directions or source ids; no emphasis words of its own) and the usual closing line.
-There is no SSML: pace and pauses come from the lines' punctuation and the delivery notes.
+`guided_point_instructions` (the unguided text is unchanged): the header (meeting, slide, and the slide's text as
+`On screen (the room reads it; don't say it): …`, so a sentence-shaped slide line isn't taken for one more line to
+say), `Its job: <intent>`, how the previous point ended (its verbatim beats when all are verbatim, else its notes; the
+last ~200 chars), `Bridge in from the previous point: …` (only before a gist opening), "Don't greet, and say nothing
+before beat one." (or "Don't greet." after a bridge), then "Perform it in N beats, straight through, in this order:"
+and one line per beat — `Beat k, word for word: "<verbatim>"` or `Beat k, in your own words, one or two short
+sentences: <gist>; work in "<phrase>"` — each with `Delivery: …`; then `Delivery throughout`, `About N seconds in all.
+Avoid: …`, the rules (say the word-for-word beats exactly; never the beat numbers, delivery notes, directions or source
+ids; no emphasis words of its own) and the usual closing line. The quoted lines lean on F1 (`higgs-realtime`: a typed
+"repeat this line" came back word for word); verbatim beats inside a multi-beat prompt are not yet verified on
+`higgs-realtime-1.5-preview` (`scripts/probe_guided.py`, the D88 live task). There is no SSML: pace and pauses come
+from the lines' punctuation and the delivery notes.
 - **First point:** "These are the first words of your presentation: no greeting, welcome or introduction before them"
-  (instead of the optional welcome). When the first point is guided, the opening phase line becomes
+  (instead of the optional welcome), only on the presentation's first point (when the hook played from the backup, the
+  first live point is told how the hook ended instead). When the first point is guided, the opening phase line becomes
   `GUIDED_OPENING_LINE`: thank the host in two or three words, no greeting, then `set_presentation_state` start; R (or
   the demo's `start`) starts with the hook itself.
 - **Length:** `Controller._point_seconds` asks a guided point for `guide.seconds_from(0)` (its `seconds`, else the
   beats' lengths), up to `GUIDED_POINT_MAX_S` = 45, not its backup render's length capped at `POINT_MAX_S`. No
   narration timer depends on the length (first audio within `NARRATION_WAIT_S`, an event every `REPLY_STALL_S` while it
   streams, the drain at its audio + 2 s), so a 25-second hook plays to its end.
-- **A cut mid-point:** `_cut_live` estimates the beat the room was in (`prompts.beat_reached`: the heard share of the
-  response over the beats' lengths, moved on to the last verbatim beat whose opening words were heard) into
-  `Cursor.beat`; the continuing request (`LiveNarration.from_beat`) lists only the beats from there: "You were
-  interrupted during beat k …; the room last heard you say: "…". Pick up from there with a bridge of a few words at
-  most …, say what the room missed of beat k, then go on. Never start the point over …", asked for the time left
-  (`min(seconds_from(k), point length − heard)`).
+- **A cut mid-point:** `_cut_live` estimates the beat the room was in into `Cursor.beat` (`prompts.beat_reached`: text
+  first, the verbatim beat the heard words end in; else the heard share of the response over the beats' lengths,
+  moved on to the last verbatim beat whose opening words were heard). The continuing request
+  (`LiveNarration.from_beat`) leaves out "You just said" (its last words were an answer) and either performs the
+  guide's `resume` line ("Your script has a prepared line for picking it up: perform only that line, then stop.") or
+  lists only what is left: the interrupted verbatim beat's **unheard rest** (`prompts.verbatim_rest`: where the heard
+  words end inside the line; `Beat k, the rest of it, word for word: "…"`; the whole line `from its start` when the room
+  heard none of it; the next beat when it heard all of it), then the later beats — "You were interrupted during beat k
+  …; the room last heard you say: "…". Start with a bridge of a few words at most (like "As I was saying"), then the
+  rest of beat k as given, then go on. Never start the point over …", with the rules line "Apart from that bridge, say
+  the word-for-word beats exactly …". It is asked for `guide.continue_seconds(k)`: the resume line's length, else the
+  beats left by the guide (never "its length minus what was heard": the live pace isn't the guide's).
 - **Hand-over:** `handover_instructions(meeting, talk.handover)` performs the `handover:` guide the same way (beats,
   length, no greeting, no tools); without it the text is today's.
 

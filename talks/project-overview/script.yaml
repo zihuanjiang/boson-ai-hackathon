@@ -1,13 +1,17 @@
-# On the Same Page presents itself to the hackathon room (D88). Claude wrote this script; Higgs Realtime performs it
-# live, one talking point per response. Every talking point has a `guide`: its job for the listener (intent), the bridge
-# in, its beats (verbatim lines that must land exactly, or a gist with key phrases), delivery, length, what to avoid.
-# `say` is the Higgs TTS 3 backup line (what plays when the link is down); it is left out where every beat is verbatim,
-# and the beats joined are then the backup.
+# On the Same Page presents itself to the hackathon room (D88). Claude wrote this script before the meeting; Higgs
+# Realtime performs it live, one talking point per response. Every talking point has a `guide`: its job for the
+# listener (intent), its beats (verbatim lines that must land exactly, or a gist with key phrases), delivery, length,
+# what to avoid, and, where a cut is staged, the prepared `resume` line that picks it up. A `bridge` is the performer's
+# own words, so it goes only before a gist: a point that opens word for word has its bridge written into its line.
+# `say` is the Higgs TTS 3 backup line (what plays when the link is down); it is left out where every beat is
+# verbatim, and the beats joined are then the backup.
 #
 # Spoken rules for every line, live or backup: numbers as words; no source ids, URLs or acronyms read aloud ("text to
 # speech", never TTS; "Boson AI" is the one exception, a name); every line stays true while the backup plays it (the
 # answers, lookups, checks and notes are live either way; never "what you hear is live"). Pause and pace come from
 # punctuation and the delivery notes: there is no SSML. Facts: talks/project-overview/sources/ and doc/gotchas.md.
+# Length: ~280 words presented at ~2.6 words a second (the guides' seconds add up to ~2 minutes); if the first live
+# run is long, run_of_show.md lists what to cut first.
 talk: project-overview
 voice: default
 presenter: Alice
@@ -17,7 +21,7 @@ slides:
     plain: "Like the first minute of a pitch: put the room inside the story before the product has a name."
     chunks:
       - id: hook
-        say: "Imagine you're an engineer, up since yesterday morning, building a hackathon project for Boson AI. Round after round: a new feature, a bug hunt, one more take of the demo. Now you present it to a tired room. Frustrated? Out of words? Then let me take it from here."
+        say: "Imagine you're an engineer, up since yesterday morning, building a hackathon project for Boson AI. Feature after feature, bug after bug, one more take of the demo. In an hour, you present it to a tired room. Frustrated? Nervous? Then let me take it from here."
         guide:
           intent: put the tired room inside the story, so the problem is theirs before the product has a name
           seconds: 25
@@ -25,11 +29,11 @@ slides:
           beats:
             - verbatim: "Imagine you're an engineer, up since yesterday morning, building a hackathon project for Boson AI."
               delivery: slow and warm, like the start of a story
-            - verbatim: "Round after round: a new feature, a bug hunt, one more take of the demo."
-              delivery: quicker, a light beat on each item
-            - verbatim: "And now you have to present it, to a room as tired as you are."
+            - verbatim: "Feature after feature, bug after bug, one more take of the demo."
+              delivery: quicker, a light stress on each item
+            - verbatim: "And in an hour, you present it, to a room as tired as you are."
               delivery: slower again, then a short silence
-            - verbatim: "Frustrated? Out of words? Dreading the one question you can't answer?"
+            - verbatim: "Are you frustrated? Nervous? Dreading the one question you can't answer?"
               delivery: three short questions, a pause after each
             - verbatim: "Then let me take it from here."
               delivery: a lift in energy, warm and sure
@@ -41,14 +45,13 @@ slides:
     chunks:
       - id: name
         guide:
-          intent: name the product as the answer to the hook, and promise its three moves
-          bridge: straight on from the hook's last line, as its answer
-          seconds: 8
+          intent: name the product as the answer to the hook, and promise what it does
+          seconds: 9
           beats:
             - verbatim: "I'm On the Same Page, a meeting facilitator built on Higgs Audio."
               delivery: bright, a small lift on the name
-            - verbatim: "I present, I answer, and then I listen."
-              delivery: three steady steps, slowing on the last one
+            - verbatim: "I join your Zoom calls, I present, I answer, and then I listen."
+              delivery: four steady steps, slowing on the last one
 
   - id: problem
     speaker: relay
@@ -58,23 +61,21 @@ slides:
         fragment: 1
         guide:
           intent: turn from presenting to the harder half, the discussion, where tired agreement comes cheap
-          bridge: from the promise to listen to why listening matters
-          seconds: 5
+          seconds: 6
           beats:
             - verbatim: "Because the hard part comes after the slides."
               delivery: lower and slower
-            - verbatim: "Everyone nods. Everyone agrees."
-              delivery: two short beats, a little dry
+            - verbatim: "A tired room nods along. Everyone agrees."
+              delivery: two short sentences, a little dry
       - id: apparent
         fragment: 2
         guide:
-          intent: land the problem in one line the room will remember
-          bridge: after a breath, the turn
-          seconds: 8
+          intent: land the problem in one line the room will remember, a callback to the product's name
+          seconds: 9
           beats:
             - verbatim: "And the plan they agree on contradicts the documents nobody opened."
               delivery: steady, weight on contradicts
-            - verbatim: "That's how a meeting ends in apparent agreement."
+            - verbatim: "So the meeting ends in agreement, and nobody is on the same page."
               delivery: quiet, like a punchline, then a pause
           avoid: naming any real team or meeting
 
@@ -85,57 +86,44 @@ slides:
       - id: one-session
         fragment: 1
         guide:
-          intent: show Higgs Realtime as the performer and Claude as the scriptwriter
-          bridge: from the problem to the first half of the answer, presenting
-          seconds: 8
+          intent: show Higgs Realtime as the live performer, and the script as Claude's, written before the meeting
+          seconds: 9
           beats:
-            - verbatim: "The whole meeting runs on one Higgs Realtime session, one talking point at a time, from a script Claude wrote."
-              delivery: clear and confident, a small smile on the last words
+            - verbatim: "Here's how."
+              delivery: brighter, a short pause after it
+            - verbatim: "One Higgs Realtime session runs the whole meeting, one talking point at a time, from a script Claude wrote beforehand."
+              delivery: clear and confident
       - id: interrupt
         fragment: 2
-        say: "Interrupt me, and I stop mid-sentence. I look the answer up, show the source on screen, and pick up where I was cut."
         guide:
           intent: promise the interruption, the cited answer and the resume, right before someone tests it
           seconds: 9
           beats:
             - verbatim: "Interrupt me, and I stop mid-sentence."
               delivery: crisp, a tiny pause after it
-            - gist: I look the answer up, show the source on screen, and pick up where I was cut, not from the top
-              phrases: [the source on screen, where I was cut]
+            - verbatim: "I look the answer up, show you the source, and pick up where I was cut."
               delivery: brisk, one breath
+          # the demo's interruption lands about a second and a half into this point (Alice, run_of_show.md): the
+          # prepared line finishes the promise, now kept
+          resume:
+            verbatim: "As I was saying, I stop, look it up, show you the source, and pick up right where I left off. Just like that."
+            delivery: brisk, a small smile on the last three words
 
   - id: listen
     speaker: relay
     plain: "Like a note taker who also knows the files: quiet, until the notes and the files disagree."
     chunks:
       - id: listen
-        say: "When the slides end, I listen: Higgs speech to text writes down every line, and Claude checks it for a conflict with the documents, a hidden disagreement, or a detail nobody settled. I speak up only as you're about to confirm, with one neutral question."
         guide:
-          intent: open the second half, listening; say who does what, the three kinds of issue, the restraint and the notes
-          bridge: from presenting to the moment the slides end and the room starts talking
-          seconds: 20
+          intent: open the second half, listening; say who does what, the three kinds of issue, and the restraint
+          seconds: 17
           beats:
-            - verbatim: "When the slides end, I listen: Higgs speech to text writes down every line, and Claude checks each one for three things."
+            - verbatim: "When the slides end, I listen."
               delivery: slower and calmer
-            - verbatim: "A conflict with the documents, a hidden disagreement, a detail nobody settled."
-              delivery: count them off, evenly
-            - verbatim: "I speak up only as you're about to confirm, with one neutral question, and the decision goes into the notes."
-              delivery: calm, weight on about to confirm, warm at the end
-
-  - id: online
-    speaker: relay
-    plain: "Like a colleague who dials in: a face in the grid, heard by everyone, interrupted like anyone."
-    chunks:
-      - id: zoom
-        guide:
-          intent: place it in a real online meeting, and say honestly how a demo can run without people
-          seconds: 11
-          beats:
-            - verbatim: "And I work where meetings happen now: online, as my own participant in Zoom."
-              delivery: brisk, lighter
-            - verbatim: "For a repeatable demo, the participants can be prerecorded, voiced by text to speech."
-              delivery: friendly and matter of fact
-          avoid: saying the participants in this room are recorded or real, since either can be true
+            - verbatim: "Higgs transcribes every line, and Claude checks each one for a conflict with the documents, a hidden disagreement, or a detail nobody settled."
+              delivery: count the three kinds off evenly
+            - verbatim: "Before you confirm a plan like that, I ask one neutral question."
+              delivery: calm, weight on before you confirm
 
   - id: results
     speaker: relay
@@ -143,14 +131,14 @@ slides:
     chunks:
       - id: measured
         guide:
-          intent: prove it is real, with two facts the room can hold on to
-          bridge: from how it works to what is real
-          seconds: 11
+          intent: prove it is real, with two measured facts the room can hold on to
+          seconds: 14
           delivery: confident; slow down on the numbers
           beats:
             - verbatim: "Every answer, lookup, check and note is live."
-              delivery: one beat per item
-            - verbatim: "I start answering about seven tenths of a second after you stop, and both demo meetings passed every live check."
+              delivery: a light stress on each item
+            - verbatim: "With recorded participants, I start answering about seven tenths of a second after they stop."
+            - verbatim: "And two earlier test meetings passed all eight of our checks."
 
   - id: limits
     speaker: relay
@@ -160,35 +148,30 @@ slides:
         fragment: 1
         guide:
           intent: say plainly where it does not work yet, without apology
-          bridge: from the numbers to the honest part
-          seconds: 9
+          seconds: 6
           beats:
-            - verbatim: "Now the honest part."
+            - verbatim: "Now, my limits."
               delivery: plain and slower, a short pause after it
-            - verbatim: "I'm built for online meetings: a room microphone would also hear me."
-            - verbatim: "And for now, I speak English only."
+            - verbatim: "I'm built for online meetings, and for now I speak English only."
       - id: limits-check
         fragment: 2
         guide:
-          intent: be honest about the check, with its measured score
-          seconds: 8
+          intent: be honest about the check, with its measured score, and warn the room about the pause before it asks
+          seconds: 9
           delivery: plain, no apology
           beats:
-            - verbatim: "Claude's check matched forty-seven of fifty-three labelled lines: a judgement, not a proof."
-            - verbatim: "And the question takes a few seconds."
+            - verbatim: "Claude's check got forty-seven of fifty-three test lines right, so it can miss one."
+            - verbatim: "And it takes a few seconds before I ask."
 
   - id: discussion
     speaker: human
 
 # The hand-over to the discussion (its own response after the last talking point).
 handover:
-  intent: give the floor to the room, name the question, and make the listening visible
-  bridge: from the limits, the meeting turns to the room
-  seconds: 11
+  intent: give the floor to the room with the question on the screen
+  seconds: 8
   beats:
     - verbatim: "That's the project. Now it's your turn."
-      delivery: warm, a beat after it
-    - gist: the question on the screen, how we run the demo with real people and who sets it up
-      phrases: [real people]
-    - verbatim: "I'll stay quiet and listen, and speak up only if a decision doesn't match the documents."
-      delivery: calm, a slight smile
+      delivery: warm, a pause after it
+    - verbatim: "How do we run the demo with real people, and who sets it up?"
+      delivery: an open, inviting question

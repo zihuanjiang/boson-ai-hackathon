@@ -460,13 +460,24 @@ async def test_the_dry_runs_scripted_analysis_survives_the_real_validation(talk_
 @pytest.mark.slow
 @pytest.mark.skipif(not __import__("tests.test_e2e", fromlist=["_can_bind"])._can_bind(),
                     reason="local port binding is not allowed here")
-async def test_the_dry_run_end_to_end_over_the_fake_realtime(tmp_path):
+@pytest.mark.parametrize("talk_id", ["submission-review", "project-overview"])
+async def test_the_dry_run_end_to_end_over_the_fake_realtime(tmp_path, talk_id):
     """`scripts/zoom_bot.py --dry-run` as the CLI runs it, with fake renders and clips under tmp_path: the fake Zoom
-    page plays the submission review's clips on their cues into the bot's ears, the bot is the deck of
-    `--input voice`, and the §8 definition of done holds."""
+    page plays the talk's clips on their cues into the bot's ears, the bot is the deck of `--input voice`, and the §8
+    definition of done holds. The project overview's points are all guided (D88): its staged cut is picked up by the
+    point's prepared resume line."""
     lines: list[str] = []
-    summary = await bot.dry_run(ROOT / "talks" / "submission-review", out_root=tmp_path, out_dir=tmp_path / "zoom_bot",
+    summary = await bot.dry_run(ROOT / "talks" / talk_id, out_root=tmp_path, out_dir=tmp_path / "zoom_bot",
                                 log=lines.append, narration_s=2.5)
+    if talk_id == "project-overview":
+        entries = [json.loads(line) for path in sorted((tmp_path / "logs").glob(f"{talk_id}-*.jsonl"))
+                   for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        requests = [e for e in entries if e.get("kind") == "narration_request"]
+        assert requests and all(e.get("guided") for e in requests)
+        cut = [e for e in entries if e.get("kind") == "narration_cut"]
+        assert len(cut) == 1 and "beat" in cut[0]
+        resumed = [e for e in requests if e.get("continuing")]
+        assert [(e["talking_point"], e.get("resume_line")) for e in resumed] == [("interrupt", True)]
     checks = summary["checks"]
     assert all(c["ok"] for c in checks.values()), {k: v["seen"] for k, v in checks.items() if not v["ok"]}
     # the model-based check (the default), its analysis scripted: one analysis per discussion line at least

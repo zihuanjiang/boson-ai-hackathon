@@ -1,12 +1,13 @@
-"""talks/project-overview: On the Same Page presents itself to the hackathon room, from a script Claude wrote with
-guidance on every talking point (D88), performed by Higgs Realtime. The package validates (the only warnings are the
-name "Boson AI"), the time and word budget holds (about two minutes live, the hook 20–25 s), every spoken line obeys
-the spoken rules and stays true on the TTS 3 backup, every source id it cites exists and backs its claim, the demo's
-cues point at real talking points, and the discussion goes through the real legacy engine the way the run of show
-says: the sources establish "speak up" (ZOOM-2), Alice's interruption retrieves ZOOM-3 and ZOOM-2, Bob's raised-hands
-plan is one consequential conflict, Carol's confirmation opens the gate, her correction resolves it with owner Bob.
-The model-based check's scripted stand-in is tested in tests/test_zoom_bot.py, the whole demo end to end in
-tests/test_demo_e2e.py (legacy) and by `scripts/zoom_bot.py --dry-run --talk talks/project-overview` (claude)."""
+"""talks/project-overview: On the Same Page presents itself to the hackathon room, from a script Claude wrote before
+the meeting with guidance on every talking point (D88), performed by Higgs Realtime. The package validates (the only
+warnings are the name "Boson AI"), the time and word budget holds (about two minutes live, the hook 20–25 s, the
+whole demo about three minutes), every spoken line obeys the spoken rules and stays true on the TTS 3 backup, every
+source id it cites exists and backs its claim, the demo's cues point at real talking points and the staged cut is
+picked up by the point's prepared resume line, and the discussion goes through the real legacy engine the way the run
+of show says: the sources establish "speak up" (ZOOM-2), Alice's interruption retrieves ZOOM-3 and ZOOM-2, Bob's
+raised-hand plan is one consequential conflict, Carol's confirmation opens the gate, her correction resolves it with
+owner Bob. The model-based check's scripted stand-in is tested in tests/test_zoom_bot.py (and its whole dry run there,
+`slow`), the whole demo end to end in tests/test_demo_e2e.py (legacy)."""
 
 from __future__ import annotations
 
@@ -24,26 +25,30 @@ from relay.talk import LIVE_CLAIM_RE, check_talk, load_talk
 from relay.textutil import abbreviations, acronyms, ends_sentence, has_digits, strip_tags, word_count
 
 TALK = ROOT / "talks" / "project-overview"
-SLIDES = ["hook", "name", "problem", "present", "listen", "online", "results", "limits", "discussion"]
-POINTS = ["hook", "name", "nods", "apparent", "one-session", "interrupt", "listen", "zoom", "measured", "limits-scope",
+SLIDES = ["hook", "name", "problem", "present", "listen", "results", "limits", "discussion"]
+TITLES = ["Imagine…", "On the Same Page", "The meeting after the slides", "How it presents", "How it listens",
+          "What we measured", "What it can't do yet", "Your turn"]
+POINTS = ["hook", "name", "nods", "apparent", "one-session", "interrupt", "listen", "measured", "limits-scope",
           "limits-check"]
 WORDS_PER_SECOND = 2.5  # ~150 words a minute (talks/submission-review's live runs)
 GAP_S = 0.7  # between talking points: each is its own response.create (first audio ~0.3–0.7 s, doc/gotchas.md)
+CUT_S = 1.7  # Alice's clip cuts the interrupt point 1.70–1.72 s in (MEAS-3)
 # The sources behind every talking point's claims (run_of_show.md, "Where each line comes from"), and a fact each
 # must state.
 BACKING = {
     "hook": {"WHAT-3": "two days"},
-    "name": {"WHAT-1": "facilitator", "WHAT-4": "Higgs Audio is central"},
+    "name": {"WHAT-1": "facilitator", "WHAT-4": "Higgs Audio is central", "ZOOM-1": "its own participant"},
     "nods": {"WHAT-2": "apparent agreement"},
     "apparent": {"WHAT-2": "apparent agreement"},
-    "one-session": {"HOW-1": "One Higgs Realtime session runs the whole meeting", "HOW-2": "guidance Claude wrote"},
+    "one-session": {"HOW-1": "One Higgs Realtime session runs the whole meeting",
+                    "HOW-2": "guidance Claude wrote for it in advance, before the meeting"},
     "interrupt": {"HOW-4": "interrupts", "HOW-5": "shown on screen", "HOW-6": "not from the top"},
     "listen": {"HOW-7": "transcribed", "HOW-8": "a hidden disagreement", "HOW-9": "one neutral question",
-               "HOW-10": "meeting notes", "WHAT-4": "speech to text"},
-    "zoom": {"ZOOM-1": "its own participant", "ZOOM-5": "prerecorded clips voiced by Higgs TTS 3"},
-    "measured": {"MEAS-1": "672 ms and 701 ms", "MEAS-2": "all eight checks"},
+               "WHAT-4": "speech to text"},
+    "measured": {"MEAS-1": "672 ms and 701 ms after the end of a prerecorded participant's clip",
+                 "MEAS-2": "all eight checks", "ZOOM-5": "prerecorded clips voiced by Higgs TTS 3"},
     "limits-scope": {"LIM-1": "online meetings", "LIM-2": "one shared microphone", "LIM-3": "English only"},
-    "limits-check": {"MEAS-5": "matched 47 lines", "LIM-4": "judgement", "LIM-5": "a few seconds"},
+    "limits-check": {"MEAS-5": "matched 47 lines", "LIM-4": "it can miss a conflict", "LIM-5": "a few seconds"},
 }
 ID_RE = re.compile(r"\b[A-Z]{2,5}-\d{1,3}\b")
 STAGE_RE = re.compile(r"[()\[\]*_#<>\"]|https?://|www\.")
@@ -81,10 +86,12 @@ def spoken_lines(talk) -> list[tuple[str, str]]:
     for chunk in points(talk):
         out.append((f"{chunk.id}.say", strip_tags(chunk.say)))
     for where, guide in guides:
-        for n, beat in enumerate(guide.beats):
+        beats = [(f"beats[{n}]", beat) for n, beat in enumerate(guide.beats)]
+        beats += [("resume", guide.resume)] if guide.resume is not None else []
+        for name, beat in beats:
             for text in (beat.verbatim, beat.gist, *beat.phrases):
                 if text:
-                    out.append((f"{where}.beats[{n}]", text))
+                    out.append((f"{where}.{name}", text))
     return out
 
 
@@ -107,6 +114,7 @@ def talk_say_hook() -> str:
 
 def test_slides_points_fragments_agenda_and_demo(talk, pkg, demo):
     assert [slide.id for slide in talk.slides] == SLIDES
+    assert [slide.title for slide in talk.slides] == TITLES  # topic titles in one grammar
     assert [chunk.id for chunk in points(talk)] == POINTS
     assert talk.slides[-1].speaker == "human" and pkg.discussion_slide == "discussion"
     for slide in talk.relay_slides:  # one fragment per point on a slide with several points, else a static slide
@@ -130,9 +138,14 @@ def test_the_hook_opens_the_presentation_word_for_word_at_kens_grain(talk):
     beats = hook.guide.beats
     assert all(beat.verbatim for beat in beats) and len(beats) == 5
     assert beats[0].verbatim.startswith("Imagine you're an engineer, up since yesterday morning")
-    assert beats[3].verbatim == "Frustrated? Out of words? Dreading the one question you can't answer?"
+    assert "in an hour" in beats[2].verbatim and "as tired as you are" in beats[2].verbatim  # Ken's "one hour"
+    assert beats[3].verbatim == "Are you frustrated? Nervous? Dreading the one question you can't answer?"
     assert beats[4].verbatim == "Then let me take it from here."
     assert "pause after each" in beats[3].delivery and "lift" in beats[4].delivery
+    # "beat" means a beat of the guide only (the prompt numbers them): no delivery note uses the word
+    for chunk in points(talk):
+        for beat in chunk.guide.beats:
+            assert not re.search(r"\bbeats?\b", beat.delivery or ""), chunk.id
     assert hook.guide.seconds == 25
     spoken_s = sum(word_count(beat.verbatim) for beat in beats) / WORDS_PER_SECOND
     assert 20 <= spoken_s <= 27, spoken_s  # about 20 to 25 seconds, with its pauses
@@ -143,19 +156,24 @@ def test_the_hook_opens_the_presentation_word_for_word_at_kens_grain(talk):
 def test_the_time_and_word_budget(talk, demo):
     guides = [chunk.guide for chunk in points(talk)]
     live_s = sum(guide.seconds_from(0) for guide in guides) + GAP_S * (len(guides) - 1)
-    assert 110 <= live_s <= 130, live_s  # about two minutes, the hook included
+    assert 105 <= live_s <= 125, live_s  # about two minutes, the hook included
     for chunk in points(talk):  # each point's own length fits its words (the model is told "about N seconds")
         words = sum(word_count(beat.verbatim or beat.gist) for beat in chunk.guide.beats)
         assert chunk.guide.seconds is not None and words / WORDS_PER_SECOND <= 1.25 * chunk.guide.seconds, chunk.id
+        assert all(beat.verbatim for beat in chunk.guide.beats), chunk.id  # word for word: no ~1.4× gist padding
     spoken = sum(word_count(beat.verbatim or beat.gist) for guide in guides for beat in guide.beats)
-    assert 260 <= spoken <= 320, spoken
+    handover = sum(word_count(beat.verbatim or beat.gist) for beat in talk.handover.beats)
+    assert 250 <= spoken <= 290 and handover <= 25, (spoken, handover)  # ~300 words with the hand-over
     backup = sum(word_count(chunk.say) for chunk in points(talk))
-    assert backup <= 320  # the TTS 3 backup is no longer than the live presentation
-    # the whole demo: the presentation, Alice's question and the answer, the hand-over, the discussion clips, the
-    # analysis before the question (measured end to end: 7.6 s), the question, the decision, the summary
+    assert backup <= spoken  # the TTS 3 backup is no longer than the live presentation
+    # the whole demo: the presentation (Alice cuts the interrupt point 1.7 s in; its resume line replaces the rest),
+    # her question and the answer, the hand-over, the discussion clips, the analysis before the question (measured end
+    # to end: 7.6 s), the question, the decision, the summary
+    interrupt = talk.slide("present").chunks[1].guide
+    presented = live_s - interrupt.seconds_from(0) + CUT_S + interrupt.continue_seconds(0) + GAP_S
     clips_s = sum(word_count(step.say) for step in demo.clips) / WORDS_PER_SECOND
-    total = live_s + 12 + talk.handover.seconds_from(0) + clips_s + 7.6 + 6 + 5 + 10
-    assert total <= 210, total  # about three minutes
+    total = presented + 12 + talk.handover.seconds_from(0) + clips_s + 7.6 + 6 + 5 + 10
+    assert total <= 200, total  # about three minutes (a plan: re-time after the first live run, run_of_show.md)
 
 
 def test_every_spoken_line_obeys_the_spoken_rules_and_stays_true_on_the_backup(talk):
@@ -172,15 +190,19 @@ def test_every_spoken_line_obeys_the_spoken_rules_and_stays_true_on_the_backup(t
     for chunk in points(talk):
         for beat in chunk.guide.beats:
             assert beat.verbatim is None or ends_sentence(beat.verbatim), chunk.id
-    # the zoom point never says whether this room's participants are recorded or real: either can be true
-    zoom = talk.slide("online").chunks[0]
-    assert "can be prerecorded" in zoom.say and "either can be true" in zoom.guide.avoid
-    # "live" is said only of what is live either way: the answers, lookups, checks and notes, and the demos' checks
+    # "live" is said only of what is live either way: the answers, lookups, checks and notes
     lives = {where.split(".")[0] for where, text in spoken_lines(talk) if re.search(r"\blive\b", text, re.I)}
     assert lives == {"measured"}
     measured = talk.slide("results").chunks[0].guide.beats
     assert measured[0].verbatim == "Every answer, lookup, check and note is live."
-    assert "passed every live check" in measured[1].verbatim
+    # the latency was measured with prerecorded participants (a real person's line ends after 0.7 s of silence)
+    assert measured[1].verbatim.startswith("With recorded participants, I start answering about seven tenths")
+    assert "two earlier test meetings" in measured[2].verbatim  # never heard as including this one
+    # Claude wrote the script before the meeting: never a runtime step of the product
+    assert talk.slide("present").chunks[0].guide.beats[1].verbatim.endswith("from a script Claude wrote beforehand.")
+    # no spoken colons (written prose), no "honest part" / "not a proof" verdicts
+    for where, text in spoken_lines(talk):
+        assert ":" not in text and not re.search(r"honest part|not a proof|apparent agreement", text, re.I), where
 
 
 def test_the_guided_instructions_stay_compact_and_open_with_the_hook(talk, pkg):
@@ -200,6 +222,34 @@ def test_the_guided_instructions_stay_compact_and_open_with_the_hook(talk, pkg):
     handover = prompts.handover_instructions(pkg, talk.handover)
     assert 'Beat 1, word for word: "That\'s the project. Now it\'s your turn."' in handover
     assert '"How do we run the demo with real people, and who sets it up?"' in handover
+    # no bridge line anywhere: every point opens word for word, with its bridge written into its first line
+    assert "Bridge in" not in handover
+
+
+def test_the_staged_cut_is_picked_up_by_the_prepared_resume_line(talk, pkg):
+    present = talk.slide("present")
+    interrupt = present.chunks[1]
+    assert interrupt.id == "interrupt" and interrupt.guide.resume is not None
+    resume = interrupt.guide.resume.verbatim
+    assert resume.startswith("As I was saying, I stop,") and resume.endswith("Just like that.")
+    seconds = round(interrupt.guide.continue_seconds(0))
+    text = prompts.talking_point_instructions(talk, pkg, present, interrupt, seconds=seconds, continuing=True,
+                                              heard="Interrupt me, and", beat=0)
+    assert 'the room last heard you say: "Interrupt me, and". Your script has a prepared line' in text
+    assert f'Beat 1, word for word: "{resume}"' in text and f"About {seconds} seconds in all." in text
+    assert "I look the answer up" not in text and "Interrupt me, and I stop" not in text  # never the beats again
+    assert len(text) <= 2000 and not ID_RE.search(text) and "You just said" not in text
+    # a cut a moment later ("…and I stop") still gets the whole prepared line
+    later = prompts.talking_point_instructions(talk, pkg, present, interrupt, seconds=seconds, continuing=True,
+                                               heard="Interrupt me, and I stop", beat=0)
+    assert f'Beat 1, word for word: "{resume}"' in later
+    # every point without a resume line (a real person may cut anywhere): only the unheard rest of the cut beat
+    listen = talk.slide("listen")
+    text = prompts.talking_point_instructions(talk, pkg, listen, listen.chunks[0], seconds=12, continuing=True,
+                                              heard="When the slides end, I listen. Higgs transcribes every line, "
+                                                    "and Claude", beat=1)
+    assert ('Beat 2, the rest of it, word for word: "checks each one for a conflict with the documents, a hidden '
+            'disagreement, or a detail nobody settled."') in text and "Beat 1," not in text
 
 
 def test_every_relay_slides_screen_text_fits_the_prompt_unclipped(talk):
@@ -231,10 +281,11 @@ def test_every_cited_source_id_exists_and_backs_its_claim(talk, pkg):
 
 def test_the_numbers_on_the_slides_are_the_measured_ones(talk, pkg):
     md = talk.slides_md
-    assert "About 0.7 s to answer" in md and "672 ms and 701 ms" in pkg.statement("MEAS-1").text
-    assert "every live check passed" in md and "all eight checks" in pkg.statement("MEAS-2").text
-    measured = talk.slide("results").chunks[0].guide.beats[1].verbatim
-    assert "seven tenths of a second" in measured and "every live check" in measured
+    assert "0.7 s to answer (recorded participants)" in md
+    assert "672 ms and 701 ms after the end of a prerecorded participant's clip" in pkg.statement("MEAS-1").text
+    assert "8 of 8 checks, two test meetings" in md and "all eight checks" in pkg.statement("MEAS-2").text
+    measured = talk.slide("results").chunks[0].guide.beats
+    assert "seven tenths of a second" in measured[1].verbatim and "all eight" in measured[2].verbatim
     check = talk.slide("limits").chunks[1].guide.beats[0].verbatim
     assert "forty-seven of fifty-three" in check and "Opus 5.5 matched 47 lines" in pkg.statement("MEAS-5").text
 
@@ -249,6 +300,9 @@ def test_alices_question_retrieves_zoom_3_and_zoom_2(pkg, say):
         assert set(top) == {"ZOOM-3", "ZOOM-2"}, (query, top)
     # a vaguer query still puts the remedy first (ZOOM-2: people just speak up)
     assert search_for_question("how to interrupt", alice, corpus)[0]["source_id"] == "ZOOM-2"
+    # a real Alice's own wording, with a vague query from the model: the remedy still comes first
+    vague = "Wait, how do we get your attention in a Zoom call?"
+    assert search_for_question("get the facilitator's attention", vague, corpus)[0]["source_id"] == "ZOOM-2"
 
 
 # --- the demo ------------------------------------------------------------------------------------------------------
@@ -298,14 +352,20 @@ NEUTRAL_ANSWERS = [  # describe the limit without the remedy: CL-1 asserts nothi
     "the chat [ZOOM-3].",
     "Raising a hand won't work in Zoom: just speak up.",  # both values in one clause: ambiguous, so nothing
 ]
-BOBS = ["For the demo with real people, I'll tell everyone to raise a hand in Zoom and wait to be called on.",
-        "for the demo with real people i'll tell everyone to raise a hand in zoom and wait to be called on",
-        "For the demo with real people, I'll tell everyone to raise their hand in Zoom and wait to be called on.",
+BOBS = ["For the demo with real people, I'll tell everyone to raise a hand in Zoom when they want to interrupt the "
+        "facilitator.",
+        "for the demo with real people i'll tell everyone to raise a hand in zoom when they want to interrupt the "
+        "facilitator",
+        "For the demo with real people, I'll tell everyone to raise their hand in Zoom when they want to interrupt "
+        "the facilitator.",
         "I'll ask everyone to raise their hands in Zoom before they talk."]
-CONFIRMS = ["Sounds good. Let's lock that in.", "sounds good lets lock that in", "Sounds good, let's lock it in."]
+CONFIRMS = ["Sounds good. Let's lock that in.", "sounds good lets lock that in", "Sounds good, let's lock it in.",
+            "Okay, let's go with that."]  # a real person's own words
 CORRECTIONS = ["Right, no hands then. People just speak up, and Bob owns the briefing.",
                "right no hands then people just speak up and bob owns the briefing",
-               "Right. No hands. People just speak up, and Bob owns the briefing."]
+               "Right. No hands. People just speak up, and Bob owns the briefing.",
+               "Right, no hands then. People just speak up, and Bob handles the briefing.",  # real people's wording
+               "No hands then, people just speak up. Bob, you brief everyone."]
 
 
 def types(events: list[dict]) -> list[str]:

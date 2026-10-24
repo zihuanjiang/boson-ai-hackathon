@@ -809,7 +809,7 @@ DRY_RUN_ANALYSIS: dict[str, dict[str, Any]] = {
         "evidence": [("ZOOM-3", "it never sees raised hands or the chat"),
                      ("ZOOM-2", "people just speak up")],
         "topic": "How people interrupt the facilitator in Zoom",
-        "said": "Everyone raises a hand in Zoom and waits to be called on",
+        "said": "Everyone raises a hand in Zoom to interrupt the facilitator",
         "question": "Before we confirm: didn't we establish that in Zoom I hear voices, not raised hands? Should "
                     "people just speak up instead?",
         "decision": "In the demo with real people, everyone interrupts by speaking up; no raised hands",

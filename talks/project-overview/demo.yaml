@@ -1,8 +1,9 @@
 # The online meeting, unattended: Alice, Bob and Carol are prerecorded clips (Higgs TTS 3 voices, `relay.clips`).
 # Alice interrupts the point that promises it ("Interrupt me, and I stop mid-sentence"); the answer comes from ZOOM-3
-# and ZOOM-2 and is recorded as CL-1. In the discussion Bob plans the opposite of CL-1 (raised hands), Carol confirms,
-# the facilitator asks one question, Carol corrects it and names the owner. The run of show for real people is
-# run_of_show.md; the cues are web/js/demo.js's (contract v3.1).
+# and ZOOM-2 and is recorded as CL-1, and the point's prepared resume line picks it up. In the discussion Bob plans the
+# opposite of CL-1 (a raised hand to interrupt the facilitator, which it never sees), Carol confirms, the facilitator
+# asks one question, Carol corrects it and names the owner. The run of show for real people is run_of_show.md; the
+# cues are web/js/demo.js's (contract v3.1).
 voices: {Alice: chloe, Bob: jake, Carol: eleanor}
 steps:
   - id: start
@@ -12,10 +13,11 @@ steps:
     speaker: Alice
     say: "Sorry, quick question: in Zoom, can people raise a hand to interrupt you?"
     when: {talking_point: interrupt, heard_ms: 1500}
-  # Bob's clock starts when Alice's clip ends, and seven talking points and the hand-over come first (~90 s live).
+  # Bob's clock starts when Alice's clip ends, and the answer, the resume line, four talking points and the hand-over
+  # come first (~75 s live). His line says who the hand is for: the facilitator (ZOOM-3: it never sees raised hands).
   - id: bob-plan
     speaker: Bob
-    say: "For the demo with real people, I'll tell everyone to raise a hand in Zoom and wait to be called on."
+    say: "For the demo with real people, I'll tell everyone to raise a hand in Zoom when they want to interrupt the facilitator."
     when: {phase: discussion, quiet_ms: 1500, timeout_ms: 180000}
   - id: carol-confirm
     speaker: Carol

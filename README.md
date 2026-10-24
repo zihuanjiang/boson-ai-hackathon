@@ -50,17 +50,19 @@ deck then reloads itself, and you click Arm again.
 
 ### Run the project overview (`talks/project-overview`): the demo deck
 
-The facilitator presents On the Same Page to the room in about two minutes, from a script Claude wrote and Higgs
-Realtime performs: every talking point carries **guidance** (what it must do for the listener, the bridge in, its
-beats — lines that must land word for word, or a gist with key phrases — delivery, length, what to avoid), starting
-with a hook ("Imagine you're an engineer, up since yesterday morning…"). Alice interrupts the line that promises it can
-be interrupted; the team then plans its demo with real people, and the facilitator asks one question before a plan
-that contradicts the documents is confirmed. The format: [`doc/design.md`](doc/design.md) §2; who says what, with
-clips or with real people: [`talks/project-overview/run_of_show.md`](talks/project-overview/run_of_show.md).
+The facilitator presents On the Same Page to the room in about two minutes, from a script Claude wrote before the
+meeting and Higgs Realtime performs live: every talking point carries **guidance** (what it must do for the listener,
+its beats — lines that must land word for word, or a gist with key phrases — delivery, length, what to avoid, and a
+prepared line for picking it up after a cut), starting with a hook ("Imagine you're an engineer, up since yesterday
+morning…"). Alice interrupts the line that promises it can be interrupted; the team then plans its demo with real
+people, and the facilitator asks one question before a plan that contradicts the documents is confirmed. The format:
+[`doc/design.md`](doc/design.md) §2; who says what, with clips or with real people:
+[`talks/project-overview/run_of_show.md`](talks/project-overview/run_of_show.md).
 
 ```bash
 uv run python -m relay.render talks/project-overview    # backup narration (TTS 3)
 uv run python -m relay.clips talks/project-overview     # the participants' clips (unattended run)
+uv run python scripts/probe_guided.py --runs 3          # live: are the guided lines performed word for word?
 uv run python -m relay serve talks/project-overview     # open http://localhost:8000, Join, then Run demo
 uv run python scripts/zoom_bot.py --dry-run --talk talks/project-overview   # offline rehearsal of the Zoom run
 ```

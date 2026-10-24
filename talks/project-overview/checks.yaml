@@ -10,6 +10,7 @@ slots:
       speak_up: ['\bspeak(s|ing)? up\b', '\bjust (speak|talk)\b']
       raise_hand: ['\b(raise|raises|raising) (a |their |your |his |her |our )?hands?\b', '\bput (a |their |your )?hands? up\b']
 actions: ['\bi''ll\b', '\bi will\b', '\blet''s\b', '\btell\b', '\bbrief', '\bask (everyone|people)\b']
-confirmations: ['\bsounds good\b', '\block (that|it) in\b', '\bfinali[sz]e\b', '\bagreed\b']
-ownership: ['\bowns?\b', '\bwill brief\b']
+# real people word it their own way: "Okay, let's go with that." confirms; "Bob handles the briefing" names the owner
+confirmations: ['\bsounds good\b', '\block (that|it) in\b', '\bfinali[sz]e\b', '\bagreed\b', '\bgo with (that|it)\b']
+ownership: ['\bowns?\b', '\bwill brief\b', '\bhandles?\b', '\byou brief\b']
 window_utterances: 3

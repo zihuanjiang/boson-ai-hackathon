@@ -140,6 +140,10 @@ def test_a_single_beat_may_sit_right_in_the_guide(tmp_path):
     ({"intent": "x " * 100, "beats": [{"verbatim": "Hi there."}]}, "intent: 199 characters (max 160)"),
     ({"intent": "x", "delivery": "<|prosody:speed_slow|>", "beats": [{"verbatim": "Hi there."}]}, "no TTS tags"),
     ("just a string", "guide: must be a mapping"),
+    ({"intent": "x", "beats": [{"verbatim": "Hi there."}], "resume": {"verbatim": "Back to 2 things."}},
+     "guide.resume.verbatim: spell numbers as words"),
+    ({"intent": "x", "beats": [{"verbatim": "Hi there."}], "resume": "As I was saying."}, "resume: each beat is a "
+                                                                                          "mapping"),
 ])
 def test_each_guide_rule_has_a_clear_error(tmp_path, guide, expected):
     issues = issues_with(tmp_path, "friday-beta", guide)
@@ -163,7 +167,15 @@ def test_a_guide_with_an_error_blocks_loading_like_a_bad_say(tmp_path):
      "4 s, but its beats add up to 9"),
     ({"intent": "x", "seconds": 3, "beats": [{"verbatim": "one two three four five six seven eight nine ten eleven "
                                                            "twelve thirteen fourteen fifteen."}]},
-     "its verbatim lines alone take about 6 s"),
+     "3 s, but its lines take about 6 s at a speaking pace"),
+    # a gist comes out ~1.4× its note: ten words of note are ~5 s, not ~4
+    ({"intent": "x", "seconds": 3, "beats": [{"gist": "one two three four five six seven eight nine ten"}]},
+     "3 s, but its lines take about 5 s"),
+    # a bridge is the performer's own words: it can't come before a word-for-word opening
+    ({"intent": "x", "bridge": "from the agenda", "beats": [{"verbatim": "Hi there."}]},
+     "guide.bridge: unused: the point opens with a word-for-word line"),
+    ({"intent": "x", "bridge": "from the agenda", "beats": [{"gist": "the plan"}]},
+     "plan.chunks[0].guide.bridge: unused: the first talking point has no point before it"),
 ])
 def test_guide_warnings(tmp_path, guide, expected):
     issues = issues_with(tmp_path, "friday-beta", guide)
@@ -205,6 +217,23 @@ def test_a_guides_length_and_the_beats_from_a_cut():
     assert guide.seconds_from(1) == 9.0 and not guide.verbatim and guide.derived_say() == ""
     timed = dataclasses.replace(guide, seconds=28)
     assert timed.seconds_from(0) == 28 and timed.seconds_from(2) == 8.0  # the point's length, shared by the weights
+    # picking up after a cut: the beats left, or the prepared resume line
+    assert guide.continue_seconds(1) == 9.0
+    resumed = dataclasses.replace(guide, resume=Beat(verbatim="As I was saying, one two three four five."))
+    assert round(resumed.continue_seconds(1), 2) == round(9 / 2.6, 2)  # its nine words, from any beat
+
+
+def test_a_resume_line_parses_and_is_ignored_on_the_hand_over(tmp_path):
+    guide = {"intent": "x", "beats": [{"verbatim": "Interrupt me, and I stop."}],
+             "resume": {"verbatim": "As I was saying, I stop. Just like that.", "delivery": "brisk"}}
+    root = write_guided(tmp_path / "meeting", guides={"friday-beta": guide},
+                        handover={**HANDOVER, "resume": {"verbatim": "Back to you."}})
+    issues = [str(issue) for issue in check_talk(root)]
+    assert issues == ["warning: script.yaml: handover.resume: ignored: the hand-over is not picked up again after a "
+                      "cut"]
+    chunk = load_talk(root).slide("plan").chunks[0]
+    assert chunk.guide.resume == Beat(verbatim="As I was saying, I stop. Just like that.", delivery="brisk")
+    assert chunk.say == "Interrupt me, and I stop."  # the backup line: the beats, never the resume line
 
 
 # --- the per-response instructions -----------------------------------------------------------------------------
@@ -223,6 +252,9 @@ def test_a_guided_first_point_is_its_beats_with_no_greeting(guided):
     lines = text.splitlines()
     assert lines[0] == ('You are the facilitator of the meeting "Release 4.3 rollout review", presenting "Rollout '
                         'plan" live to Alice, Bob and Carol.')
+    # the slide's text is labelled as what the room reads, so a sentence-shaped line isn't taken for one more to say
+    assert lines[1] == ('Now: slide 1 of 2, "The plan". On screen (the room reads it; don\'t say it): The plan / '
+                        'Friday: beta to the beta group / Wednesday: production for all customers')
     assert lines[2] == "Talking point 1 of 2 on this slide. Its job: put the room inside the story."
     assert lines[3] == ("These are the first words of your presentation: no greeting, welcome or introduction before "
                         "them.")
@@ -243,8 +275,8 @@ def test_a_guided_gist_beat_carries_its_phrases_and_the_bridge(guided):
     # the verbatim beats as said live (not the backup line), and their ending: the bridge starts there
     assert f'You just said (the previous point): "…' in text and f'{HOOK[2]}"' in text
     assert len(next(line for line in text.splitlines() if line.startswith("You just said"))) < 260
-    assert "Bridge in from the previous point: from the hook to the plan." in text
-    assert "Don't greet or introduce yourself." in text and "Perform it in one beat:" in text
+    assert "Bridge in from the previous point: from the hook to the plan." in text  # a gist: its own words bridge
+    assert "Don't greet." in text.splitlines() and "Perform it in one beat:" in text
     assert ('Beat 1, in your own words, one or two short sentences: production follows on Wednesday for all '
             'customers, after the beta review; work in "after the beta review". Delivery: steady.') in text
     assert "About 6 seconds in all." in text
@@ -253,15 +285,113 @@ def test_a_guided_gist_beat_carries_its_phrases_and_the_bridge(guided):
 def test_a_cut_guided_point_picks_up_at_the_beat_the_room_was_in(guided):
     talk, meeting = guided
     plan = talk.slide("plan")
+    heard = f"{HOOK[0]} Round after round: a new feature, a bug"
     text = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[0], seconds=9, continuing=True,
-                                              heard="a new feature, a bug", beat=1)
-    assert ('You were interrupted during beat 2 of this point; the room last heard you say: "a new feature, a bug". '
-            'Pick up from there with a bridge of a few words at most (like "As I was saying"), say what the room '
-            "missed of beat 2, then go on. Never start the point over, never repeat what the room heard, and don't "
-            "greet.") in text
+                                              heard=heard, beat=1)
+    assert (f'You were interrupted during beat 2 of this point; the room last heard you say: "{heard}". Start with a '
+            'bridge of a few words at most (like "As I was saying"), then the rest of beat 2 as given, then go on. '
+            "Never start the point over, and don't greet.") in text
     assert "What is left: two beats, straight through, in this order:" in text
-    assert "Beat 1," not in text and f'Beat 2, word for word: "{HOOK[1]}"' in text and "Beat 3, word for word" in text
+    # only the unheard rest of the interrupted line: nothing the room heard is listed to be said again
+    assert 'Beat 2, the rest of it, word for word: "hunt, one more take of the demo."' in text
+    assert "Beat 1," not in text and "Round after round" not in text.split("room last heard")[1].split('".', 1)[1]
+    assert f'Beat 3, word for word: "{HOOK[2]}"' in text
+    assert text.splitlines()[-2] == prompts.GUIDED_RESUME_RULES and prompts.GUIDED_RESUME_RULES.startswith(
+        "Apart from that bridge, say the word-for-word beats exactly as written")
     assert "These are the first words" not in text and "About 9 seconds in all." in text
+    assert "You just said" not in text  # its last words were an answer: the heard line is the context
+
+
+@pytest.mark.parametrize("heard, line, label, where", [
+    # it heard none of beat 2 (the cut came right at the end of beat 1, or the transcript lagged): from its start
+    (HOOK[0], f'Beat 2, word for word, from its start: "{HOOK[1]}"', "then beat 2 as given",
+     "interrupted during beat 2"),
+    # it heard all of beat 2: on from beat 3
+    (f"{HOOK[0]} {HOOK[1]}", f'Beat 3, word for word: "{HOOK[2]}"', "then beat 3 as given",
+     "interrupted right after beat 2"),
+    # a long clipped heard holds only the middle of the line: still its rest
+    ("a new feature, a bug hunt, one", 'Beat 2, the rest of it, word for word: "more take of the demo."',
+     "then the rest of beat 2 as given", "interrupted during beat 2"),
+])
+def test_what_is_left_of_the_interrupted_beat(guided, heard, line, label, where):
+    talk, meeting = guided
+    plan = talk.slide("plan")
+    text = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[0], seconds=9, continuing=True,
+                                              heard=heard, beat=1)
+    assert line in text and label in text and where in text and "Beat 1," not in text
+
+
+@pytest.mark.parametrize("line, heard, expected", [
+    ("Interrupt me, and I stop mid-sentence.", "Interrupt me, and", (3, "I stop mid-sentence.")),
+    ("Interrupt me, and I stop mid-sentence.", "so, interrupt me and i stop", (5, "mid-sentence.")),
+    ("Interrupt me, and I stop mid-sentence.", "Interrupt me, and I stop mid-sentence.", (6, "")),
+    ("Interrupt me, and I stop mid-sentence.", "a whole other line", (0, "Interrupt me, and I stop mid-sentence.")),
+    ("Interrupt me, and I stop mid-sentence.", "Interrupt", (0, "Interrupt me, and I stop mid-sentence.")),  # 1 word
+    ("Interrupt me, and I stop mid-sentence.", "", (0, "Interrupt me, and I stop mid-sentence.")),
+    ("Round after round: a new feature.", "a hackathon project. Round after", (2, "round: a new feature.")),
+    # two words inside a line could be chance: the resume line's "I stop" after the beats' "and I stop"
+    ("As I was saying, I stop, look it up.", "Interrupt me, and I stop", (0, "As I was saying, I stop, look it up.")),
+    # four words inside it are not (a clipped heard)
+    ("Round after round: a new feature, a bug hunt.", "new feature, a bug", (8, "hunt.")),
+])
+def test_verbatim_rest(line, heard, expected):
+    assert prompts.verbatim_rest(line, heard) == expected
+
+
+def test_a_cut_point_with_a_resume_line_performs_only_that_line(tmp_path):
+    guide = {"intent": "promise the interruption", "seconds": 9,
+             "beats": [{"verbatim": "Interrupt me, and I stop mid-sentence."},
+                       {"verbatim": "I look the answer up, and pick up where I was cut."}],
+             "resume": {"verbatim": "As I was saying, I stop mid-sentence, and pick up where I was cut. Just like "
+                                    "that.", "delivery": "brisk"}}
+    talk = load_talk(write_guided(tmp_path / "meeting", guides={"wednesday-production": guide}, derive=()))
+    meeting = load_meeting(talk)
+    plan = talk.slide("plan")
+    text = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[1], seconds=6, continuing=True,
+                                              heard="Interrupt me, and", beat=0)
+    lines = text.splitlines()
+    assert ('You were interrupted during this point; the room last heard you say: "Interrupt me, and". Your script '
+            "has a prepared line for picking it up: perform only that line, then stop. Don't greet.") in lines
+    assert "Perform it in one beat:" in lines
+    assert ('Beat 1, word for word: "As I was saying, I stop mid-sentence, and pick up where I was cut. Just like '
+            'that." Delivery: brisk.') in lines
+    assert "I look the answer up" not in text and "Interrupt me, and I stop" not in text  # never the beats again
+    assert "About 6 seconds in all." in lines and prompts.GUIDED_RULES in lines
+    # cut again inside the resume line itself: only its rest
+    again = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[1], seconds=4, continuing=True,
+                                               heard="Interrupt me, and As I was saying, I stop", beat=0)
+    assert 'Beat 1, the rest of it, word for word: "mid-sentence, and pick up where I was cut. Just like that."' \
+        in again
+    # the beats' "…and I stop" heard before the cut never counts as the resume line's own "I stop"
+    late = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[1], seconds=6, continuing=True,
+                                              heard="Interrupt me, and I stop", beat=0)
+    assert 'Beat 1, word for word: "As I was saying, I stop mid-sentence' in late
+    # the first (unbroken) performance never mentions the resume line
+    plain = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[1], seconds=9)
+    assert "As I was saying" not in plain and "Beat 2, word for word" in plain
+
+
+def test_a_bridge_goes_out_only_before_a_gist_and_never_on_the_first_point(tmp_path):
+    guides = {"friday-beta": {**GUIDES["friday-beta"], "bridge": "from the agenda"},
+              "wednesday-production": {"intent": "say when production follows", "bridge": "from the hook",
+                                       "beats": [{"verbatim": "Production follows on Wednesday."}]}}
+    talk = load_talk(write_guided(tmp_path / "meeting", guides=guides, derive=()))
+    meeting = load_meeting(talk)
+    plan = talk.slide("plan")
+    first = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[0], seconds=25, first=True)
+    second = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[1], seconds=4)
+    assert "Bridge in" not in first and "Bridge in" not in second
+    # a word-for-word opening: nothing before it (the name point's self-introduction is its own first line)
+    assert "Don't greet, and say nothing before beat one." in second.splitlines()
+    assert "introduce yourself" not in second
+
+
+def test_the_first_live_point_after_a_backup_hook_is_not_told_it_opens_the_presentation(guided):
+    talk, meeting = guided
+    plan = talk.slide("plan")
+    # the hook played from the TTS 3 backup, so this is the first live point (`first`), but not the first point
+    text = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[1], seconds=6, first=True)
+    assert "These are the first words" not in text and "You just said (the previous point)" in text
 
 
 def test_an_unguided_point_ignores_the_beat_and_keeps_todays_wording(tmp_path):
@@ -293,8 +423,16 @@ def test_the_guided_hand_over(guided):
     lines = text.splitlines()
     assert lines[1] == 'The discussion question: "What goes out on Friday, and who sends it?"'
     assert lines[2] == "The presentation is over: hand the floor to the group. Its job: give the floor to the room."
-    assert "Don't greet." in lines and 'Beat 1, word for word: "That\'s the plan. Now it\'s your turn."' in lines
+    assert "Don't greet, and say nothing before beat one." in lines
+    assert 'Beat 1, word for word: "That\'s the plan. Now it\'s your turn."' in lines
     assert "About 8 seconds in all." in lines and lines[-1] == "No lists, markdown or URLs. Don't call any tool."
+    # a bridge only before a gist opening (the performer's own words)
+    gist_first = dataclasses.replace(talk.handover, bridge="from the last point",
+                                     beats=talk.handover.beats[::-1])
+    text = prompts.handover_instructions(meeting, gist_first)
+    assert "Bridge in from your last point: from the last point." in text and "Don't greet." in text.splitlines()
+    verbatim_first = dataclasses.replace(talk.handover, bridge="from the last point")
+    assert "Bridge in" not in prompts.handover_instructions(meeting, verbatim_first)
 
 
 @pytest.mark.parametrize("start, heard, fraction, expected", [
@@ -308,6 +446,12 @@ def test_the_guided_hand_over(guided):
     (1, "", 0.0, 1),  # a continuing request: never before its first beat
     (1, "", 0.6, 2),
     (5, "", 0.0, 2),  # clamped
+    # the words heard beat the length estimate: a slow model, its response still streaming, overshoots by length
+    (0, f"{HOOK[0]} Round after round: a new feature", 0.95, 1),
+    (0, "Imagine you're an engineer, up since", 0.6, 0),
+    (0, "one more take of the demo.", 0.0, 1),  # the end of beat 2, read off its words
+    (1, "Round after round", 0.9, 1),
+    (0, "something the model said in its own words", 0.5, 1),  # no match: by length
 ])
 def test_beat_reached(guided, start, heard, fraction, expected):
     talk, _ = guided
@@ -393,9 +537,12 @@ async def test_a_cut_mid_hook_continues_from_that_beat_never_from_the_top(make_g
     assert resumed["metadata"]["talking_point"] == "friday-beta"
     text = resumed["instructions"]
     assert "You were interrupted during beat 2 of this point" in text and "Beat 1," not in text
-    assert f'Beat 2, word for word: "{HOOK[1]}"' in text and "These are the first words" not in text
-    left = round(min(h.talk.slide("plan").chunks[0].guide.seconds_from(1), 25 - 11))
-    assert f"About {left} seconds in all." in text
+    # the room heard "Round after round: a" (16 of 38 words): only the rest of that line, then beat 3
+    assert 'Beat 2, the rest of it, word for word: "new feature, a bug hunt, one more take of the demo."' in text
+    assert f'Beat 3, word for word: "{HOOK[2]}"' in text and "These are the first words" not in text
+    # asked for the beats left by the guide, not "25 s minus what was heard" (the live pace isn't the guide's)
+    left = round(h.talk.slide("plan").chunks[0].guide.seconds_from(1))
+    assert f"About {left} seconds in all." in text and left > 25 - 11
     assert [note for kind, note in h.logs if kind == "narration_request"][-1]["from_beat"] == 1
     # a second cut in the resumed response counts from its own first beat
     await h.narration(transcript=HOOK[1] + " " + HOOK[2], audio_ms=10_000)
@@ -410,7 +557,29 @@ async def test_a_cut_right_away_resumes_the_hook_at_its_first_beat(make_guided):
     await h.key("space", reply=1, played=1_500)
     assert h.c.cursor.beat == 0
     await h.key("esc")
-    assert "You were interrupted during beat 1 of this point" in narration_requests(h)[-1]["instructions"]
+    text = narration_requests(h)[-1]["instructions"]
+    assert "You were interrupted during beat 1 of this point" in text
+    # the room heard "Imagine you're": the hook goes on from there, never from its first words again
+    assert 'the room last heard you say: "Imagine you\'re"' in text
+    assert 'Beat 1, the rest of it, word for word: "an engineer, up since yesterday morning' in text
+    assert text.count("Imagine you're") == 1
+
+
+async def test_a_cut_point_with_a_resume_line_is_asked_for_that_lines_length(make_guided):
+    resume = "As I was saying, I stop mid-sentence, look the answer up, and pick up right where I left off."
+    guides = {**GUIDES, "friday-beta": {**GUIDES["friday-beta"], "resume": {"verbatim": resume}}}
+    h = make_guided(guides=guides)
+    await h.key("relay")
+    await h.narration(transcript=" ".join(HOOK), audio_ms=25_000)
+    await h.key("space", reply=1, played=11_000)
+    await h.key("esc")
+    request = narration_requests(h)[-1]
+    text = request["instructions"]
+    assert f'Beat 1, word for word: "{resume}"' in text
+    assert text.count("Round after round") == 1  # only in what the room heard: no beat is listed again
+    assert f"About {round(len(resume.split()) / 2.6)} seconds in all." in text
+    note = [note for kind, note in h.logs if kind == "narration_request"][-1]
+    assert note["continuing"] and note["resume_line"] is True
 
 
 async def test_the_guided_hand_over_goes_out_after_the_last_point(make_guided):

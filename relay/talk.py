@@ -5,10 +5,11 @@ A meeting package adds `agenda.yaml`, `sources/*.md` and `checks.yaml` (relay/me
 
 Script guidance (design §2, D88): a talking point may carry a `guide:` — what the point must do for the listener
 (`intent`), the `bridge` from the point before, its `beats` (each one `verbatim` words that must land exactly, or a
-`gist` to say in the model's own words with key `phrases`, plus `delivery`), the point's length (`seconds`) and what
-to `avoid`. Claude writes it; Higgs Realtime performs it (relay/prompts.py). `say` stays the TTS 3 backup line, and may
-be left out when every beat is verbatim (it is then the beats joined). A top-level `handover:` guides the meeting's
-hand-over to the discussion the same way.
+`gist` to say in the model's own words with key `phrases`, plus `delivery`), the point's length (`seconds`), what
+to `avoid`, and optionally a prepared `resume` line that picks the point up after a cut. Claude writes it, before the
+meeting; Higgs Realtime performs it (relay/prompts.py). `say` stays the TTS 3 backup line, and may be left out when
+every beat is verbatim (it is then the beats joined). A top-level `handover:` guides the meeting's hand-over to the
+discussion the same way.
 
     uv run python -m relay.talk talks/test        # print issues and a summary; exit 1 on errors
 """
@@ -45,8 +46,10 @@ CHUNK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")  # talking point ids (scr
 Level = Literal["error", "warning"]
 
 # Script guidance (D88). The bounds keep each per-response instruction compact (doc/gotchas.md: long prompts hurt).
-GUIDE_KEYS = frozenset({"intent", "bridge", "delivery", "avoid", "seconds", "beats", "verbatim", "gist", "phrases"})
+GUIDE_KEYS = frozenset({"intent", "bridge", "delivery", "avoid", "seconds", "beats", "verbatim", "gist", "phrases",
+                        "resume"})
 BEAT_KEYS = frozenset({"verbatim", "gist", "phrases", "delivery", "seconds"})
+GIST_SPOKEN_RATIO = 1.4  # live 2026-10-24: the model says ~1.4× its notes (a gist's length, for the seconds warning)
 MAX_BEATS = 6
 MAX_PHRASES = 5
 MAX_VERBATIM_CHARS = 300  # also a TTS 3 chunk when the backup line is derived from the beats
@@ -96,6 +99,7 @@ class Guide:
     delivery: str | None = None  # for the whole point (a beat's own delivery adds to it)
     avoid: str | None = None
     seconds: int | None = None
+    resume: Beat | None = None  # the prepared line that picks the point up after a cut, in place of what is left
 
     @property
     def verbatim(self) -> bool:
@@ -120,6 +124,12 @@ class Guide:
         if self.seconds:
             return self.seconds * rest / (sum(weights) or 1.0)
         return rest
+
+    def continue_seconds(self, beat: int = 0) -> float:
+        """How long the point takes when it picks up after a cut in beat `beat`: its `resume` line's length when it has
+        one, else the beats left from `beat` on (never "the point's length minus what was heard": the live model's
+        pace is not the guide's)."""
+        return self.resume.estimate_s if self.resume is not None else self.seconds_from(beat)
 
 
 @dataclass(frozen=True)
@@ -458,16 +468,27 @@ def parse_guide(raw, where: str, issues: list[Issue]) -> Guide | None:
     delivery = _direction(raw.get("delivery"), where, "delivery", issues)
     avoid = _direction(raw.get("avoid"), where, "avoid", issues)
     seconds = _seconds(raw.get("seconds"), f"{where}.seconds", GUIDE_MIN_S, GUIDE_MAX_S, issues)
+    resume = None
+    if raw.get("resume") is not None:
+        resume = _parse_beat(raw["resume"], f"{where}.resume", issues)
     if len([issue for issue in issues if issue.level == "error"]) > errors:
         return None
-    guide = Guide(intent=intent, beats=tuple(beats), bridge=bridge, delivery=delivery, avoid=avoid, seconds=seconds)
+    guide = Guide(intent=intent, beats=tuple(beats), bridge=bridge, delivery=delivery, avoid=avoid, seconds=seconds,
+                  resume=resume)
+    if bridge and beats and beats[0].verbatim:
+        issues.append(Issue("warning", f"{where}.bridge", "unused: the point opens with a word-for-word line, so the "
+                                                          "performer can't add words before it; write the bridge "
+                                                          "into the line"))
     total = sum(guide.weights())
     if seconds is not None and all(beat.seconds for beat in beats) and abs(total - seconds) > 0.25 * seconds:
         issues.append(Issue("warning", f"{where}.seconds", f"{seconds} s, but its beats add up to {total:.0f} s"))
-    spoken = sum(word_count(beat.verbatim) for beat in beats if beat.verbatim) / GUIDE_WORDS_PER_SECOND
+    # a gist comes out ~1.4× its note (live 2026-10-24); verbatim lines come out as written
+    spoken = sum(word_count(beat.verbatim) if beat.verbatim else GIST_SPOKEN_RATIO * word_count(beat.gist)
+                 for beat in beats) / GUIDE_WORDS_PER_SECOND
     if seconds is not None and spoken > 1.3 * seconds:
-        issues.append(Issue("warning", f"{where}.seconds", f"{seconds} s, but its verbatim lines alone take about "
-                                                           f"{spoken:.0f} s at a speaking pace"))
+        issues.append(Issue("warning", f"{where}.seconds", f"{seconds} s, but its lines take about {spoken:.0f} s at "
+                                                           f"a speaking pace (a gist runs ~{GIST_SPOKEN_RATIO}× its "
+                                                           "note)"))
     if seconds is None and total > GUIDE_MAX_S:
         issues.append(Issue("warning", where, f"about {total:.0f} s at a speaking pace (asked for at most "
                                               f"{GUIDE_MAX_S} s): split the point"))
@@ -674,6 +695,14 @@ def _parse_talk(root: Path) -> tuple[Talk | None, list[Issue]]:
     handover = None
     if script.get("handover") is not None:
         handover = parse_guide(script["handover"], "script.yaml: handover", issues)
+        if handover is not None and handover.resume is not None:
+            issues.append(Issue("warning", "script.yaml: handover.resume", "ignored: the hand-over is not picked up "
+                                                                           "again after a cut"))
+    first_point = next((chunk for slide in slides if slide.is_relay for chunk in slide.chunks), None)
+    if first_point is not None and first_point.guide is not None and first_point.guide.bridge \
+            and not first_point.guide.beats[0].verbatim:  # (a verbatim opening has its own warning)
+        issues.append(Issue("warning", f"script.yaml: {first_point.slide}.chunks[0].guide.bridge",
+                            "unused: the first talking point has no point before it"))
     if not (root / "agenda.yaml").is_file():  # guidance shapes the facilitator's per-point responses (meetings)
         if script.get("handover") is not None:
             issues.append(Issue("warning", "script.yaml: handover", "ignored: only a meeting (agenda.yaml) hands "

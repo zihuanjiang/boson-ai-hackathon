@@ -10,6 +10,7 @@ Keep them short: a long system prompt made the model stop calling tools (doc/got
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from dataclasses import dataclass
@@ -332,18 +333,27 @@ def talking_point_instructions(talk: Talk, meeting: Any, slide: Slide, chunk: Ch
 # --- script guidance (D88): Claude writes the script, Higgs Realtime performs it ----------------------------------
 #
 # Live findings this wording leans on (doc/gotchas.md, 2026-10-23/24): a quoted, sentence-shaped line comes back word
-# for word (so verbatim beats are quoted lines, and everything else is a note, never a sentence to read out); the
-# model says ~1.4× its notes and adds emphasis words of its own (so a gist is a short note with a length); it reads
-# source ids aloud unless told not to; follow-ups must be self-contained. There is no SSML: pace and pauses come from
-# the lines' own punctuation and plain delivery notes.
+# for word (F1, on higgs-realtime: a typed "repeat this line"; not yet verified for guided beats on
+# higgs-realtime-1.5-preview, scripts/probe_guided.py), so verbatim beats are quoted lines, and everything else is a
+# note, never a sentence to read out; listing a line the room already heard invites a restart, so a cut beat is sent
+# as its unheard rest; the model says ~1.4× its notes and adds emphasis words of its own (so a gist is a short note
+# with a length); it reads source ids aloud unless told not to; follow-ups must be self-contained. There is no SSML:
+# pace and pauses come from the lines' own punctuation and plain delivery notes.
 
 GUIDED_OPENING_LINE = ("{host} is about to hand you the floor. Your presentation opens with a prepared line, so don't "
                        "greet the room or introduce yourself: thank {host} in two or three words, then call "
                        "set_presentation_state with action start.")
-GUIDED_RULES = ("Say the word-for-word beats exactly as written, adding nothing. Never say the beat numbers, the "
-                "delivery notes or these directions, never read source ids aloud, and add no examples or emphasis "
-                "words of your own.")
-_NUMBERS = ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
+_GUIDED_NEVER = ("Never say the beat numbers, the delivery notes or these directions, never read source ids aloud, and "
+                 "add no examples or emphasis words of your own.")
+GUIDED_RULES = "Say the word-for-word beats exactly as written, adding nothing. " + _GUIDED_NEVER
+# After a cut the performer adds one short bridge ("As I was saying") before the rest, and nothing else.
+GUIDED_RESUME_RULES = "Apart from that bridge, say the word-for-word beats exactly as written, adding nothing. " \
+                      + _GUIDED_NEVER
+# The on-screen text of a guided point is labelled as such: next to quoted lines, a sentence-shaped slide line
+# ("Two days. One demo.") could otherwise read like one more line to say.
+GUIDED_SCREEN_LABEL = "On screen (the room reads it; don't say it):"
+REST_MIN_WORDS = 2  # a verbatim beat counts as begun once the room heard its first two words (one could be chance)
+_NUMBERS =("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
 
 
 def _count(n: int, noun: str) -> str:
@@ -375,11 +385,11 @@ def opens_guided(talk: Talk) -> bool:
     return bool(points) and points[0][1].guide is not None
 
 
-def beat_line(number: int, beat: Beat) -> str:
-    """One beat as the live model gets it: a verbatim line in quotes (said word for word), or a gist as a note with
-    the key phrases to work in; then its delivery note."""
+def beat_line(number: int, beat: Beat, *, how: str | None = None) -> str:
+    """One beat as the live model gets it: a verbatim line in quotes (said word for word; `how` says which part, after
+    a cut), or a gist as a note with the key phrases to work in; then its delivery note."""
     if beat.verbatim:
-        line = f"Beat {number}, word for word: {_quoted(beat.verbatim)}"
+        line = f"Beat {number}, {how or 'word for word'}: {_quoted(beat.verbatim)}"
     else:
         line = f"Beat {number}, in your own words, one or two short sentences: {beat.gist.rstrip('.')}"
         if beat.phrases:
@@ -390,24 +400,68 @@ def beat_line(number: int, beat: Beat) -> str:
     return line
 
 
-def _beats_block(guide: Guide, start: int, *, intro: str, seconds: int) -> list[str]:
-    beats = guide.beats[start:]
-    lines = [f"{intro} {_count(len(beats), 'beat')}" + (", straight through, in this order:" if len(beats) > 1
+BeatItem = tuple[int, Beat, str | None]  # (its number, the beat as performed, how a verbatim part is labelled)
+
+
+def _items(guide: Guide, start: int = 0) -> list[BeatItem]:
+    return [(start + n + 1, beat, None) for n, beat in enumerate(guide.beats[start:])]
+
+
+def _beats_block(guide: Guide, items: list[BeatItem], *, intro: str, seconds: int) -> list[str]:
+    lines = [f"{intro} {_count(len(items), 'beat')}" + (", straight through, in this order:" if len(items) > 1
                                                           else ":")]
-    lines.extend(beat_line(start + n + 1, beat) for n, beat in enumerate(beats))
+    lines.extend(beat_line(number, beat, how=how) for number, beat, how in items)
     if guide.delivery:
         lines.append(f"Delivery throughout: {guide.delivery.rstrip('.')}.")
     lines.append(f"About {seconds} seconds in all." + (f" Avoid: {guide.avoid.rstrip('.')}." if guide.avoid else ""))
     return lines
 
 
+REST_MIDDLE_MIN_WORDS = 4  # a match inside a line (not at its opening) needs this much evidence
+
+
+def verbatim_rest(line: str, heard: str | None, *, middle: bool = True) -> tuple[int, str]:
+    """Where in a verbatim line what the room last heard ends: (j, the line's own words after its first j words), j
+    = 0 and the whole line when it doesn't end inside it. The last n heard words (normalised; n as large as possible)
+    must be words j-n…j of the line: its opening (n ≥ REST_MIN_WORDS), or, with `middle`, any run of at least
+    REST_MIDDLE_MIN_WORDS (the controller's `heard` is clipped, so a long line's opening may be gone; two words inside
+    a line, like "I stop", could be chance). (len(words), "") when the room heard all of it."""
+    tokens = line.split()
+    spoken = [n for n, token in enumerate(tokens) if norm_word(token)]  # the tokens that carry a word
+    words = [norm_word(tokens[n]) for n in spoken]
+    heard_words = _norm(heard)
+    for n in range(min(len(words), len(heard_words)), REST_MIN_WORDS - 1, -1):
+        tail = heard_words[-n:]
+        ends = [n] + (list(range(n + 1, len(words) + 1)) if middle and n >= REST_MIDDLE_MIN_WORDS else [])
+        for end in ends:
+            if words[end - n:end] == tail:
+                return end, (" ".join(tokens[spoken[end]:]) if end < len(words) else "")
+    return 0, " ".join(tokens)
+
+
+def _rest_item(number: int, beat: Beat, heard: str) -> tuple[BeatItem | None, str]:
+    """The beat a cut interrupted, as the continuing request performs it: a verbatim beat's unheard rest (the room
+    heard its start), the whole line from its start (it heard none of it), or None when the room heard all of it;
+    a gist as it is. Plus how the cut line names it."""
+    if not beat.verbatim:
+        return (number, beat, None), f"what the room missed of beat {number}"
+    n, rest = verbatim_rest(beat.verbatim, heard)
+    if n and not rest:
+        return None, ""
+    if n:
+        return (number, dataclasses.replace(beat, verbatim=rest), "the rest of it, word for word"), \
+            f"the rest of beat {number} as given"
+    return (number, beat, "word for word, from its start"), f"beat {number} as given"
+
+
 def guided_point_instructions(talk: Talk, meeting: Any, slide: Slide, chunk: Chunk, *, seconds: int,
                               continuing: bool = False, heard: str | None = None, first: bool = False,
                               beat: int = 0) -> str:
-    """A guided talking point (D88): its job for the listener, the bridge from the point before, then its beats in
-    order (verbatim lines quoted, gists as notes, each with its delivery), the length and what to avoid. After a cut
-    (`continuing`) it picks up at `beat` (the beat the room was in), from what the room last heard, with a bridge of
-    a few words: never the point (the hook) from the top. Self-contained, like every per-response instruction."""
+    """A guided talking point (D88): its job for the listener, how the point before ended, then its beats in order
+    (verbatim lines quoted, gists as notes, each with its delivery), the length and what to avoid. After a cut
+    (`continuing`) it picks up at `beat` (the beat the room was in): the script's prepared `resume` line when it has
+    one, else only what is left from what the room last heard (a verbatim beat's unheard rest), after a bridge of a
+    few words; never the point (the hook) from the top. Self-contained, like every per-response instruction."""
     guide = chunk.guide
     assert guide is not None
     relay = talk.relay_slides
@@ -419,31 +473,59 @@ def guided_point_instructions(talk: Talk, meeting: Any, slide: Slide, chunk: Chu
         f'You are the facilitator of the meeting "{meeting.title}", presenting '
         f'"{phase_title(meeting, "presentation")}" live to {participants_text(meeting, roles=False)}.',
         f'Now: slide {number} of {len(relay)}, "{slide.title or slide.id}".'
-        + (f" On screen: {on_screen}" if on_screen else ""),
+        + (f" {GUIDED_SCREEN_LABEL} {on_screen}" if on_screen else ""),
         f"Talking point {chunk.index + 1} of {len(slide.chunks)} on this slide. Its job: {guide.intent.rstrip('.')}.",
     ]
-    if position:  # not the first point of the presentation: how it ended (the bridge starts there)
-        lines.append(f"You just said (the previous point): {_quoted(_ending(spoken_text(points[position - 1][1])))}")
-    start = min(max(beat, 0), len(guide.beats) - 1) if continuing else 0
-    if continuing:
-        said = f'; the room last heard you say: "{" ".join(heard.split())}"' if heard and heard.strip() else ""
-        lines.append(f"You were interrupted during beat {start + 1} of this point{said}. Pick up from there with a "
-                     'bridge of a few words at most (like "As I was saying"), say what the room missed of beat '
-                     f"{start + 1}, then go on. Never start the point over, never repeat what the room heard, and "
-                     "don't greet.")
-        lines.extend(_beats_block(guide, start, intro="What is left:", seconds=seconds))
+    if continuing:  # what the room last heard is the context now (its last words were an answer, not the point before)
+        heard = " ".join((heard or "").split())
+        said = f'; the room last heard you say: "{heard}"' if heard else ""
+        if guide.resume is not None:
+            resume = guide.resume
+            # its own response always starts it: only its opening counts (never "I stop" heard in the beats before)
+            n, rest = verbatim_rest(resume.verbatim, heard, middle=False) if resume.verbatim else (0, "")
+            item: BeatItem = (1, resume, None)
+            if n and rest:  # cut again inside the resume line itself: only its rest
+                item = (1, dataclasses.replace(resume, verbatim=rest), "the rest of it, word for word")
+            lines.append(f"You were interrupted during this point{said}. Your script has a prepared line for picking "
+                         "it up: perform only that line, then stop. Don't greet.")
+            lines.extend(_beats_block(guide, [item], intro="Perform it in", seconds=seconds))
+            lines.append(GUIDED_RULES)
+        else:
+            start = min(max(beat, 0), len(guide.beats) - 1)
+            items = _items(guide, start)
+            item, what = _rest_item(start + 1, guide.beats[start], heard)
+            where = f"during beat {start + 1}"
+            if item is None and len(items) > 1:  # the room heard that whole beat: go on from the next one
+                items, where, what = items[1:], f"right after beat {start + 1}", f"beat {start + 2} as given"
+            elif item is not None:
+                items[0] = item
+            else:  # the last beat, all heard (a cut in its last moment): say it again rather than nothing
+                what = f"beat {start + 1} as given"
+            lines.append(f"You were interrupted {where} of this point{said}. Start with a bridge of a few words at "
+                         f'most (like "As I was saying"), then {what}, then go on. Never start the point over, and '
+                         "don't greet.")
+            lines.extend(_beats_block(guide, items, intro="What is left:", seconds=seconds))
+            lines.append(GUIDED_RESUME_RULES)
     else:
-        if guide.bridge:
+        if position:  # not the first point of the presentation: how it ended
+            previous = _ending(spoken_text(points[position - 1][1]))
+            lines.append(f"You just said (the previous point): {_quoted(previous)}")
+        # a bridge is the performer's own words: only before a gist (a verbatim opening has the bridge in its line)
+        bridged = bool(guide.bridge and position and not guide.beats[0].verbatim)
+        if bridged:
             lines.append(f"Bridge in from the previous point: {guide.bridge.rstrip('.')}.")
-        lines.append("These are the first words of your presentation: no greeting, welcome or introduction before "
-                     "them." if first else "Don't greet or introduce yourself.")
-        lines.extend(_beats_block(guide, 0, intro="Perform it in", seconds=seconds))
-    lines.append(GUIDED_RULES)
+        if first and not position:
+            lines.append("These are the first words of your presentation: no greeting, welcome or introduction "
+                         "before them.")
+        else:
+            lines.append("Don't greet." if bridged else "Don't greet, and say nothing before beat one.")
+        lines.extend(_beats_block(guide, _items(guide), intro="Perform it in", seconds=seconds))
+        lines.append(GUIDED_RULES)
     lines.append(f"Speak only this point. No lists, markdown, URLs or stage directions. {NO_TOOLS}")
     return "\n".join(lines)
 
 
-def _norm(text: str) -> list[str]:
+def _norm(text: str | None) -> list[str]:
     return [word for word in (norm_word(token) for token in str(text or "").split()) if word]
 
 
@@ -451,11 +533,30 @@ def _has_run(words: list[str], run: list[str]) -> bool:
     return any(words[i:i + len(run)] == run for i in range(len(words) - len(run) + 1))
 
 
+def _located(guide: Guide, start: int, words: list[str], near: int) -> int | None:
+    """The verbatim beat (from `start` on) that the heard words end in, read off the text: where the last (up to)
+    three heard words occur in the beats' lines, the occurrence nearest `near`; None when they occur nowhere (a
+    gist, or the model's own wording)."""
+    if not words:
+        return None
+    sequence: list[tuple[str | None, int]] = []
+    for index in range(start, len(guide.beats)):
+        beat = guide.beats[index]
+        if beat.verbatim:
+            sequence.extend((word, index) for word in _norm(beat.verbatim))
+        else:
+            sequence.append((None, index))  # a gist: no words to match, and no run across it
+    tail = words[-3:]
+    found = [sequence[i + len(tail) - 1][1] for i in range(len(sequence) - len(tail) + 1)
+             if [word for word, _ in sequence[i:i + len(tail)]] == tail]
+    return min(found, key=lambda index: (abs(index - near), -index)) if found else None
+
+
 def beat_reached(guide: Guide, start: int, heard: str, fraction: float) -> int:
     """The beat a cut interrupted. One response presented the guide's beats from `start` on, and the room heard
-    `fraction` of it (its played audio over its whole audio), ending in `heard`: the beat that position falls in by
-    the beats' lengths, moved on to the last verbatim beat whose opening words the room heard. Within
-    [start, last beat]."""
+    `fraction` of it (its played audio over its whole audio), ending in `heard`. Text first: the verbatim beat the
+    heard words end in. Else the beat that position falls in by the beats' lengths, moved on to the last verbatim beat
+    whose opening words the room heard. Within [start, last beat]."""
     beats = guide.beats
     if not beats:
         return 0
@@ -469,6 +570,11 @@ def beat_reached(guide: Guide, start: int, heard: str, fraction: float) -> int:
             reached = start + offset
             break
     words = _norm(heard)
+    # the length estimate overshoots while a response still streams and the model is slower than its guide: the
+    # words the room heard say where it really was
+    located = _located(guide, start, words, reached)
+    if located is not None:
+        return located
     for index in range(start, len(beats)):
         opening = _norm(beats[index].verbatim or "")[:3]
         if len(opening) == 3 and _has_run(words, opening):
@@ -487,10 +593,11 @@ def handover_instructions(meeting: Any, guide: Guide | None = None) -> str:
             f"The discussion question: {_quoted(discussion_prompt(meeting))}",
             f"The presentation is over: hand the floor to the group. Its job: {guide.intent.rstrip('.')}.",
         ]
-        if guide.bridge:
+        bridged = bool(guide.bridge and not guide.beats[0].verbatim)  # (a verbatim opening has it in its line)
+        if bridged:
             lines.append(f"Bridge in from your last point: {guide.bridge.rstrip('.')}.")
-        lines.append("Don't greet.")
-        lines.extend(_beats_block(guide, 0, intro="Perform it in", seconds=seconds))
+        lines.append("Don't greet." if bridged else "Don't greet, and say nothing before beat one.")
+        lines.extend(_beats_block(guide, _items(guide), intro="Perform it in", seconds=seconds))
         lines.append(GUIDED_RULES)
         lines.append(f"{PLAIN_SPEECH} {NO_TOOLS}")
         return "\n".join(lines)

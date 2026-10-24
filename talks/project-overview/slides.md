@@ -24,47 +24,38 @@ Nobody opened the documents. <!-- .element: class="fragment" -->
 ---
 
 <!-- .slide: id="present" -->
-## Presenting
+## How it presents
 
-One Higgs Realtime session, one point at a time <!-- .element: class="fragment" -->
+One Higgs Realtime session, point by point <!-- .element: class="fragment" -->
 
 Interrupt: it looks up, cites, resumes <!-- .element: class="fragment" -->
 
 ---
 
 <!-- .slide: id="listen" -->
-## Listening
+## How it listens
 
-Higgs transcribes · Claude checks every line
+Higgs transcribes · Claude checks
 
 Conflict · hidden disagreement · detail nobody settled
 
 ---
 
-<!-- .slide: id="online" -->
-## Online meetings
-
-Zoom: its own participant
-
-Demo: prerecorded participants, voiced by Higgs TTS 3
-
----
-
 <!-- .slide: id="results" -->
-## Live, and measured
+## What we measured
 
-About 0.7 s to answer
+0.7 s to answer (recorded participants)
 
-Both demo meetings: every live check passed
+8 of 8 checks, two test meetings
 
 ---
 
 <!-- .slide: id="limits" -->
-## Limits
+## What it can't do yet
 
 Online meetings · English only <!-- .element: class="fragment" -->
 
-A judgement, not a proof · seconds to ask <!-- .element: class="fragment" -->
+Claude's judgement · seconds to ask <!-- .element: class="fragment" -->
 
 ---
 

@@ -2112,10 +2112,12 @@ class Controller:
             seconds = self._point_seconds(slide, live.chunk)
             beat = 0
             if live.continuing and cursor is not None and cursor.live:
-                if chunk.guide is not None:  # the beats left from the one the room was in (D88)
+                if chunk.guide is not None:  # the beats left from the one the room was in, or the resume line (D88)
                     beat = min(max(cursor.beat, 0), len(chunk.guide.beats) - 1)
-                    left = min(chunk.guide.seconds_from(beat), seconds - cursor.heard_ms / 1000)
-                    seconds = max(POINT_CONTINUE_MIN_S, round(min(GUIDED_POINT_MAX_S, left)))
+                    # what is left by the guide, never "its length minus what was heard": the live pace isn't the
+                    # guide's, and a slow first half would leave the rest a few seconds for three verbatim lines
+                    seconds = max(POINT_CONTINUE_MIN_S, round(min(GUIDED_POINT_MAX_S,
+                                                                  chunk.guide.continue_seconds(beat))))
                 else:
                     seconds = max(POINT_CONTINUE_MIN_S, round(seconds - cursor.heard_ms / 1000))
                 heard = cursor.heard
@@ -2139,6 +2141,8 @@ class Controller:
                 "seconds": seconds, "talking_point": metadata.get("talking_point"), "held": bool(self._active)}
         if self.meeting is not None and slide.chunks[live.chunk].guide is not None:
             note.update(guided=True, from_beat=live.from_beat)
+            if live.continuing and slide.chunks[live.chunk].guide.resume is not None:
+                note["resume_line"] = True  # the script's prepared line picks the point up
         self._note("narration_request", note)
         if self._active:
             live.pending = [event]
