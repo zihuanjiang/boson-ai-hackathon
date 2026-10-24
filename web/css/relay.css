@@ -640,6 +640,77 @@ body {
   transition-duration: 0.45s;
 }
 
+/* A talk's designed deck (deck.js: a Claude Slides deck's 1920×1080 sections, every style inline). Undo the reveal
+   theme where a slide's inline styles don't speak: margins, heading case and shadow, centred text, content-box. */
+.reveal .slides section[data-designed] {
+  padding: 0;
+  text-align: left;
+}
+
+.reveal .designed {
+  position: relative;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  box-sizing: border-box;
+  text-align: left;
+  line-height: 1.3;
+}
+
+.reveal .designed * {
+  box-sizing: border-box;
+}
+
+.reveal .designed h1,
+.reveal .designed h2,
+.reveal .designed h3,
+.reveal .designed p {
+  margin: 0;
+  padding: 0;
+  font-family: inherit;
+  color: inherit;
+  text-transform: none;
+  text-shadow: none;
+  letter-spacing: normal;
+  word-wrap: normal;
+}
+
+.reveal .designed svg {
+  display: block;
+  max-width: none;
+}
+
+/* The designed deck's typefaces, offline: the face itself when it is installed, else a close macOS one. */
+@font-face {
+  font-family: "Space Grotesk";
+  font-weight: 400;
+  src: local("Space Grotesk"), local("SpaceGrotesk-Regular"), local("HelveticaNeue");
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-weight: 500;
+  src: local("Space Grotesk Medium"), local("SpaceGrotesk-Medium"), local("HelveticaNeue-Medium");
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-weight: 700;
+  src: local("Space Grotesk Bold"), local("SpaceGrotesk-Bold"), local("HelveticaNeue-Bold");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-weight: 400;
+  src: local("JetBrains Mono"), local("JetBrainsMono-Regular"), local("Menlo-Regular");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-weight: 600;
+  src: local("JetBrains Mono SemiBold"), local("JetBrainsMono-SemiBold"), local("Menlo-Bold");
+}
+
 .reveal .progress {
   height: 3px;
   color: var(--c-narrating);

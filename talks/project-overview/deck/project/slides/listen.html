@@ -1,0 +1,56 @@
+<section id="listen" style="background:#0F1217; color:#F0ECE4; font-family:'Space Grotesk', Arial, sans-serif; padding:128px; display:flex; flex-direction:column; justify-content:start; align-items:start; gap:0px">
+<h2 style="font-size:96px; font-weight:700; line-height:1.1; letter-spacing:-2px; color:#F0ECE4">How it listens</h2>
+<!-- nodes (canvas px, left,top,width,height): room 128,376,320,256 · session band 496,376,1296,256 (same box and id as on present) · transcribe 520,456,384,152 · ask 952,456,384,152 · save 1384,456,384,152 · claude 520,704,816,auto · notes 1384,704,384,240 · arrows: room→transcribe y=532 · transcribe↓claude x=712 · claude↑ask x=1144 · ask→save y=532 · save↓notes x=1576 -->
+<div style="position:absolute; left:128px; top:376px; width:320px; height:256px; background:#1A1F28; border:1px solid #333B48; border-radius:20px; padding:32px; display:flex; flex-direction:column; justify-content:center; gap:12px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace; font-size:24px; font-weight:600; line-height:1.3; letter-spacing:3px; text-transform:uppercase; color:#A3ABB8">The room</p>
+<p style="font-size:32px; font-weight:700; line-height:1.25; color:#F0ECE4">talks it through</p>
+</div>
+<div id="session" style="position:absolute; left:496px; top:376px; width:1296px; height:256px; background:#1A1F28; border:3px solid #6CB6FF; border-radius:24px"></div>
+<p style="position:absolute; left:528px; top:400px; width:840px; font-size:32px; font-weight:500; line-height:1.3; white-space:nowrap; color:#F0ECE4">The same Higgs Realtime session, listening</p>
+<p style="position:absolute; left:1384px; top:404px; width:384px; font-family:'JetBrains Mono', 'Courier New', monospace; font-size:24px; line-height:1.3; text-align:right; color:#6CB6FF">higgs-realtime-1.5-preview</p>
+<div style="position:absolute; left:448px; top:531px; width:70px; height:3px; background:#A3ABB8"></div>
+<div style="position:absolute; left:501px; top:524px; width:16px; height:16px; border-right:3px solid #A3ABB8; border-bottom:3px solid #A3ABB8; transform:rotate(-45deg)"></div>
+<div style="position:absolute; left:520px; top:456px; width:384px; height:152px; background:#1E3A5C; border-radius:12px; padding:16px 20px; display:flex; flex-direction:column; justify-content:center; gap:6px">
+<p style="font-size:32px; font-weight:700; line-height:1.25; color:#F0ECE4"><span style="color:#F2C94C">1</span> Transcribes<br>every line</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace; font-size:24px; line-height:1.3; color:#6CB6FF">higgs-stt-3.1</p>
+</div>
+<div style="position:absolute; left:952px; top:456px; width:384px; height:152px; background:#1E3A5C; border-radius:12px; padding:16px 20px; display:flex; flex-direction:column; justify-content:center; gap:6px">
+<p style="font-size:32px; font-weight:700; line-height:1.25; color:#F0ECE4"><span style="color:#F2C94C">3</span> Asks one neutral<br>question</p>
+</div>
+<div style="position:absolute; left:1336px; top:531px; width:46px; height:3px; background:#A3ABB8"></div>
+<div style="position:absolute; left:1365px; top:524px; width:16px; height:16px; border-right:3px solid #A3ABB8; border-bottom:3px solid #A3ABB8; transform:rotate(-45deg)"></div>
+<div style="position:absolute; left:1384px; top:456px; width:384px; height:152px; background:#1E3A5C; border-radius:12px; padding:16px 20px; display:flex; flex-direction:column; justify-content:center; gap:6px">
+<p style="font-size:32px; font-weight:700; line-height:1.25; color:#F0ECE4"><span style="color:#F2C94C">4</span> Saves what<br>you confirm</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace; font-size:24px; line-height:1.3; color:#6CB6FF">save_decision</p>
+</div>
+<div style="position:absolute; left:711px; top:608px; width:3px; height:94px; background:#A3ABB8"></div>
+<div style="position:absolute; left:704px; top:685px; width:16px; height:16px; border-right:3px solid #A3ABB8; border-bottom:3px solid #A3ABB8; transform:rotate(45deg)"></div>
+<p style="position:absolute; left:736px; top:648px; width:200px; font-size:24px; line-height:1.3; color:#A3ABB8">each line</p>
+<div style="position:absolute; left:1143px; top:610px; width:3px; height:94px; background:#F2C94C"></div>
+<div style="position:absolute; left:1136px; top:611px; width:16px; height:16px; border-right:3px solid #F2C94C; border-bottom:3px solid #F2C94C; transform:rotate(-135deg)"></div>
+<p style="position:absolute; left:1168px; top:648px; width:360px; font-size:24px; font-weight:700; line-height:1.3; color:#F2C94C">before you confirm</p>
+<div style="position:absolute; left:1575px; top:608px; width:3px; height:94px; background:#F2C94C"></div>
+<div style="position:absolute; left:1568px; top:685px; width:16px; height:16px; border-right:3px solid #F2C94C; border-bottom:3px solid #F2C94C; transform:rotate(45deg)"></div>
+<div style="position:absolute; left:520px; top:704px; width:816px; background:#1A1F28; border:1px solid #333B48; border-radius:20px; padding:24px 28px; display:flex; flex-direction:column; gap:12px">
+<p style="font-size:32px; font-weight:700; line-height:1.25; color:#F0ECE4"><span style="color:#F2C94C">2</span> Claude checks every line</p>
+<p style="font-size:24px; line-height:1.3; color:#A3ABB8">against the documents and the earlier answers</p>
+<div style="display:flex; flex-direction:row; flex-wrap:wrap; gap:12px">
+<p style="font-size:24px; line-height:1.3; color:#F2C94C; border:2px solid #F2C94C; border-radius:999px; padding:2px 16px">a conflict with the documents</p>
+<p style="font-size:24px; line-height:1.3; color:#F2C94C; border:2px solid #F2C94C; border-radius:999px; padding:2px 16px">a hidden disagreement</p>
+<p style="font-size:24px; line-height:1.3; color:#F2C94C; border:2px solid #F2C94C; border-radius:999px; padding:2px 16px">a detail nobody settled</p>
+</div>
+</div>
+<div style="position:absolute; left:1384px; top:704px; width:384px; height:240px; background:#F2C94C; border-radius:20px; padding:28px; display:flex; flex-direction:column; justify-content:center; gap:8px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace; font-size:24px; font-weight:600; line-height:1.3; letter-spacing:3px; text-transform:uppercase; color:#15181E">The notes</p>
+<p style="font-size:32px; font-weight:700; line-height:1.25; color:#15181E">the decision and its owner</p>
+<p style="font-size:24px; line-height:1.3; color:#15181E">once you confirm it</p>
+</div>
+<p style="position:absolute; left:128px; top:720px; width:320px; font-size:32px; font-weight:500; line-height:1.3; color:#F0ECE4"><span style="color:#6CB6FF">Higgs</span> does all the listening and speaking. Claude only interprets.</p>
+<aside>When the slides end, I listen.
+Higgs transcribes every line, and Claude checks each one for a conflict with the documents, a hidden disagreement, or a detail nobody settled.
+Before you confirm a plan like that, I ask one neutral question.
+
+Delivery: about seventeen seconds, word for word. Slower and calmer than the presenting part; count the three kinds off evenly; weight on “before you confirm”.
+
+What happens behind it: the application checks every citation and quote Claude reports against its own records, and lets the facilitator ask only when the group is confirming and the evidence holds; otherwise it stays silent or shows a silent suggestion. A decision goes into the notes only once the participants confirm it, and its owner, when one is named, must be one of them.</aside>
+</section>

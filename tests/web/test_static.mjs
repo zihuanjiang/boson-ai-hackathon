@@ -131,7 +131,10 @@ for (const font of new Set([...fontCss.matchAll(/url\('\.\/([^'?#]+)/g)].map((m)
 const bare = css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/"[^"]*"/g, '""');
 check("css braces balance", (bare.match(/{/g) ?? []).length === (bare.match(/}/g) ?? []).length);
 check("no remote URLs in css", !/url\(\s*["']?https?:/.test(css) && !/@import/.test(css));
-check("system font stack, no web fonts of our own", /--font:\s*-apple-system,/.test(css) && !/@font-face/.test(css));
+// The designed deck's faces are local() aliases only (an installed face or a system one): no font file, no URL.
+const fontFaces = [...bare.matchAll(/@font-face\s*{([^}]*)}/g)].map((m) => m[1]);
+check("system font stack, no web fonts of our own", /--font:\s*-apple-system,/.test(css)
+  && fontFaces.every((body) => /src:\s*local\(/.test(body) && !/url\(/.test(body)));
 const defined = new Set([...bare.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]));
 for (const name of ["--level", "--mic-level"]) defined.add(name); // set from JS (style.setProperty)
 const used = new Set([...bare.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1]));
