@@ -2091,12 +2091,13 @@ class Controller:
         """How long a live talking point should take: as long as its backup chunk, else its note at a speaking pace;
         within POINT_MIN_S…POINT_MAX_S. A guided point (D88): its guide's length, up to GUIDED_POINT_MAX_S."""
         guide = slide.chunks[chunk].guide
+        pace = self.settings.pace  # RELAY_PACE: > 1 asks for shorter points (the live model keeps to the length asked)
         if guide is not None:
-            return round(min(GUIDED_POINT_MAX_S, max(POINT_MIN_S, guide.seconds_from(0))))
+            return round(min(GUIDED_POINT_MAX_S, max(POINT_MIN_S, guide.seconds_from(0) / pace)))
         rendered = self.chunks.get((slide.id, chunk))
         seconds = (rendered.duration_ms / 1000 if rendered is not None and rendered.duration_ms
                    else word_count(slide.chunks[chunk].text) / WORDS_PER_SECOND)
-        return round(min(POINT_MAX_S, max(POINT_MIN_S, seconds)))
+        return round(min(POINT_MAX_S, max(POINT_MIN_S, seconds / pace)))
 
     async def _request_narration(self, live: LiveNarration) -> None:
         """Ask the Realtime session to present the slide: one response.create with its own instructions, tagged in
@@ -2117,7 +2118,7 @@ class Controller:
                     # what is left by the guide, never "its length minus what was heard": the live pace isn't the
                     # guide's, and a slow first half would leave the rest a few seconds for three verbatim lines
                     seconds = max(POINT_CONTINUE_MIN_S, round(min(GUIDED_POINT_MAX_S,
-                                                                  chunk.guide.continue_seconds(beat))))
+                                                                  chunk.guide.continue_seconds(beat) / self.settings.pace)))
                 else:
                     seconds = max(POINT_CONTINUE_MIN_S, round(seconds - cursor.heard_ms / 1000))
                 heard = cursor.heard

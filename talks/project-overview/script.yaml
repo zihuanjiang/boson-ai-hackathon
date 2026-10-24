@@ -25,16 +25,16 @@ slides:
         guide:
           intent: put the tired room inside the story, so the problem is theirs before the product has a name
           seconds: 25
-          delivery: a storyteller, close and unhurried; the lines carry the pauses
+          delivery: a lively storyteller at a brisk pace; short pauses only
           beats:
             - verbatim: "Imagine you're an engineer, up since yesterday morning, building a hackathon project for Boson AI."
-              delivery: slow and warm, like the start of a story
+              delivery: warm, like the start of a story, keeping it moving
             - verbatim: "Feature after feature, bug after bug, one more take of the demo."
               delivery: quicker, a light stress on each item
             - verbatim: "And in an hour, you present it, to a room as tired as you are."
-              delivery: slower again, then a short silence
+              delivery: a touch of weight, then a brief pause
             - verbatim: "Are you frustrated? Nervous? Dreading the one question you can't answer?"
-              delivery: three short questions, a pause after each
+              delivery: three quick questions, a brief pause after each
             - verbatim: "Then let me take it from here."
               delivery: a lift in energy, warm and sure
           avoid: a greeting before the first line, any word added to the lines
@@ -51,7 +51,7 @@ slides:
             - verbatim: "I'm On the Same Page, a meeting facilitator built on Higgs Audio."
               delivery: bright, a small lift on the name
             - verbatim: "I join your Zoom calls, I present, I answer, and then I listen."
-              delivery: four steady steps, slowing on the last one
+              delivery: four quick steps, a light stress on the last one
 
   - id: problem
     speaker: relay
@@ -64,7 +64,7 @@ slides:
           seconds: 6
           beats:
             - verbatim: "Because the hard part comes after the slides."
-              delivery: lower and slower
+              delivery: lower, with weight
             - verbatim: "A tired room nods along. Everyone agrees."
               delivery: two short sentences, a little dry
       - id: apparent
@@ -76,7 +76,7 @@ slides:
             - verbatim: "And the plan they agree on contradicts the documents nobody opened."
               delivery: steady, weight on contradicts
             - verbatim: "So the meeting ends in agreement, and nobody is on the same page."
-              delivery: quiet, like a punchline, then a pause
+              delivery: quiet, like a punchline
           avoid: naming any real team or meeting
 
   - id: present
@@ -119,7 +119,7 @@ slides:
           seconds: 17
           beats:
             - verbatim: "When the slides end, I listen."
-              delivery: slower and calmer
+              delivery: calm and clear
             - verbatim: "Higgs transcribes every line, and Claude checks each one for a conflict with the documents, a hidden disagreement, or a detail nobody settled."
               delivery: count the three kinds off evenly
             - verbatim: "Before you confirm a plan like that, I ask one neutral question."
@@ -133,7 +133,7 @@ slides:
         guide:
           intent: prove it is real, with two measured facts the room can hold on to
           seconds: 14
-          delivery: confident; slow down on the numbers
+          delivery: confident and brisk; clear on the numbers
           beats:
             - verbatim: "Every answer, lookup, check and note is live."
               delivery: a light stress on each item
@@ -151,7 +151,7 @@ slides:
           seconds: 6
           beats:
             - verbatim: "Now, my limits."
-              delivery: plain and slower, a short pause after it
+              delivery: plain, a brief pause after it
             - verbatim: "I'm built for online meetings, and for now I speak English only."
       - id: limits-check
         fragment: 2
@@ -172,6 +172,6 @@ handover:
   seconds: 8
   beats:
     - verbatim: "That's the project. Now it's your turn."
-      delivery: warm, a pause after it
+      delivery: warm, a brief pause after it
     - verbatim: "How do we run the demo with real people, and who sets it up?"
       delivery: an open, inviting question

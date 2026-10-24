@@ -70,6 +70,7 @@ class Settings:
     realtime_model: str = REALTIME_MODEL
     mic_mode: str = "tap"
     narration: str = "live"
+    pace: float = 1.0  # live talking points are asked for their length ÷ pace (RELAY_PACE; load_settings: 1.15)
     turn_detection: dict | None = None  # None: manual turns (DEFAULT_TURN_DETECTION); a dict: server VAD
     temperature: float | None = None
     full_session_update: bool = False
@@ -132,6 +133,9 @@ def load_settings(**overrides) -> Settings:
         "realtime_model": (env.get("BOSON_REALTIME_MODEL") or REALTIME_MODEL).strip(),
         "mic_mode": (env.get("MIC_MODE") or "tap").strip().lower(),
         "narration": (env.get("RELAY_NARRATION") or "live").strip().lower(),
+        # Ken 2026-10-24: the facilitator spoke too slowly; Higgs Realtime has no speed setting, but it keeps to the
+        # length each point asks for, so a pace of 1.15 asks for points ~13% shorter
+        "pace": min(1.6, max(0.7, float((env.get("RELAY_PACE") or "1.15").strip()))),
         "turn_detection": _turn_detection(env.get("RELAY_TURN_DETECTION")),
         "temperature": float(temperature) if temperature else None,
         "full_session_update": _flag(env.get("RELAY_FULL_SESSION_UPDATE")),
