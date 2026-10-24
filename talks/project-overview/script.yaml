@@ -14,8 +14,8 @@
 # live point further); if a live run is long, run_of_show.md lists what to cut first. The real-people Zoom run:
 # run_of_show_people.md.
 talk: project-overview
-voice: chloe
-presenter: Alice
+voice: default
+presenter: Ken
 slides:
   - id: hook
     speaker: relay
@@ -49,7 +49,7 @@ slides:
           intent: name the product as the answer to the hook, say what it does in a Zoom call, and the problem it is for
           seconds: 14
           beats:
-            - verbatim: "I'm Chloe, an On the Same Page facilitator built on Higgs Audio."
+            - verbatim: "I'm Alice, an On the Same Page facilitator built on Higgs Audio."
               delivery: bright, a small lift on the name
             - verbatim: "I join your Zoom call, I present, I answer, and then I listen."
               delivery: four quick steps, a light stress on the last one

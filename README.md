@@ -58,15 +58,12 @@ morning…"). In a real Zoom call it joins as its own participant and shares its
 that promises it can be interrupted; the team then plans how the judges put their questions in Zoom, and the
 facilitator asks one question before a plan that contradicts the documents (the Zoom chat, which it never sees) is
 confirmed. The format: [`doc/design.md`](doc/design.md) §2; who says what with two real people in Zoom:
-[`talks/project-overview/run_of_show_people.md`](talks/project-overview/run_of_show_people.md); the unattended run
-with prerecorded clips and the room mode: [`talks/project-overview/run_of_show.md`](talks/project-overview/run_of_show.md).
+[`talks/project-overview/run_of_show_people.md`](talks/project-overview/run_of_show_people.md).
 
 ```bash
 uv run python -m relay.render talks/project-overview    # backup narration (TTS 3)
-uv run python -m relay.clips talks/project-overview     # the participants' clips (unattended run)
 uv run python scripts/probe_guided.py --runs 3          # live: are the guided lines performed word for word?
-uv run python -m relay serve talks/project-overview     # open http://localhost:8000, Join, then Run demo
-uv run python scripts/zoom_bot.py --dry-run --talk talks/project-overview   # offline rehearsal of the Zoom run
+uv run --with playwright python scripts/zoom_bot.py --url "<Zoom join link>" --talk talks/project-overview   # Alice joins your call
 ```
 
 ### Run the self-introduction demo (`talks/submission-review`)

@@ -309,7 +309,7 @@ def test_the_facilitator_base_is_short_and_says_when_to_look_things_up(meeting_p
     talk, meeting = meeting_pair
     base = prompts.facilitator_prompt(meeting)
     assert len(base.split()) <= 130
-    assert base.startswith('You are Chloe, the facilitator of the meeting "Release 4.3 rollout review" with Alice (Product '
+    assert base.startswith('You are Alice, the facilitator of the meeting "Release 4.3 rollout review" with Alice (Product '
                            "manager), Bob (Customer communications) and Carol (Engineering lead).")
     assert "call lookup_evidence first and answer only from what it returns" in base
     # no "then call set_presentation_state resume": live 2026-10-24 it made the model call it instead of answering
@@ -355,7 +355,7 @@ def test_talking_point_instructions(meeting_pair):
     plan = talk.slide("plan")
     first = prompts.talking_point_instructions(talk, meeting, plan, plan.chunks[0], seconds=7, first=True)
     lines = first.splitlines()
-    assert lines[0] == ('You are Chloe, the facilitator of the meeting "Release 4.3 rollout review", presenting "Rollout '
+    assert lines[0] == ('You are Alice, the facilitator of the meeting "Release 4.3 rollout review", presenting "Rollout '
                         'plan" live to Alice, Bob and Carol.')
     assert lines[1].startswith('Now: slide 1 of 2, "The plan". On screen: The plan / Friday: beta to the beta group')
     assert lines[2] == ("Talking point 1 of 2 on this slide: Release four point three ships in two stages. Friday's "

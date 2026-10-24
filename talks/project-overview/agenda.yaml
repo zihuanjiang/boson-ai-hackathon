@@ -1,12 +1,11 @@
-# The facilitator presents On the Same Page, then the team plans how the judges put their questions in the Zoom demo.
-# Alice, Bob and Carol are the unattended demo's prerecorded participants (demo.yaml). Real people in Zoom need no
-# entry here: a name Zoom shows joins the roster when its first line is heard (D89; run_of_show_people.md).
+# The facilitator, Alice (AI co-host), presents On the Same Page in a real Zoom call, then the people in the call plan how the
+# judges put their questions in the Zoom demo. Ken hosts. Everyone else needs no entry here: a name Zoom shows joins
+# the roster when its first line is heard (D89; run_of_show_people.md). No prerecorded participants: this deck runs
+# with real people only (Ken, 2026-10-24).
 title: "On the Same Page: project overview"
-host: Alice
+host: Ken
 participants:
-  - {name: Alice, role: Team lead}
-  - {name: Bob, role: Demo producer}
-  - {name: Carol, role: Engineer}
+  - {name: Ken, role: Host}
 phases:
   - {id: presentation, title: The project}
   - {id: discussion, title: The judges' demo, prompt: "How do the judges ask their questions in Zoom, and who briefs them?"}

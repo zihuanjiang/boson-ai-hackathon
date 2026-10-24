@@ -88,9 +88,9 @@ def test_the_join_link_gives_the_meeting_id_and_the_encoded_passcode():
 def test_the_speaker_name_is_tidied_and_never_the_bot():
     assert bot.clean_speaker("  Ken   Jiang (Host)\n") == "Ken Jiang"
     assert bot.clean_speaker("Alice (Me)") == "Alice" and bot.clean_speaker("Bob (Guest)") == "Bob"
-    assert bot.clean_speaker("Chloe (AI host)") is None
-    assert bot.clean_speaker("Chloe (AI host) (Host)") is None
-    assert bot.clean_speaker("chloe (ai host)") is None
+    assert bot.clean_speaker("Alice (AI co-host)") is None
+    assert bot.clean_speaker("Alice (AI co-host) (Host)") is None
+    assert bot.clean_speaker("alice (ai co-host)") is None
     assert bot.clean_speaker("Unmute") is None and bot.clean_speaker("") is None and bot.clean_speaker(None) is None
     assert bot.clean_speaker("x" * 61) is None and bot.clean_speaker("x" * 60) == "x" * 60
     assert bot.clean_speaker("Carol", bot_name="Carol") is None
@@ -156,7 +156,7 @@ async def test_speech_without_a_speaker_saves_a_rate_limited_dom_probe_and_the_s
     ws, page = FakeWS(), ProbePage()
     probe_dir = tmp_path / "speaker-probe"
     deck = bot.ZoomDeck(ws, page, server="http://127.0.0.1:1", probe_dir=probe_dir)
-    loud = {"rate": 48000, "pcm": "", "peak_db": -20, "roster": ["Ken Jiang (Host)", "Dana Lee", "Chloe (AI host)"]}
+    loud = {"rate": 48000, "pcm": "", "peak_db": -20, "roster": ["Ken Jiang (Host)", "Dana Lee", "Alice (AI co-host)"]}
     try:
         await deck.hear({**loud, "speaker": None})
         await deck.settle_probes()
@@ -436,7 +436,7 @@ async def test_the_ears_resample_the_tap_into_voice_frames_with_the_speaker_and_
         assert frames[0]["reply"] == 7 and 50 <= frames[0]["played_ms"] <= 300 and frames[0]["at"] is None
         assert len(deck.heard) == 12_000  # 250 ms at 24 kHz = 6000 samples of PCM16
         assert deck.page_events == ["1.0s tap webaudio-1: context at 48000 Hz"] and deck.speakers_seen == {"Ken Jiang": 1}
-        await deck.hear({"rate": 48000, "pcm": "", "position": await page.position(), "speaker": "Chloe (AI host)"})
+        await deck.hear({"rate": 48000, "pcm": "", "position": await page.position(), "speaker": "Alice (AI co-host)"})
         assert deck.speaker is None
         # the ears loop itself, on the fake page: silence streams as frames in real time
         page.speak("x", "Bob", tone_pcm24(120))
@@ -514,7 +514,7 @@ def test_the_injected_page_script_under_jsc():
 # --- the dry run, end to end ------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("talk_id", ["submission-review", "rollout-review", "project-overview"])
+@pytest.mark.parametrize("talk_id", ["submission-review", "rollout-review"])
 async def test_the_dry_runs_scripted_analysis_survives_the_real_validation(talk_id):
     """DRY_RUN_ANALYSIS stands in for Claude in the dry run: its quotes must be verbatim in the talk's passages (else
     reconcile drops them and the dry run would prove nothing), and its verdicts must give one question at the
@@ -563,7 +563,7 @@ async def test_the_dry_runs_scripted_analysis_survives_the_real_validation(talk_
 @pytest.mark.slow
 @pytest.mark.skipif(not __import__("tests.test_e2e", fromlist=["_can_bind"])._can_bind(),
                     reason="local port binding is not allowed here")
-@pytest.mark.parametrize("talk_id", ["submission-review", "project-overview"])
+@pytest.mark.parametrize("talk_id", ["submission-review"])
 async def test_the_dry_run_end_to_end_over_the_fake_realtime(tmp_path, talk_id):
     """`scripts/zoom_bot.py --dry-run` as the CLI runs it, with fake renders and clips under tmp_path: the fake Zoom
     page plays the talk's clips on their cues into the bot's ears, the bot is the deck of `--input voice`, and the §8

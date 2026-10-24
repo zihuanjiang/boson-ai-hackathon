@@ -66,8 +66,7 @@ steps:
 # point). The facilitator's self-introduction (submission review) presents six points after the interruption, so its
 # demo.yaml gives Bob's cue (counted from Alice's clip) its own 3 min timeout; at scale 0.25 that is 45 s against the
 # ~23 s the fake takes, the same scale the rollout review needs for its default 90 s cues (22.5 s).
-DEMO_PACKAGES = [(ROOT / "talks" / "rollout-review", 0.25), (ROOT / "talks" / "submission-review", 0.25),
-                 (ROOT / "talks" / "project-overview", 0.25)]  # (D88: guided talking points, its own 3 min Bob cue)
+DEMO_PACKAGES = [(ROOT / "talks" / "rollout-review", 0.25), (ROOT / "talks" / "submission-review", 0.25)]
 
 
 def speech_like(say: str, voice: str) -> TTSResult:

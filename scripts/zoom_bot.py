@@ -3,14 +3,14 @@ no access to the computer's microphone or speakers, and IS the deck of `relay se
 
     ! uv run --with playwright python scripts/zoom_bot.py --url "<join link>" [--passcode …] [--talk talks/submission-review]
                                                           [--server http://127.0.0.1:8000] [--no-serve]
-                                                          [--name "Chloe (AI host)"] [--auto-start] [--fake-realtime]
+                                                          [--name "Alice (AI co-host)"] [--auto-start] [--fake-realtime]
     uv run python scripts/zoom_bot.py --dry-run [--talk talks/submission-review]      # no Zoom, no Chrome, offline
 
 Chrome can't start inside Claude Code's sandbox: run the live bot yourself with `!`, after joining the meeting on your
 own Zoom (real mic and speakers). The bot:
   · starts `relay serve <talk> --input voice` (unless --no-serve) and waits for /healthz;
   · opens its own Chrome window (profile out/zoom_bot/profile, sound muted, Chrome's fake devices as a safety net):
-    tab 1 joins through the Zoom web client as "Chloe (AI host)" (best effort: anything it can't do, you do in the
+    tab 1 joins through the Zoom web client as "Alice (AI co-host)" (best effort: anything it can't do, you do in the
     window; it prints what it waits for), tab 2 opens the observer page (<server>/?view=observer, titled
     "On the Same Page"), then clicks Share Screen: Chrome picks that tab by title (no picker);
   · EARS: every 100 ms it drains what the Zoom page plays (the Web Audio tap, 48 kHz), resamples to 24 kHz PCM16 and
@@ -60,7 +60,7 @@ from relay.demo_driver import (ACTION_KEYS, BYTES_PER_MS, RATE, Deck, Reply, cue
 
 OUT = ROOT / "out" / "zoom_bot"
 INJECT = ROOT / "web" / "zoom" / "inject.js"
-BOT_NAME = "Chloe (AI host)"
+BOT_NAME = "Alice (AI co-host)"
 OBSERVER_TITLE = "On the Same Page"  # the observer page's <title>: Chrome's share picker matches it
 EAR_TICK_S = 0.1
 DRAIN_GRACE_S = 1.5  # the page never said a reply drained: assume it this long after its audio should have ended
@@ -949,18 +949,6 @@ DRY_RUN_ANALYSIS: dict[str, dict[str, Any]] = {
                     "users only?",
         "decision": "Friday is the beta release, announced to beta users only",
         "owner": "Bob", "follow_up": "Bob announces the beta to beta users",
-    },
-    "project-overview": {
-        "claim": "bob-plan", "confirm": "carol-confirm", "fix": "carol-correct",
-        "evidence": [("ZOOM-3", "it never sees raised hands or the chat"),
-                     ("ZOOM-2", "people just speak up")],
-        "topic": "How the judges put their questions to the facilitator in Zoom",
-        "said": "The judges type their questions in the Zoom chat and the facilitator answers them",
-        "question": "Before we confirm: didn't we establish that in Zoom I hear voices only, not the chat? Should "
-                    "the judges just speak up instead?",
-        "decision": "In the judges' demo, the judges ask their questions by speaking up; nothing goes through the "
-                    "Zoom chat",
-        "owner": "Bob", "follow_up": "Bob briefs the judges",
     },
 }
 

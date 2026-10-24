@@ -8,7 +8,7 @@ plan is saved, the plan is corrected, and the decision goes into the notes with 
 the end of the wrap-up (a plan: re-time it after the first rehearsal).
 
 **Partner** is your co-worker: write their real name here: `______`. Nothing else changes for them (no line names
-the Partner). The unattended version of the same story, with prerecorded clips, is `run_of_show.md`.
+the Partner).
 
 ## The cast
 
@@ -16,7 +16,7 @@ the Partner). The unattended version of the same story, with prerecorded clips, 
 | --- | --- |
 | **Ken** (host) | hosts the Zoom meeting, starts the bot, says the disclosure, presses R, asks the interruption question, confirms the plan (the mistake), presses N for the wrap-up |
 | **Partner** | proposes the plan that contradicts the documents, then corrects it and names Ken as the owner |
-| **Chloe (AI host)** | the bot: its own Zoom participant, its own voice, its own screen share |
+| **Alice (AI co-host)** | the bot: its own Zoom participant, its own voice, its own screen share |
 
 ## Before the meeting (Ken, 5 minutes ahead)
 
@@ -28,7 +28,7 @@ the Partner). The unattended version of the same story, with prerecorded clips, 
    before joining or say "Ken Jiang" in that line.
 3. Start the bot (`BOSON_API_KEY` and `ANTHROPIC_API_KEY` in `.env`; the backup narration rendered):
    `! uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --passcode <passcode> --talk talks/project-overview`
-   Admit "Chloe (AI host)" from the waiting room if Zoom asks. Wait until its screen share shows "Imagine…".
+   Admit "Alice (AI co-host)" from the waiting room if Zoom asks. Wait until its screen share shows "Imagine…".
    What to do when it can't join or share: `talks/submission-review/run_of_show_zoom.md` ("Starting the bot",
    "Fallbacks"; the same bot).
 4. Keep the bot's terminal one click away: R, N and `t <text>` are typed there. (`--auto-start` presses R three
@@ -58,7 +58,7 @@ Times are a plan (the guides' lengths plus the measured waits); `RELAY_PACE` 1.1
 | ~Time | On screen | Facilitator | Ken | Partner |
 | --- | --- | --- | --- | --- |
 | 0:00 | Imagine… | the hook: "Imagine you're an engineer, up since yesterday morning…" (the first words: no greeting) | presses **R** in the bot terminal, then mutes | muted |
-| 0:25 | On the Same Page | "I'm Chloe, an On the Same Page facilitator built on Higgs Audio. I join your Zoom call, I present, I answer, and then I listen. Because too many meetings end in an agreement nobody checked against the documents." | unmutes during this slide | |
+| 0:25 | On the Same Page | "I'm Alice, an On the Same Page facilitator built on Higgs Audio. I join your Zoom call, I present, I answer, and then I listen. Because too many meetings end in an agreement nobody checked against the documents." | unmutes during this slide | |
 | 0:40 | How it presents | "Here's how. One Higgs Realtime session runs the whole meeting, one talking point at a time, from a script Claude wrote beforehand." | ready | |
 | 0:50 | How it presents | **"Interrupt me, and I stop mid-sentence."** | **The moment you hear "Interrupt me", start talking**: "Sorry, quick question: in Zoom, can people raise a hand to interrupt you?" | |
 | 0:56 | the evidence callout | stops within about a second, may say a short "Let me check…", looks it up (ZOOM-3, ZOOM-2 on screen), answers in a sentence or two: in Zoom it hears voices only, not raised hands or the chat; people just speak up. The answer is recorded as the meeting's first clarification | listen, then mute | |
