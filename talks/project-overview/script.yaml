@@ -49,7 +49,7 @@ slides:
           intent: name the product as the answer to the hook, say what it does in a Zoom call, and the problem it is for
           seconds: 14
           beats:
-            - verbatim: "I'm On the Same Page, a meeting facilitator built on Higgs Audio."
+            - verbatim: "I'm Chloe, an On the Same Page facilitator built on Higgs Audio."
               delivery: bright, a small lift on the name
             - verbatim: "I join your Zoom call, I present, I answer, and then I listen."
               delivery: four quick steps, a light stress on the last one

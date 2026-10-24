@@ -302,7 +302,7 @@ const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: t
 check(stream && stream.getAudioTracks().length === 1 && stream.getVideoTracks().length === 1,
   "getUserMedia hands out the fed microphone and the canvas camera");
 const devices = await navigator.mediaDevices.enumerateDevices();
-check(devices && devices.length === 3 && devices.every((d) => d.label.startsWith("Facilitator (AI)")),
+check(devices && devices.length === 3 && devices.every((d) => d.label.startsWith("Chloe (AI host)")),
   "enumerateDevices lists only the bot's devices");
 
 // ---- the ears --------------------------------------------------------------------------------------------------
@@ -333,7 +333,7 @@ const tile = (name, opts = {}, cls = "gallery-video-container__video-frame") =>
 const gallery = (...tiles) => el("div", "gallery-video-container__wrap", {}, tiles);
 
 // the class marker (speaker view)
-page(el("div", "speaker-active-container__video-frame", {}, [el("div", "video-avatar__avatar-name", { text: "  Facilitator (AI)  " })]));
+page(el("div", "speaker-active-container__video-frame", {}, [el("div", "video-avatar__avatar-name", { text: "  Chloe (AI host)  " })]));
 check(bot.speaker(true).name === null, "the bot's own tile is never the speaker");
 page(el("div", "speaker-active-container__video-frame", {}, [el("div", "video-avatar__avatar-name", { text: "Ken Jiang (Host)\n" })]));
 let who = bot.speaker(true);
@@ -345,7 +345,7 @@ check(d.events.some((e) => e.includes("active speaker read via class")) && d.eve
   "the strategy that worked and the speaker change are logged");
 page();
 check(bot.speaker(true).name === null, "no indicator → no speaker");
-page(el("div", "speaker-active-container__video-frame", {}, [el("div", "video-avatar__avatar-name", { text: "Facilitator (AI) (Host)" })]));
+page(el("div", "speaker-active-container__video-frame", {}, [el("div", "video-avatar__avatar-name", { text: "Chloe (AI host) (Host)" })]));
 check(bot.speaker(true).name === null, "the bot as host is still never the speaker");
 
 // the colour classifier on its own
@@ -356,7 +356,7 @@ check(bot.isActiveColor(`rgba(0, 0, 0, 0) 0px 0px 0px 0px, ${GREEN} 0px 0px 0px 
 
 // the green frame (gallery view, no active class anywhere): on the tile, on an overlay inside it, on its ::after
 const solid = { borderTopStyle: "solid", borderTopWidth: "2px", borderTopColor: GREEN };
-page(gallery(tile("Ken Jiang"), tile("Dana Lee", { style: solid }), tile("Facilitator (AI)")));
+page(gallery(tile("Ken Jiang"), tile("Dana Lee", { style: solid }), tile("Chloe (AI host)")));
 who = bot.speaker(true);
 check(who.name === "Dana Lee" && who.how === "frame", `green border: ${who.name} (${who.how}: ${who.detail})`);
 page(gallery(tile("Ken Jiang"),
@@ -366,7 +366,7 @@ page(gallery(tile("Ken Jiang"),
 check(bot.speaker(true).name === "Dana Lee", "green box-shadow on an overlay inside the tile");
 page(gallery(tile("Ken Jiang", { pseudo: { "::after": { outlineStyle: "solid", outlineWidth: "3px", outlineColor: GREEN } } }), tile("Dana Lee")));
 check(bot.speaker(true).name === "Ken Jiang", "green outline on the tile's ::after");
-page(gallery(tile("Ken Jiang"), tile("Dana Lee"), tile("Facilitator (AI)", { style: solid })));
+page(gallery(tile("Ken Jiang"), tile("Dana Lee"), tile("Chloe (AI host)", { style: solid })));
 check(bot.speaker(true).name === null, "the bot's own green frame is nobody's (and two others: no fallback)");
 
 // an aria-label (free text needs a roster name when there is a roster)
@@ -393,7 +393,7 @@ page(gallery(tile("Ken Jiang"), tile("Dana Lee")), captions("Ken Jiang", "agreed
 check(bot.speaker(true).name === "Ken Jiang", "the next speaker's line");
 
 // the fallback: exactly one other person on the roster; the participants panel's aria-labels join the roster
-page(gallery(tile("Ken Jiang"), tile("Facilitator (AI)")));
+page(gallery(tile("Ken Jiang"), tile("Chloe (AI host)")));
 who = bot.speaker(true);
 check(who.name === "Ken Jiang" && who.how === "only", `only one other person: ${who.name} (${who.how})`);
 page(gallery(tile("Ken Jiang")), el("div", "participants-list", {}, [
@@ -412,7 +412,7 @@ check(bot.speaker().name === "Ken Jiang", "after 300 ms a fresh read");
 check(bot.speakerChanges >= 6, `speaker changes counted (${bot.speakerChanges})`);
 
 // the probe: what the page offered, as plain JSON
-page(gallery(tile("Ken Jiang"), tile("Dana Lee", { style: solid }), tile("Facilitator (AI)")),
+page(gallery(tile("Ken Jiang"), tile("Dana Lee", { style: solid }), tile("Chloe (AI host)")),
   el("div", "toast", { attrs: { "aria-label": "Mute my microphone" } }), captions("Dana Lee", "hello"));
 const probe = JSON.parse(JSON.stringify(bot.probe()));
 check(probe.roster.join() === "Ken Jiang,Dana Lee" && probe.speaker.name === "Dana Lee" && Array.isArray(probe.tried) &&

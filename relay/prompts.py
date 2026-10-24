@@ -191,7 +191,7 @@ def narration_instructions(talk: Talk, slide: Slide, *, seconds: int, continuing
 
 # ≤ 130 words with a title and three participants filled in (tests/test_prompts.py checks it).
 FACILITATOR_BASE = (
-    'You are the facilitator of the meeting "{title}" with {participants}. You present the first agenda item '
+    'You are Chloe, the facilitator of the meeting "{title}" with {participants}. Anyone who says Chloe is talking to you. You present the first agenda item '
     "yourself, live, in your own words, from the notes given for each talking point. When anyone asks about the "
     "project (dates, release stages, audiences, owners, decisions), call lookup_evidence first and answer only from "
     "what it returns, in one or two short spoken sentences; the presentation then resumes by itself. In the "
@@ -305,7 +305,7 @@ def talking_point_instructions(talk: Talk, meeting: Any, slide: Slide, chunk: Ch
     points = _points(talk)
     position = next((n for n, (s, c) in enumerate(points) if s.id == slide.id and c.index == chunk.index), None)
     lines = [
-        f'You are the facilitator of the meeting "{meeting.title}", presenting '
+        f'You are Chloe, the facilitator of the meeting "{meeting.title}", presenting '
         f'"{phase_title(meeting, "presentation")}" live to {participants_text(meeting, roles=False)}.',
         f'Now: slide {number} of {len(relay)}, "{slide.title or slide.id}".'
         + (f" On screen: {on_screen}" if on_screen else ""),
@@ -470,7 +470,7 @@ def guided_point_instructions(talk: Talk, meeting: Any, slide: Slide, chunk: Chu
     points = _points(talk)
     position = next((n for n, (s, c) in enumerate(points) if s.id == slide.id and c.index == chunk.index), None)
     lines = [
-        f'You are the facilitator of the meeting "{meeting.title}", presenting '
+        f'You are Chloe, the facilitator of the meeting "{meeting.title}", presenting '
         f'"{phase_title(meeting, "presentation")}" live to {participants_text(meeting, roles=False)}.',
         f'Now: slide {number} of {len(relay)}, "{slide.title or slide.id}".'
         + (f" {GUIDED_SCREEN_LABEL} {on_screen}" if on_screen else ""),
@@ -588,7 +588,7 @@ def handover_instructions(meeting: Any, guide: Guide | None = None) -> str:
     if guide is not None:
         seconds = round(min(45, max(3, guide.seconds_from(0))))
         lines = [
-            f'You are the facilitator of the meeting "{meeting.title}". You just finished presenting '
+            f'You are Chloe, the facilitator of the meeting "{meeting.title}". You just finished presenting '
             f'"{phase_title(meeting, "presentation")}".',
             f"The discussion question: {_quoted(discussion_prompt(meeting))}",
             f"The presentation is over: hand the floor to the group. Its job: {guide.intent.rstrip('.')}.",
@@ -602,7 +602,7 @@ def handover_instructions(meeting: Any, guide: Guide | None = None) -> str:
         lines.append(f"{PLAIN_SPEECH} {NO_TOOLS}")
         return "\n".join(lines)
     return "\n".join([
-        f'You are the facilitator of the meeting "{meeting.title}". You just finished presenting '
+        f'You are Chloe, the facilitator of the meeting "{meeting.title}". You just finished presenting '
         f'"{phase_title(meeting, "presentation")}".',
         f"The discussion question: {_quoted(discussion_prompt(meeting))}",
         # live 2026-10-24 a sentence-shaped instruction came back word for word, quotes included, and a bare "hand
@@ -628,7 +628,7 @@ def followup_instructions(kind: str, *, meeting: Any, agenda_phase: str = "prese
     instructions repeated the tool call; live 2026-10-24 one that only said "answer from these results" called
     get_presentation_state twice, and one that only said "confirm the decision" greeted the room ("Hello! I'm ready
     to facilitate…"). The resume after an answer is the controller's (the countdown), never a tool call here."""
-    lines = [f'You are the facilitator of the meeting "{meeting.title}" with {participants_text(meeting, roles=False)}.']
+    lines = [f'You are Chloe, the facilitator of the meeting "{meeting.title}" with {participants_text(meeting, roles=False)}.']
     if kind == FOLLOWUP_LOOKUP:
         if question and question.strip():
             lines.append(f"{speaker or 'Someone'} just asked: {_quoted(question)}")
@@ -717,7 +717,7 @@ def intervention_instructions(events: dict | list[dict], lookup: Any, *, meeting
     events = [events] if isinstance(events, dict) else list(events)
     if events and is_semantic_event(events[0]):
         return _semantic_intervention(events[0], lookup, meeting=meeting, clarifications=clarifications)
-    lines = [f'You are the facilitator of the meeting "{meeting.title}". The group is discussing and is about to '
+    lines = [f'You are Chloe, the facilitator of the meeting "{meeting.title}". The group is discussing and is about to '
              "confirm a decision. You stop them, politely, with one clarification."]
     heard = _heard_line(events)
     if heard:
@@ -746,7 +746,7 @@ def _semantic_intervention(event: dict, lookup: Any, *, meeting: Any, clarificat
     issue_type = str(event.get("issue_type") or "evidence_conflict")
     topic = _clip_text(event.get("topic") or event.get("label"), 120) or "the plan"
     claim = _clip_text(event.get("claim") or event.get("claimed_label"), 240)
-    lines = [f'You are the facilitator of the meeting "{meeting.title}". The group is discussing and is about to '
+    lines = [f'You are Chloe, the facilitator of the meeting "{meeting.title}". The group is discussing and is about to '
              f"confirm a decision, and you noticed {ISSUE_TYPE_NAMES.get(issue_type, 'an alignment issue')}. You "
              "stop them, politely, with one clarification."]
     heard = _heard_line([event])
@@ -801,7 +801,7 @@ def decision_instructions(draft: dict, quotes: Iterable[tuple[str | None, str]],
     sentence."""
     fields = {"decision": str(draft.get("decision") or ""), "owner": str(draft.get("owner") or ""),
               "source_ids": list(draft.get("source_ids") or [])}
-    lines = [f'You are the facilitator of the meeting "{meeting.title}". The group just settled a decision:']
+    lines = [f'You are Chloe, the facilitator of the meeting "{meeting.title}". The group just settled a decision:']
     for speaker, text in quotes:
         if text and text.strip():
             lines.append(f"{speaker or 'Someone'}: {_quoted(_clip_text(text, 240))}")
@@ -818,7 +818,7 @@ def decision_instructions(draft: dict, quotes: Iterable[tuple[str | None, str]],
 def wrapup_instructions(notes_text: str, *, meeting: Any) -> str:
     """The `instructions` of the wrap-up summary (contract §5.6)."""
     return "\n".join([
-        f'You are the facilitator of the meeting "{meeting.title}", and the meeting is wrapping up.',
+        f'You are Chloe, the facilitator of the meeting "{meeting.title}", and the meeting is wrapping up.',
         f"The meeting notes: {' '.join((notes_text or 'nothing was recorded').split())}",
         "Sum up in two or three short spoken sentences: the decisions with their owners first, then the open "
         "questions. Don't read ids aloud.",
