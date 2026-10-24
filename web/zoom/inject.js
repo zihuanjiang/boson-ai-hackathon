@@ -53,7 +53,17 @@
   // segments [{at, end, src}] on the context clock. A chunk for another key replaces the player (the page's
   // ReplyPlayer resets for a new reply). played_ms counts audible milliseconds only (a gap between chunks, when
   // the backend was slow, does not count).
+  // Speed: a player plays its key at the rate set when it started (setSpeed: "speak faster" in the call); played_ms
+  // and total_ms stay in the reply's own audio milliseconds (the backend truncates the model's memory with them), so
+  // a segment lasts duration / speed on the context clock.
   let player = null;
+  let speed = 1;
+  B.setSpeed = (rate) => {
+    const value = Number(rate);
+    if (Number.isFinite(value) && value >= 0.5 && value <= 2) speed = value;
+    log(`speed ${speed}x from the next reply`);
+    return speed;
+  };
   function decodePcm16(b64) {
     const bin = atob(b64);
     const n = bin.length >> 1;
@@ -67,7 +77,7 @@
   }
   function playedMs(p, t) {
     let ms = 0;
-    for (const s of p.segments) ms += Math.max(0, Math.min(t, s.end) - s.at) * 1000;
+    for (const s of p.segments) ms += Math.max(0, Math.min(t, s.end) - s.at) * 1000 * p.speed;
     return Math.round(Math.min(ms, p.totalMs));
   }
   function stopPlayer(p, t) {
@@ -91,18 +101,19 @@
       log(`push: key ${key} replaces ${player.key} (${player.playedAtStop} of ${Math.round(player.totalMs)} ms heard)`);
       player = null;
     }
-    if (!player) player = { key, segments: [], totalMs: 0, endAt: 0, startedAt: null, stoppedAt: null };
+    if (!player) player = { key, segments: [], totalMs: 0, endAt: 0, startedAt: null, stoppedAt: null, speed };
     const samples = decodePcm16(b64);
     if (!samples.length) return B.position();
     const buf = ctx.createBuffer(1, samples.length, rate);
     buf.getChannelData(0).set(samples);
     const src = ctx.createBufferSource();
     src.buffer = buf;
+    src.playbackRate.value = player.speed;
     origConnect.call(src, micGain);
     // back to back: right after the previous chunk, or now (plus a small lead when the queue had run dry)
     const at = Math.max(t + (player.segments.length ? 0 : 0.03), player.endAt);
     src.start(at);
-    const end = at + buf.duration;
+    const end = at + buf.duration / player.speed;
     const seg = { at, end, src };
     player.segments.push(seg);
     if (player.startedAt === null) player.startedAt = at;
@@ -146,6 +157,7 @@
       total_ms: Math.round(player.totalMs),
       drained: t >= player.endAt,
       playing: t < player.endAt && t >= player.startedAt,
+      speed: player.speed,
     };
   };
 

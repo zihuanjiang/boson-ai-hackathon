@@ -47,6 +47,18 @@ tell her to thank the host in a few words and start the presentation (a watchdog
    `response.done` for a response cancelled before its first output), the held question goes out after 1.2 s anyway,
    and a reused response id is accepted as the new response.
 
+## Speed
+
+Higgs Realtime keeps its own speaking pace (live 2026-10-24: the same lengths whatever a point asked for), so speed is
+playback: a short line with "faster" / "speed up" (or how the transcript mishears it: "beat up") / "slower" / "slow
+down" / "maximum speed" / right after a change "a little bit more" (said over her during the presentation, or
+"Alice, …" in the discussion) moves the controller's rate by 0.15 within 0.9–1.4 and sends `speed {rate}`. The change
+is the answer: the reply to that cut-in is cancelled and she picks up where she was cut (in the discussion the line
+still goes to Claude's check like any other: speed is Alice's Higgs voice only); the bot
+(inject.js) plays every later reply at that rate (`playbackRate`: pitch rises with it) and keeps reporting positions in
+the reply's own audio milliseconds, so a cut still truncates the model's memory at the right word; the shared page
+paces its captions with the same rate. It persists for the rest of the meeting; `RELAY_SPEED` / `--speed` set the start.
+
 ## The discussion
 
 1. After the last point Alice hands over with the discussion question and goes silent.

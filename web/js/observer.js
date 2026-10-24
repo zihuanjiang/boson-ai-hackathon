@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * The observer page's stand-in for the audio (contract v5 §3). The page the Zoom bot shares as its screen
+ * The observer page's stand-in for the audio. The page the Zoom bot shares as its screen
  * (`?view=observer`) has no AudioContext: the bot is the deck, it plays the facilitator's replies into Zoom and the
  * backup narration too. The observer only renders, so it needs the *positions* those players would report, on the
  * wall clock:
@@ -20,7 +20,9 @@ import { samplesToMs } from "./util.js";
 
 export const OBSERVER_TICK_MS = 100; // like the pcm-player worklet's progress reports
 
-/** The AudioEngine's shape, as ReplyPlayer reads it, on the wall clock: no context, no worklets, no latency. */
+/** The AudioEngine's shape, as ReplyPlayer reads it, on the wall clock: no context, no worklets, no latency. The
+ * clock runs at Alice's playback rate (the bot plays her replies faster after "speak faster"), so a reply's audio is
+ * "heard", and its captions revealed, as fast as the call hears it. */
 class WallClock {
   constructor() {
     /** @type {null} */
@@ -28,11 +30,22 @@ class WallClock {
     this.workletsReady = false;
     /** @type {null} */
     this.replyBus = null;
+    this.rate = 1;
+    this.base = performance.now() / 1000;
+    this.virtualBase = this.base;
   }
 
-  /** Seconds, like AudioContext.currentTime. */
+  /** Seconds, like AudioContext.currentTime (at `rate`: continuous across a change). */
   now() {
-    return performance.now() / 1000;
+    return this.virtualBase + (performance.now() / 1000 - this.base) * this.rate;
+  }
+
+  /** @param {number} rate */
+  setRate(rate) {
+    if (!Number.isFinite(rate) || rate < 0.5 || rate > 2) return;
+    this.virtualBase = this.now();
+    this.base = performance.now() / 1000;
+    this.rate = rate;
   }
 
   latency() {
@@ -45,9 +58,16 @@ class WallClock {
 export class ObserverReplyPlayer extends ReplyPlayer {
   /** @param {ReplyHandlers} handlers */
   constructor(handlers) {
-    super(/** @type {any} */ (new WallClock()), handlers);
+    const clock = new WallClock();
+    super(/** @type {any} */ (clock), handlers);
+    this.clock = clock;
     /** @type {ReturnType<typeof setInterval>|undefined} */
     this.timer = undefined;
+  }
+
+  /** Alice's playback rate from now on ("speak faster"): the captions keep up with her. @param {number} rate */
+  setSpeed(rate) {
+    this.clock.setRate(rate);
   }
 
   /** The clock runs while a reply plays: progress every OBSERVER_TICK_MS, drained once it has played out. */

@@ -49,7 +49,12 @@ presentation three seconds after the share begins; Ctrl-C in the bot's terminal 
 run's summary (`out/zoom_bot/summary.json`). If it can't click something in Zoom, it says what it waits for: click it
 yourself in its window.
 
+Too slow? Say "Alice, can you speak a bit faster?" (or "slow down", "maximum speed", then "a little bit more"): she
+picks up where she was cut, and the bot plays her voice 0.15× faster (up to 1.4×, a little higher in pitch) for the
+rest of the meeting; `--speed 1.15` starts there.
+
 Settings (`.env` or the environment, see `.env.example`): `RELAY_PACE` (default `1.3`: shorter, brisker points),
+`RELAY_SPEED` (default `1.0`: her playback rate at the start),
 `RELAY_ALIGNMENT` (`claude` default, `legacy` = the `checks.yaml` patterns, `off`), `BOSON_REALTIME_MODEL` (default
 `higgs-realtime-1.5-preview`; `higgs-realtime` is the older id).
 

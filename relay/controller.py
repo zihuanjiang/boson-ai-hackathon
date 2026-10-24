@@ -123,6 +123,20 @@ _LEAD_IN = r"(?:(?:hey|hi|okay|ok|so|um|uh|and|but|wait|sorry|quick question)\W+
 ADDRESSED_RE = re.compile(rf"^\W*{_LEAD_IN}alice\b|\balice\W*$", re.I)
 QUESTION_RE = re.compile(rf"\?|^\W*{_LEAD_IN}(?:alice\W+)?(?:can|could|would|will|do|does|did|is|are|was|were|what|"
                          r"how|who|when|where|why|which|tell|remind|explain|check|look)\b", re.I)
+# Asking Alice to speak faster or slower ("Alice, can you speak a bit faster?", "speed up", "slow down"): her playback
+# rate (the bot plays every later reply at it) moves one step and stays for the rest of the meeting. Higgs Realtime
+# has no speed setting and kept its own pace whatever length a point asked for (live 2026-10-24 13:30).
+SPEED_MIN, SPEED_MAX, SPEED_STEP = 0.9, 1.4, 0.15
+# Tolerant: live 2026-10-24 13:57 the transcript of "Alice, speed up" was "Alex, beat up."
+SPEED_UP_RE = re.compile(r"\bfaster\b|\bquicker\b|\b(?:speed|beat|sped|speeding)\s+(?:it\s+|things\s+)?up\b"
+                         r"|\bpick\s+up\s+the\s+pace\b|\bhurry\s+up\b", re.I)
+SPEED_MAX_RE = re.compile(r"\b(?:max(?:imum)?|top|full)\s+speed\b|\bfastest\b|\bas\s+fast\s+as\b", re.I)
+SLOW_DOWN_RE = re.compile(r"\bslower\b|\bslow\s+(?:it\s+)?down\b", re.I)
+# Right after a change, "a little bit more" / "more" / "again" repeats it (within SPEED_AGAIN_S).
+SPEED_AGAIN_RE = re.compile(r"^\W*(?:(?:a|just|even|one)\s+)?(?:little\s+)?(?:bit\s+|step\s+)?(?:more|again)"
+                            r"(?:\s+please)?\W*$", re.I)
+SPEED_AGAIN_S = 30.0
+SPEED_REQUEST_MAX_WORDS = 10
 REPLY_STALL_S = 8.0  # a bound reply with no event of its own this long (and no response.done) → treat it as done
 ERROR_GRACE_S = 1.5  # after a non-benign `error` mid-reply: this long without an event of the reply → as a stall
 DOUBLE_SEND_S = 1.0  # tap mode: Space this soon after a spoken turn ended (still thinking) was a "send": ignored
@@ -489,6 +503,9 @@ class Controller:
         # The Zoom call: the bot streams what the call plays; Alice's own audio never reaches this input, so speech
         # that starts while she speaks is a barge-in. A line ends after the participant segmenter's own silence.
         self.input_mode = settings.input
+        self.speed = min(SPEED_MAX, max(SPEED_MIN, settings.speed))  # Alice's playback rate (the bot plays at it)
+        self._speed_dir = 0  # the last change's direction (+1 faster, -1 slower), for "a little bit more"
+        self._speed_at = -1e9  # when it was made (clock)
         self._clip_seg: Segmenter | None = (Segmenter(end_ms=CLIP_END_MS) if self.input_mode == INPUT_CLIPS
                                             else Segmenter() if self.input_mode == INPUT_VOICE else None)
         # what a participant's turn or line is labelled with: "clip" (prerecorded) or "voice" (a live stream)
@@ -1062,9 +1079,34 @@ class Controller:
         bundle.append(self._state_message())
         status, detail = self._connection
         bundle.append({"type": "connection", "status": status, "detail": detail})
+        bundle.append({"type": "speed", "rate": self.speed})  # the bot plays Alice at it; the page paces captions
         if self.meeting is not None:
             bundle.append(self._meeting_message())
         return bundle
+
+    def _speed_request(self, text: str) -> float | None:
+        """The playback rate a line asks for (one step faster or slower, the maximum, or the last change again right
+        after it), else None. Only a short line counts (a request, not a question that happens to say "faster")."""
+        if len(text.split()) > SPEED_REQUEST_MAX_WORDS:
+            return None
+        if SLOW_DOWN_RE.search(text):
+            return max(SPEED_MIN, round(self.speed - SPEED_STEP, 2))
+        if SPEED_MAX_RE.search(text):
+            return SPEED_MAX
+        if SPEED_UP_RE.search(text):
+            return min(SPEED_MAX, round(self.speed + SPEED_STEP, 2))
+        if self._speed_dir and self.clock.now() - self._speed_at < SPEED_AGAIN_S and SPEED_AGAIN_RE.search(text):
+            return min(SPEED_MAX, max(SPEED_MIN, round(self.speed + self._speed_dir * SPEED_STEP, 2)))
+        return None
+
+    async def _set_speed(self, rate: float, why: str) -> None:
+        """Alice's playback rate from now on, for the rest of the meeting: every later reply plays at it."""
+        self._note("speed", {"from": self.speed, "to": rate, "why": why})
+        if rate != self.speed:
+            self._speed_dir = 1 if rate > self.speed else -1
+        self._speed_at = self.clock.now()
+        self.speed = rate
+        await self._send({"type": "speed", "rate": rate})
 
     def _version(self) -> str | None:
         """Identity of what this server run presents (`/api/talk` carries the same value): a deck that sees another
@@ -1739,8 +1781,8 @@ class Controller:
         about = _int(msg.get("reply")) if msg else None
         if reported is not None and (about is None or about == reply):
             played = reported
-        elif first_audio_at is not None:
-            played = round((self.clock.now() - first_audio_at) * 1000)
+        elif first_audio_at is not None:  # (the bot plays at self.speed: that much audio per wall-clock second)
+            played = round((self.clock.now() - first_audio_at) * 1000 * self.speed)
         else:
             played = 0
         return max(0, min(played, received))
@@ -2908,6 +2950,12 @@ class Controller:
         meeting so far goes to the analysis, outside the lock; `on_analysis` applies what comes back."""
         utterance = self.mstate.add_utterance(text, speaker, source)
         await self._send({"type": "transcript", "utterance": _jsonable(utterance)})
+        rate = self._speed_request(text) if ADDRESSED_RE.search(text) else None
+        speed_asked = self.agenda_phase == DISCUSSION and rate is not None
+        if speed_asked:
+            # "Alice, speak faster": only her Higgs voice changes (the bot plays her faster from now on), and she
+            # doesn't reply: the change is the answer. The line still goes to the alignment check like any other.
+            await self._set_speed(rate, "asked")
         if self.agenda_phase == DISCUSSION and WRAPUP_REQUEST_RE.search(text):
             # Someone asks to wrap up ("Great, let's wrap up."): the meeting moves on by voice (no keys in Zoom)
             self._note("utterance", {"id": utterance.id, "speaker": speaker, "source": source, "text": text,
@@ -2916,7 +2964,7 @@ class Controller:
             await self._enter_wrapup()
             return
         if (self.agenda_phase == DISCUSSION and self.state == ROOM and self.turn is None and self.realtime.ready
-                and ADDRESSED_RE.search(text) and QUESTION_RE.search(text)):
+                and not speed_asked and ADDRESSED_RE.search(text) and QUESTION_RE.search(text)):
             self._note("utterance", {"id": utterance.id, "speaker": speaker, "source": source, "text": text,
                                      "events": ["question_to_alice"]})
             await self._answer_room_question(text, speaker)
@@ -3790,6 +3838,16 @@ class Controller:
             self._remember_user_item(current, item_id)
         if owner is not None and owner is current:
             owner.user_text = text
+            rate = self._speed_request(text) if self.meeting is not None else None
+            if rate is not None and self._replying and owner.kind == KIND_ANSWER:
+                # "speak faster" said over her: not a question. The change is the answer: no reply (live 13:53 the
+                # model said "Sure." and then read the point again from the top), she picks up where she was cut
+                await self._send({"type": "caption", "role": "user", "text": text, "final": True,
+                                  "reply": owner.reply})
+                await self._set_speed(rate, "asked")
+                await self._cut_reply(None)
+                await self._back_to_origin()
+                return
             caption = {"type": "caption", "role": "user", "text": text, "final": True, "reply": owner.reply}
             if owner.speaker:
                 caption["speaker"] = owner.speaker  # a participant's clip: its prepared label

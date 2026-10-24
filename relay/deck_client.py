@@ -37,16 +37,18 @@ class Reply:
     ended: bool = False  # reply_end came
     flushed_at: float | None = None
     drained_at: float | None = None
+    speed: float = 1.0  # the playback rate it plays at (the rate when it started)
 
     @property
     def audio_ms(self) -> int:
         return self.audio_bytes // BYTES_PER_MS
 
     def played_ms(self, now: float) -> int:
+        """Audio ms heard (of the reply's own audio: at `speed`, that much per wall-clock ms)."""
         if self.first_audio is None:
             return 0
         until = self.flushed_at if self.flushed_at is not None else now
-        return max(0, min(self.audio_ms, round((until - self.first_audio) * 1000)))
+        return max(0, min(self.audio_ms, round((until - self.first_audio) * 1000 * self.speed)))
 
 
 class Deck:
@@ -69,6 +71,7 @@ class Deck:
         self.replies: dict[int, Reply] = {}
         self.state: dict = {}  # the latest `state` message
         self.connection: str = "offline"  # the Realtime link's status (`connection` messages)
+        self.speed = 1.0  # Alice's playback rate (`speed` messages): every reply from now on plays at it
         self._new = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
         self._send_lock = asyncio.Lock()
@@ -96,7 +99,7 @@ class Deck:
     def _react(self, msg: dict) -> None:
         kind, now = msg.get("type"), time.monotonic()
         if kind == "reply_audio":
-            reply = self.replies.setdefault(msg["reply"], Reply(msg["reply"], None))
+            reply = self.replies.setdefault(msg["reply"], Reply(msg["reply"], None, speed=self.speed))
             if reply.first_audio is None:
                 reply.first_audio = now
             pcm = base64.b64decode(msg["pcm"])
@@ -107,7 +110,8 @@ class Deck:
             return
         self.messages.append((self.now(), "in", msg))
         if kind == "reply_start":
-            self.replies.setdefault(msg["reply"], Reply(msg["reply"], msg.get("kind"))).kind = msg.get("kind")
+            self.replies.setdefault(msg["reply"], Reply(msg["reply"], msg.get("kind"), speed=self.speed)).kind = \
+                msg.get("kind")
             self._on_reply_start(self.replies[msg["reply"]])
         elif kind == "mic" and msg.get("open"):
             # the page silences the facilitator when the backend opens the floor, unless she is speaking up
@@ -127,6 +131,9 @@ class Deck:
             self.state = msg
         elif kind == "connection":
             self.connection = str(msg.get("status") or "offline")
+        elif kind == "speed" and isinstance(msg.get("rate"), (int, float)):
+            self.speed = float(msg["rate"])
+            self._on_speed(self.speed)
         self._log_inbound(kind, msg)
 
     def _log_inbound(self, kind: str | None, msg: dict) -> None:
@@ -159,10 +166,13 @@ class Deck:
     def _on_reply_start(self, reply: Reply) -> None:
         """A reply began: the page's player resets for it (a subclass stops what an older reply still plays)."""
 
+    def _on_speed(self, rate: float) -> None:
+        """The playback rate changed (a subclass tells its player): the next reply plays at it."""
+
     async def _played_out(self, reply: Reply) -> None:
         """Wait until the reply has been heard to its end: on the wall clock from its first audio."""
         start = reply.first_audio if reply.first_audio is not None else time.monotonic()
-        await asyncio.sleep(max(0.0, start + reply.audio_ms / 1000 - time.monotonic()))
+        await asyncio.sleep(max(0.0, start + reply.audio_ms / 1000 / reply.speed - time.monotonic()))
 
     def _cut(self, reply: Reply) -> None:
         """The reply stops playing here (a subclass drops what its player still holds)."""

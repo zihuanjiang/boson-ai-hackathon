@@ -59,6 +59,7 @@ EAR_TICK_S = 0.1
 DRAIN_GRACE_S = 1.5  # the page never said a reply drained: assume it this long after its audio should have ended
 AUTO_START_S = 3.0
 STATUS_EVERY_S = 5.0
+SHARE_RETRY_S = 10.0  # no share this long after clicking Share: click it once more
 UI_WORDS = re.compile(r"^(mute|unmute|more|video|audio|share|participants|chat|reactions|leave|you|me|host)$", re.I)
 NAME_SUFFIX = re.compile(r"\s*\((?:host|co-host|me|you|guest)(?:\s*,\s*(?:host|co-host|me|you|guest))*\)\s*$", re.I)
 # Speaker diagnostics (the live run): a drain this loud is somebody talking; when the page names nobody then, the bot
@@ -325,6 +326,10 @@ class PlaywrightPage:
     async def flush(self, key: Any) -> dict:
         return await self.page.evaluate("(k) => window.__bot.flush(k)", key)
 
+    async def set_speed(self, rate: float) -> float:
+        """Alice's playback rate for every reply from now on (inject.js keeps a playing reply at its own rate)."""
+        return await self.page.evaluate("(r) => window.__bot.setSpeed(r)", rate)
+
     async def position(self) -> dict:
         pos = await self.page.evaluate("() => window.__bot ? window.__bot.position() : null")
         return pos if isinstance(pos, dict) else {"key": None, "played_ms": None, "total_ms": 0, "drained": True,
@@ -380,6 +385,9 @@ class ZoomDeck(Deck):
     def _cut(self, reply: Reply) -> None:
         self._mouth.put_nowait(("flush", reply.number, None))
 
+    def _on_speed(self, rate: float) -> None:
+        self._mouth.put_nowait(("speed", None, rate))  # in order with the audio: the next reply plays at it
+
     def _set_page_pos(self, pos: Any) -> None:
         if isinstance(pos, dict) and "key" in pos:
             self._page_pos, self._page_pos_at = pos, time.monotonic()
@@ -391,7 +399,9 @@ class ZoomDeck(Deck):
             return None
         played = int(pos["played_ms"])
         if pos.get("playing") and not pos.get("drained"):
-            played = min(int(pos.get("total_ms") or played), played + max(0, round((now - self._page_pos_at) * 1000)))
+            rate = float(pos.get("speed") or 1.0)  # the page plays the reply at this rate (its audio ms per wall ms)
+            played = min(int(pos.get("total_ms") or played),
+                         played + max(0, round((now - self._page_pos_at) * 1000 * rate)))
         return played
 
     async def refresh_position(self) -> dict:
@@ -411,6 +421,9 @@ class ZoomDeck(Deck):
                     result = await self.page.push(base64.b64encode(data).decode("ascii"), key)
                     self._pushed[key] = self._pushed.get(key, 0) + len(data)
                     self._set_page_pos(result)
+                elif op == "speed":
+                    rate = await self.page.set_speed(data)
+                    self.say(f"   Alice plays at {rate}x from her next reply")
                 elif op == "flush":
                     await self.page.flush(key)
                     if self._page_pos.get("key") == key:
@@ -742,18 +755,42 @@ async def sharing(page: Any) -> bool:
         return False
 
 
+async def click_in_dialog(page: Any, pattern: str, timeout: float = 500) -> bool:
+    """Click a button matching `pattern` inside a dialog (a confirm step), never one of the toolbar's."""
+    try:
+        target = page.get_by_role("dialog").get_by_role("button", name=re.compile(pattern, re.I)).first
+        await target.wait_for(state="visible", timeout=timeout)
+        await target.click(timeout=timeout)
+        return True
+    except Exception:  # noqa: BLE001 - no such dialog
+        return False
+
+
 async def share_screen(page: Any, shots: list[str], out_dir: Path, wait_s: float = 25.0) -> bool:
     """Click Zoom's Share Screen; Chrome's `--auto-select-tab-capture-source-by-title` picks the observer tab, so no
-    picker shows. Best effort: False if no share is visible within `wait_s` (the operator shares by hand then)."""
+    picker shows. Best effort: False if no share is visible within `wait_s` (the operator shares by hand then).
+
+    Live 2026-10-24 13:57 the share never started: the toolbar's Share was clicked again every second while Chrome was
+    picking the tab (which can cancel the pending share), with Zoom's "Introducing My Notes" popup open. So a popup is
+    dismissed first, the toolbar button is clicked once (again only after SHARE_RETRY_S without a share), and the loop
+    clicks confirm buttons inside a dialog only."""
+    await click_if(page, r"^got it$", timeout=800)
     if not await click_if(page, r"share screen|^share$", timeout=5000):
         return False
     await shot(page, "share-clicked", shots, out_dir)
-    deadline = time.monotonic() + wait_s
-    while time.monotonic() < deadline:
+    start = time.monotonic()
+    retried = False
+    while time.monotonic() - start < wait_s:
         if await sharing(page):
             await shot(page, "sharing", shots, out_dir)
             return True
-        await click_if(page, r"^share$|share now|^ok$", timeout=800)  # a confirm step, if Zoom shows one
+        await click_in_dialog(page, r"^share$|share now|^ok$|^continue$")  # a confirm step, if Zoom shows one
+        if not retried and time.monotonic() - start >= SHARE_RETRY_S:
+            retried = True
+            print("  the share has not started yet: clicking Share once more", flush=True)
+            await click_if(page, r"^got it$", timeout=500)
+            await click_if(page, r"share screen|^share$", timeout=2000)
+            await shot(page, "share-retry", shots, out_dir)
         await asyncio.sleep(1.0)
     await shot(page, "share-timeout", shots, out_dir)
     return False
@@ -772,6 +809,8 @@ def start_server(args: argparse.Namespace, out_dir: Path) -> tuple[subprocess.Po
                "--host", parts.hostname or "127.0.0.1", "--port", str(parts.port or 8000),
                "--alignment", args.alignment]
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    if args.speed is not None:  # Alice's playback rate at the start ("speak faster" in the call moves it from there)
+        env["RELAY_SPEED"] = str(args.speed)
     dotenv = main_checkout_env()
     if dotenv is not None:  # what the environment doesn't set yet (BOSON_API_KEY, ANTHROPIC_API_KEY, …), never printed
         try:
@@ -972,7 +1011,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--join-wait", type=float, default=180, help="how long to wait for the join to finish (s)")
     parser.add_argument("--no-share", action="store_true", help="don't click Share Screen (share by hand)")
     parser.add_argument("--auto-start", action="store_true",
-                        help=f"press R {AUTO_START_S:.0f} s after the share begins (or after joining)")
+                        help=f"start the presentation {AUTO_START_S:.0f} s after the share begins (or after joining)")
+    parser.add_argument("--speed", type=float, default=None,
+                        help="Alice's playback rate at the start, 0.9–1.4 (default 1.0, or RELAY_SPEED); \"Alice, speak "
+                             "faster\" / \"slow down\" in the call moves it by 0.15 for the rest of the meeting")
     return parser
 
 

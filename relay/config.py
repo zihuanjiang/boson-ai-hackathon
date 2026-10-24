@@ -49,6 +49,7 @@ class Settings:
     realtime_url: str = "wss://api.boson.ai/v1/realtime"
     realtime_model: str = REALTIME_MODEL
     pace: float = 1.3  # live talking points are asked for their length ÷ pace (RELAY_PACE)
+    speed: float = 1.0  # Alice's playback rate at the start (RELAY_SPEED); "speak faster" in the call moves it
     temperature: float | None = None
     full_session_update: bool = False
     host: str = "127.0.0.1"
@@ -96,6 +97,8 @@ def load_settings(**overrides) -> Settings:
         # point is asked for its guide's seconds ÷ pace (1.3: ~23% shorter) and every response for a brisk pace
         # (prompts.BRISK). Live at 1.15 she still ran 10–45% over what was asked.
         "pace": min(1.6, max(0.7, float((env.get("RELAY_PACE") or "1.3").strip()))),
+        # the bot plays Alice's audio at this rate (pitch rises with it); the controller keeps it within 0.9–1.4
+        "speed": float((env.get("RELAY_SPEED") or "1.0").strip()),
         "temperature": float(temperature) if temperature else None,
         "full_session_update": _flag(env.get("RELAY_FULL_SESSION_UPDATE")),
         "host": (env.get("RELAY_HOST") or "127.0.0.1").strip(),

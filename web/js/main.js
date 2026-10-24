@@ -1215,6 +1215,8 @@ const HANDLERS = new Map([
   // a simulated online meeting (or a participant in Zoom): the backend heard a participant start while the
   // facilitator spoke
   ["barge_in", onBargeIn],
+  // Alice's playback rate ("speak faster" in the call): the bot plays her at it; the observer paces captions with it
+  ["speed", (m) => (/** @type {any} */ (replies)).setSpeed?.(Number(m.rate))],
 ]);
 
 /** @param {Msg} m */
