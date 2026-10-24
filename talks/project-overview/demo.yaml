@@ -1,0 +1,33 @@
+# The online meeting, unattended (the fallback when no real people are at hand): Alice, Bob and Carol are prerecorded
+# clips (Higgs TTS 3 voices, `relay.clips`). Alice interrupts the point that promises it ("Interrupt me, and I stop
+# mid-sentence"); the answer comes from ZOOM-3 and ZOOM-2 and is recorded as CL-1, and the point's prepared resume line
+# picks it up. In the discussion Bob plans the judges' questions through the Zoom chat, which the facilitator never
+# sees (ZOOM-3; CL-1: it hears voices only), Carol confirms, the facilitator asks one question, Carol corrects it and
+# names the owner. The same story with real people in Zoom is run_of_show_people.md; the cues are web/js/demo.js's
+# (contract v3.1).
+voices: {Alice: chloe, Bob: jake, Carol: eleanor}
+steps:
+  - id: start
+    action: start
+    when: {phase: presentation}
+  - id: alice-question
+    speaker: Alice
+    say: "Sorry, quick question: in Zoom, can people raise a hand to interrupt you?"
+    when: {talking_point: interrupt, heard_ms: 1500}
+  # Bob's clock starts when Alice's clip ends, and the answer, the resume line, three talking points and the hand-over
+  # come first (~65 s live). His plan puts the judges' questions in the chat, which the facilitator never sees (ZOOM-3).
+  - id: bob-plan
+    speaker: Bob
+    say: "For the judges' demo, let's have them type their questions in the Zoom chat, and the facilitator answers them."
+    when: {phase: discussion, quiet_ms: 1500, timeout_ms: 180000}
+  - id: carol-confirm
+    speaker: Carol
+    say: "Sounds good. Let's lock that in."
+    when: {after: bob-plan, gap_ms: 900}
+  - id: carol-correct
+    speaker: Carol
+    say: "Right, no chat then. The judges just speak up, and Bob owns the briefing."
+    when: {after_reply: intervention, gap_ms: 300}
+  - id: wrap
+    action: phase
+    when: {after_reply: decision, phase: discussion, quiet_ms: 2000}

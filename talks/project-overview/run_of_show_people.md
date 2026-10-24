@@ -8,7 +8,8 @@ plan is saved, the plan is corrected, and the decision goes into the notes with 
 the end of the wrap-up (a plan: re-time it after the first rehearsal).
 
 **Partner** is your co-worker: write their real name here: `______`. Nothing else changes for them (no line names
-the Partner).
+the Partner). This is the final demo: both people speak live in Zoom. Setup and acceptance steps are in
+[`run_of_show.md`](run_of_show.md).
 
 ## The cast
 
@@ -16,7 +17,7 @@ the Partner).
 | --- | --- |
 | **Ken** (host) | hosts the Zoom meeting, starts the bot, says the disclosure, presses R, asks the interruption question, confirms the plan (the mistake), presses N for the wrap-up |
 | **Partner** | proposes the plan that contradicts the documents, then corrects it and names Ken as the owner |
-| **Alice (AI co-host)** | the bot: its own Zoom participant, its own voice, its own screen share |
+| **Alice (AI host)** | the bot: its own Zoom participant, its own voice, its own screen share |
 
 ## Before the meeting (Ken, 5 minutes ahead)
 
@@ -26,11 +27,13 @@ the Partner).
 2. Display names: the bot labels each line with the name Zoom shows; no renaming to Alice, Bob or Carol is needed
    (D89). The owner line below says "Ken": if Zoom shows Ken as "Ken Jiang", either set the display name to "Ken"
    before joining or say "Ken Jiang" in that line.
-3. Start the bot (`BOSON_API_KEY` and `ANTHROPIC_API_KEY` in `.env`; nothing to render: everything is live):
-   `! uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --passcode <passcode> --talk talks/project-overview`
-   Admit "Alice (AI co-host)" from the waiting room if Zoom asks. Wait until its screen share shows "Imagine…".
-   If it can't join or share: finish that step by hand in the bot's Chrome window (it prints what it waits for);
-   to share, click Share in that window and pick the Chrome tab "On the Same Page".
+3. Render the backup after script changes: `uv run python -m relay.render talks/project-overview`. Start the bot
+   (`BOSON_API_KEY` and `ANTHROPIC_API_KEY` in `.env`):
+   `uv run --with playwright python scripts/zoom_bot.py --url "<join link>" --talk talks/project-overview`.
+   Add `--passcode <passcode>` if the join link does not contain it.
+   Admit "Alice (AI host)" from the waiting room if Zoom asks. Wait until its screen share shows "Imagine…".
+   What to do when it can't join or share: `talks/submission-review/run_of_show_zoom.md` ("Starting the bot",
+   "Fallbacks"; the same bot).
 4. Keep the bot's terminal one click away: R, N and `t <text>` are typed there. (`--auto-start` presses R three
    seconds after the share begins: fine for a solo rehearsal, but then there is no time for the disclosure.)
 
@@ -42,8 +45,9 @@ the Partner).
   never a raised hand.
 - **Stay muted when it isn't your line** (typing, a cough or a door can cut it mid-sentence), and unmute a second
   before you speak.
-- **In the discussion, let it finish** before you talk, and don't fill its silences: it is listening, not stuck. Its
-  question comes several seconds after the confirmation (7.6 to 9.9 s in the live runs with recorded participants).
+- **In the discussion, let it finish** before you talk, and don't fill its silences: it is listening. Leave a quiet
+  pause after the confirmation so transcription, analysis and speech generation can finish. Measure this wait in
+  the Zoom rehearsal; earlier test timings used prepared participant audio.
 
 ## The disclosure (Ken, before pressing R, ~10 s)
 
@@ -58,15 +62,15 @@ Times are a plan (the guides' lengths plus the measured waits); `RELAY_PACE` 1.1
 | ~Time | On screen | Facilitator | Ken | Partner |
 | --- | --- | --- | --- | --- |
 | 0:00 | Imagine… | the hook: "Imagine you're an engineer, up since yesterday morning…" (the first words: no greeting) | presses **R** in the bot terminal, then mutes | muted |
-| 0:25 | On the Same Page | "I'm Alice, an On the Same Page facilitator built on Higgs Audio. I join your Zoom call, I present, I answer, and then I listen. Because too many meetings end in an agreement nobody checked against the documents." | unmutes during this slide | |
+| 0:25 | On the Same Page | "I'm Alice, an On the Same Page facilitator built on Higgs Audio. I present and answer questions in Zoom, then check for misunderstandings as you discuss. Conflicting facts, different meanings, missing details. I ask before you agree." | unmutes during this slide | |
 | 0:40 | How it presents | "Here's how. One Higgs Realtime session runs the whole meeting, one talking point at a time, from a script Claude wrote beforehand." | ready | |
 | 0:50 | How it presents | **"Interrupt me, and I stop mid-sentence."** | **The moment you hear "Interrupt me", start talking**: "Sorry, quick question: in Zoom, can people raise a hand to interrupt you?" | |
 | 0:56 | the evidence callout | stops within about a second, may say a short "Let me check…", looks it up (ZOOM-3, ZOOM-2 on screen), answers in a sentence or two: in Zoom it hears voices only, not raised hands or the chat; people just speak up. The answer is recorded as the meeting's first clarification | listen, then mute | |
 | 1:10 | How it presents | picks the point up with its prepared line: "As I was saying, I stop, look it up, show you the source, and pick up right where I left off. Just like that." | | |
 | 1:20 | How it listens | "When the slides end, I listen. Higgs transcribes every line, and Claude checks each one…" | | |
-| 1:37 | Achievements and limits | "Here's what works so far…", then "Now, my limits…" (the table builds column by column) | | unmutes near the end |
-| 2:10 | Your turn | the hand-over: "That's the project. Now it's your turn. How do the judges ask their questions in Zoom, and who briefs them?" | | wait until it has finished |
-| 2:20 | Your turn | silent (a card may show the conflict silently: nobody has confirmed yet) | | **the plan, about a second after the question**: "Let's keep it simple: the judges type their questions in the Zoom chat, and the facilitator answers them." |
+| 1:37 | Achievements and limits | "Here's the Zoom workflow.", then "Now, my limits." (the table builds column by column) | | unmutes near the end |
+| 2:10 | Live discussion demo | the hand-over: "That's the project. Now it's your turn. How do we run the demo with real people, and who sets it up?" | | wait until it has finished |
+| 2:20 | Live discussion demo | silent (a card may show the conflict silently: nobody has confirmed yet) | | **the plan, about a second after the question**: "Let's keep it simple: the judges type their questions in the Zoom chat, and the facilitator answers them." |
 | 2:27 | | silent | **the confirmation, right after**: "Sounds good. Let's go with that." | |
 | 2:35 | the issue card (ZOOM-3, the clarification) | after a few seconds, one neutral question, roughly: "Before we confirm: didn't we establish that in Zoom I hear voices only, not the chat? Should the judges just speak up instead?" | wait for it, silent | wait for it, silent |
 | 2:45 | | | | **the correction and the owner**: "Right, no chat then. The judges just speak up, and Ken owns the briefing." |
@@ -98,8 +102,8 @@ Why these lines work:
   the bot terminal, `t Sorry, quick question: in Zoom, can people raise a hand to interrupt you?` and Enter.
 - **It doesn't go back to the slide** after its answer: **R** in the bot terminal; **→** moves on a point.
 - **An optional second interruption**, only if the first went well and you have time (~15 s): during "Achievements
-  and limits", right after "Here's what works so far.", Partner says: "Wait, what happens if your connection drops?"
-  It answers from HOW-3: everything is live, so the presentation pauses at that point until the host tries again.
+  and limits", right after "Here's the Zoom workflow.", Partner says: "Wait, what happens if your connection drops?"
+  It answers from HOW-3: the Higgs TTS 3 recording of the same script presents instead.
 
 ## If the facilitator misses its moment
 
@@ -108,12 +112,13 @@ Why these lines work:
   one: that's the limit on our slide."
 - **It asks after the plan alone** (before Ken confirms): skip the confirmation and go straight to the correction.
 - **It asks about something else**, or a question you didn't expect: answer in one short line, then the correction.
-- **The notes have the decision but no owner:** Ken's name wasn't read off the page for his line (speaker names are
-  best effort, ZOOM-4). Ken says once: "I'll brief the judges." That helps only if this line does carry his name;
+- **The notes have the decision but no owner:** Ken's line may have the wrong name or no name because speaker
+  attribution comes from Zoom's active-speaker display, best effort (ZOOM-4). Ken says once: "I'll brief the judges."
+  That helps only if this line does carry his name;
   otherwise the decision stays without an owner: note it. After the run, `out/zoom_bot/summary.json` shows how
   speakers were read (`speaker_strategy`, `speakers_seen`).
-- **A dropped connection** to Higgs: the presentation pauses at that point (banner "P to try again"); press P in the bot's terminal
-  once the link is back. There is no recorded backup.
+- **A dropped connection** to Higgs: the Higgs TTS 3 backup presents the same points; carry on (no live answers until
+  the link is back).
 - **It talks in the discussion before anyone confirms anything:** a miss to note; carry on with the next line.
 
 ## How long each part takes
