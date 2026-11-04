@@ -122,12 +122,13 @@ Check a talk package: `uv run python -m relay.talk talks/project-overview`.
 
 Higgs Audio Hackathon 2026, Toronto. The code was written with Claude Code.
 
-- **Ken ([@zihuanjiang](https://github.com/zihuanjiang))**: proposed the AI host, and Alice answering questions
-  during the presentation. Started the implementation of every part with Claude, reviewed Leo's edit plans and had
-  Claude carry them out. Suggested building Alice straight into Zoom.
-- **Leo ([@leo-oxu](https://github.com/leo-oxu))**: proposed the alignment check's three kinds of issue (a conflict
-  with the documents, a hidden disagreement, an ambiguous decision), and that Alice stays silent by default during
-  the discussion and asks only neutral clarification questions. Inspected the code Claude wrote to check that the
-  details were implemented correctly, raised questions and worked through them with Ken, and wrote the edit plans.
-  Proposed limiting the project to online meetings.
+- **Leo ([@leo-oxu](https://github.com/leo-oxu))**, project lead: proposed the project, did the early-stage research
+  and assigned the tasks. Proposed the alignment check's three kinds of issue (a conflict with the documents, a hidden
+  disagreement, an ambiguous decision), and that Alice stays silent by default during the discussion and asks only
+  neutral clarification questions. Did most of the code review: checked that the code Claude wrote implemented the
+  details correctly, raised questions and worked through them with Ken, and wrote the edit plans. Proposed limiting
+  the project to online meetings.
+- **Ken ([@zihuanjiang](https://github.com/zihuanjiang))**, implementation: proposed having Alice present as the
+  host and answer questions during the presentation. Implemented every part with Claude, reviewed Leo's edit plans
+  and had Claude carry them out. Suggested building Alice straight into Zoom.
 - **Together**: found the echo problem with one shared microphone in the same room.
