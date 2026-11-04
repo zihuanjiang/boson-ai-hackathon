@@ -118,7 +118,7 @@ The evidence must appear on screen alongside the intervention. The AI should **n
 
 ## 11. Team and ownership
 
-- **Members + GitHub handles:** _To fill in._
+- **Members + GitHub handles:** Ken (@zihuanjiang), Leo (@leo-oxu). Who did what: the Team section of `README.md`.
 - **Suggested work split:**
   - **Voice / realtime integration:** Higgs session, mic streaming, interruption detection, spoken responses.
   - **Agent logic / backend:** Presentation state, evidence retrieval, conflict detection, decision tools.

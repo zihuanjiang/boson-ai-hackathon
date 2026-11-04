@@ -58,7 +58,7 @@ normalization + word-level timestamps (spoken numbers, synchronized captions).
 - [ ] **Demo video 2–3 min**, public, no access request. Optional public try-it URL
 - [ ] **Public GitHub repo**: source, setup instructions, example inputs/outputs. **Pin the exact commit SHA or tag.** Remove API keys
 - [ ] "How you built it": ≤ 200 words per Higgs model/API used — what is novel or technically hard
-- [ ] Team: contributors with GitHub handles + what each did; **known limitations** (honesty is explicitly welcomed)
+- [x] Team: contributors with GitHub handles + what each did; **known limitations** (honesty is explicitly welcomed)
 
 ## What has won before (pattern-matching for judges' taste)
 

@@ -7,7 +7,7 @@ you proposes something the documents contradict, the other confirms it, the faci
 plan is saved, the plan is corrected, and the decision goes into the notes with Ken as its owner. About 3:10 from R to
 the end of the wrap-up (a plan: re-time it after the first rehearsal).
 
-**Partner** is your co-worker: write their real name here: `______`. Nothing else changes for them (no line names
+**Partner** is your co-worker: Leo. Nothing else changes for them (no line names
 the Partner). This is the final demo: both people speak live in Zoom. Setup and acceptance steps are in
 [`run_of_show.md`](run_of_show.md).
 

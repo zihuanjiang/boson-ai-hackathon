@@ -1,6 +1,6 @@
 # Final demo: On the Same Page in Zoom
 
-Ken and a teammate speak live in a real Zoom call. Alice (AI host) joins as a third participant, shares the
+Ken and Leo speak live in a real Zoom call. Alice (AI host) joins as a third participant, shares the
 presentation, takes a voice interruption, answers from the documents, resumes, and listens to the discussion. The
 team proposes a plan that conflicts with the earlier answer, confirms it, answers the facilitator's clarification,
 and checks the corrected decision and owner in the notes. Allow about three minutes; time the human rehearsal.
